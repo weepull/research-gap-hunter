@@ -29,6 +29,9 @@ Return ONLY valid JSON with these exact keys. No explanation, no markdown, no pr
   "future_directions": ["<list of future work suggestions from the authors>"]
 }}
 
+If limitations are not explicitly stated, return an empty list [] — do not invent limitations.
+If future_directions are not explicitly stated, return an empty list [] — do not invent future_directions.
+
 Paper text:
 {paper_text}"""
 
@@ -105,6 +108,7 @@ def call_ollama(prompt: str) -> dict:
         model=model,
         messages=[{"role": "user", "content": prompt}],
         options={"temperature": 0},
+        format="json",
     )
     raw_text = response["message"]["content"].strip()
 

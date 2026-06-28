@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "research-gap-hunter"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "requests",
+    "ollama",
+    "pydantic",
+    "sqlite-utils",
+    "python-dotenv",
+    "sentence-transformers",
+    "neo4j",
+    "qdrant-client",
+    "fastapi",
+    "uvicorn",
+    "hdbscan",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

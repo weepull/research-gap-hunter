@@ -33,7 +33,7 @@ def get_neo4j_driver():
 
 def create_constraints(driver) -> None:
     """Run all uniqueness constraint Cypher statements against Neo4j."""
-    with driver.session() as session:
+    with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
         for cypher in _CONSTRAINTS:
             session.run(cypher)
 
@@ -135,7 +135,7 @@ def populate_graph(batch_size: int = 50) -> dict:
         if paper is None:
             continue
 
-        with driver.session() as session:
+        with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
             # Paper node
             result = session.execute_write(
                 lambda tx, p=paper: _upsert_paper_counting(tx, p)

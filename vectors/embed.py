@@ -64,7 +64,7 @@ def _query_neo4j_limitations() -> list[dict]:
     from graph.populate import get_neo4j_driver
     driver = get_neo4j_driver()
     records = []
-    with driver.session() as session:
+    with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
         result = session.run(
             """
             MATCH (p:Paper)-[:REPORTS_LIMITATION]->(l:Limitation)
@@ -91,7 +91,7 @@ def _query_neo4j_future_directions() -> list[dict]:
     from graph.populate import get_neo4j_driver
     driver = get_neo4j_driver()
     records = []
-    with driver.session() as session:
+    with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
         result = session.run(
             """
             MATCH (p:Paper)-[:SUGGESTS_FUTURE]->(f:FutureDirection)

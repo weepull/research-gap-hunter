@@ -6,6 +6,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 import requests
@@ -42,6 +43,16 @@ _SECTION_HEADING_RE = re.compile(
     r"(?:^|\n)\s*(?:\d+\.?\s+)?(limitation|future work|conclusion|discussion)s?\s*\n",
     re.IGNORECASE,
 )
+# Explicit-tier headings (limitations / future work) are the strongest signal;
+# conclusion / discussion headings are a weaker, second-choice source.
+_EXPLICIT_HEADING_RE = re.compile(
+    r"(?:^|\n)\s*(?:\d+\.?\s+)?(limitation|future work)s?\s*\n",
+    re.IGNORECASE,
+)
+_CONCLUSION_HEADING_RE = re.compile(
+    r"(?:^|\n)\s*(?:\d+\.?\s+)?(conclusion|discussion)s?\s*\n",
+    re.IGNORECASE,
+)
 _EXTRACTION_PROMPT = """\
 You are a scientific paper analyst. Extract structured information from the following paper.
 
@@ -64,6 +75,30 @@ Paper text:
 
 _REQUIRED_KEYS = {"objectives", "methods", "datasets", "evaluation_metrics", "limitations", "future_directions"}
 
+
+class ExtractionTier(str, Enum):
+    """How a paper's limitations were sourced — drives prompt and gap-score weight."""
+
+    EXPLICIT = "explicit"      # a dedicated limitations / future-work section
+    CONCLUSION = "conclusion"  # only a conclusion / discussion section
+    INFERRED = "inferred"      # no relevant section; fall back to the abstract
+
+
+# Extra prompt guidance appended for the weaker tiers. EXPLICIT keeps the base
+# prompt unchanged (see CLAUDE.md — the explicit prompt structure is fixed).
+_TIER_INSTRUCTIONS = {
+    ExtractionTier.CONCLUSION.value: (
+        "This text is from the conclusion section. Extract implied limitations — "
+        "look for phrases like 'however', 'despite', 'remains challenging', "
+        "'future work includes', 'we leave X for future'. Be specific."
+    ),
+    ExtractionTier.INFERRED.value: (
+        "Limitations are not explicitly stated. Infer them from what the paper "
+        "claims to solve and what it does not address. Be conservative — only "
+        "infer clear limitations, not speculative ones."
+    ),
+}
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -81,6 +116,7 @@ class PaperExtract(BaseModel):
     future_directions: list[str]
     raw_json: str
     ingested_at: str
+    extraction_tier: str = "explicit"
 
 
 def fetch_paper_text(arxiv_id: str) -> dict:
@@ -171,7 +207,9 @@ def _extract_section(text: str) -> str:
     return ""
 
 
-def _page_section_text(pages: list[str], index: int) -> str:
+def _page_section_text(
+    pages: list[str], index: int, heading_re: re.Pattern = _SECTION_HEADING_RE
+) -> str:
     """Return text from the heading on pages[index] through the next page, capped.
 
     Anchors at the heading match within the page (so leading body text on that
@@ -179,7 +217,7 @@ def _page_section_text(pages: list[str], index: int) -> str:
     across a page boundary. Truncated to _MAX_SECTION_CHARS.
     """
     page_text = pages[index]
-    match = _SECTION_HEADING_RE.search(page_text)
+    match = heading_re.search(page_text)
     start = match.start() if match else 0
 
     combined = page_text[start:]
@@ -188,35 +226,43 @@ def _page_section_text(pages: list[str], index: int) -> str:
     return combined[:_MAX_SECTION_CHARS].strip()
 
 
-def _select_section_from_pages(pages: list[str]) -> str:
-    """Find a section heading across pages, preferring the last _TAIL_FRACTION.
+def _select_section_from_pages(pages: list[str]) -> tuple[str, str]:
+    """Find the most relevant section across pages and classify its extraction tier.
 
     Searches the tail pages (where limitation/conclusion sections cluster) first,
-    then falls back to the head pages. Returns the heading page plus the following
-    page (see _page_section_text), or "" if no page contains a heading.
+    then the head pages. Prefers an explicit heading (limitations / future work)
+    anywhere over a conclusion / discussion heading. Returns
+    ``(section_text, tier)`` where tier is one of ExtractionTier's values:
+    "explicit", "conclusion", or "inferred" (the last with empty text).
     """
     if not pages:
-        return ""
+        return "", ExtractionTier.INFERRED.value
 
     total = len(pages)
     tail_start = int(total * (1 - _TAIL_FRACTION))
     # Tail pages first, then the head pages as a fallback over the whole document.
     search_order = list(range(tail_start, total)) + list(range(tail_start))
 
-    for index in search_order:
-        if _SECTION_HEADING_RE.search(pages[index]):
-            return _page_section_text(pages, index)
-    return ""
+    for heading_re, tier in (
+        (_EXPLICIT_HEADING_RE, ExtractionTier.EXPLICIT.value),
+        (_CONCLUSION_HEADING_RE, ExtractionTier.CONCLUSION.value),
+    ):
+        for index in search_order:
+            if heading_re.search(pages[index]):
+                return _page_section_text(pages, index, heading_re), tier
+
+    return "", ExtractionTier.INFERRED.value
 
 
-def fetch_full_text(arxiv_id: str, abstract: str = "") -> str:
-    """Download the arXiv PDF and return its limitations/future-work/conclusion section.
+def fetch_full_text(arxiv_id: str, abstract: str = "") -> tuple[str, str]:
+    """Download the arXiv PDF and return its relevant section plus an extraction tier.
 
     Downloads https://arxiv.org/pdf/{arxiv_id} with a browser-like User-Agent,
-    extracts text page by page via PyMuPDF (first 20 pages), and returns the
-    most relevant section (max 4000 chars), searching the last 40% of pages first.
-    Falls back to the abstract if the PDF cannot be fetched or no relevant section
-    is found. Uses exponential backoff, up to 3 attempts.
+    extracts text page by page via PyMuPDF (first 20 pages), and returns
+    ``(section_text, tier)`` for the most relevant section (max 4000 chars),
+    searching the last 40% of pages first. Falls back to ``(abstract, "inferred")``
+    if the PDF cannot be fetched or no relevant section is found. Uses exponential
+    backoff, up to 3 attempts.
     """
     url = f"{_ARXIV_PDF_BASE}/{arxiv_id}"
     max_attempts = 3
@@ -236,7 +282,7 @@ def fetch_full_text(arxiv_id: str, abstract: str = "") -> str:
                     max_attempts,
                     exc,
                 )
-                return abstract
+                return abstract, ExtractionTier.INFERRED.value
             wait = 2 ** attempt
             logger.warning(
                 "PDF fetch failed for %s (attempt %d/%d): %s; retrying in %ds",
@@ -248,12 +294,12 @@ def fetch_full_text(arxiv_id: str, abstract: str = "") -> str:
             )
             time.sleep(wait)
 
-    section = _select_section_from_pages(pages)
+    section, tier = _select_section_from_pages(pages)
     if section:
-        return section
+        return section, tier
 
     logger.info("No relevant section found in PDF for %s; falling back to abstract", arxiv_id)
-    return abstract
+    return abstract, ExtractionTier.INFERRED.value
 
 
 def call_ollama(prompt: str) -> dict:
@@ -303,6 +349,21 @@ def _log_failure(arxiv_id: str, reason: str, raw: str) -> None:
         fh.write(f"  raw={raw[:500]}\n")
 
 
+def _build_prompt(paper_text: str, tier: str) -> str:
+    """Render the extraction prompt, adding tier-specific guidance for weaker tiers.
+
+    The "explicit" tier renders the base prompt verbatim; "conclusion" and
+    "inferred" inject extra instructions just before the paper text.
+    """
+    prompt = _EXTRACTION_PROMPT.format(paper_text=paper_text)
+    instruction = _TIER_INSTRUCTIONS.get(tier, "")
+    if instruction:
+        prompt = prompt.replace(
+            "\nPaper text:\n", f"\n{instruction}\n\nPaper text:\n", 1
+        )
+    return prompt
+
+
 def extract_paper(arxiv_id: str) -> PaperExtract:
     """Fetch paper, run LLM extraction, validate with Pydantic, and return PaperExtract.
 
@@ -311,9 +372,10 @@ def extract_paper(arxiv_id: str) -> PaperExtract:
     paper_meta = fetch_paper_text(arxiv_id)
     # Semantic Scholar supplies metadata (title, year); the body text comes from the
     # PDF's limitations/future-work/conclusion section, falling back to the abstract.
-    body_text = fetch_full_text(arxiv_id, abstract=paper_meta["abstract"])
+    # The tier records where the text came from and shapes the extraction prompt.
+    body_text, tier = fetch_full_text(arxiv_id, abstract=paper_meta["abstract"])
     paper_text = f"Title: {paper_meta['title']}\n\n{body_text}"
-    prompt = _EXTRACTION_PROMPT.format(paper_text=paper_text)
+    prompt = _build_prompt(paper_text, tier)
 
     raw_dict = call_ollama(prompt)
     raw_json_str = json.dumps(raw_dict)
@@ -332,6 +394,7 @@ def extract_paper(arxiv_id: str) -> PaperExtract:
             future_directions=raw_dict.get("future_directions", []),
             raw_json=raw_json_str,
             ingested_at=datetime.now(timezone.utc).isoformat(),
+            extraction_tier=tier,
         )
     except ValidationError as exc:
         _log_failure(arxiv_id, str(exc), raw_json_str)

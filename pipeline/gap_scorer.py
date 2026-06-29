@@ -30,6 +30,10 @@ _CLUSTER_THRESHOLD = 0.82
 _SOLUTION_THRESHOLD = 0.75
 # Upper bound on how many future-direction hits we inspect per cluster.
 _MAX_FD_RESULTS = 100
+# How much each paper's report counts toward frequency, by extraction tier.
+# Explicitly-stated limitations are the strongest signal; inferred ones the weakest.
+_TIER_WEIGHTS = {"explicit": 1.0, "conclusion": 0.75, "inferred": 0.5}
+_DEFAULT_TIER_WEIGHT = 1.0
 
 
 class GapResult(BaseModel):
@@ -49,17 +53,19 @@ def get_all_limitations(domain: str = "computer_vision") -> list[dict]:
         text:      the limitation statement
         paper_ids: arxiv_ids of papers that report it
         years:     publication years, parallel to paper_ids
+        tiers:     extraction tier per paper, parallel to paper_ids
     """
     driver = get_neo4j_driver()
     records: list[dict] = []
     with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
         result = session.run(
             """
-            MATCH (p:Paper)-[:REPORTS_LIMITATION]->(l:Limitation)
+            MATCH (p:Paper)-[r:REPORTS_LIMITATION]->(l:Limitation)
             WHERE p.domain = $domain
             RETURN l.text                AS text,
                    collect(p.arxiv_id)   AS paper_ids,
-                   collect(p.year)       AS years
+                   collect(p.year)       AS years,
+                   collect(r.tier)       AS tiers
             """,
             domain=domain,
         )
@@ -69,6 +75,7 @@ def get_all_limitations(domain: str = "computer_vision") -> list[dict]:
                     "text": record["text"],
                     "paper_ids": list(record["paper_ids"]),
                     "years": list(record["years"]),
+                    "tiers": list(record["tiers"]),
                 }
             )
     driver.close()
@@ -135,16 +142,29 @@ def cluster_limitations(
 
 
 def compute_frequency_score(cluster: list[dict], total_papers: int) -> float:
-    """Fraction of all domain papers that report any limitation in this cluster.
+    """Tier-weighted fraction of domain papers reporting any limitation in this cluster.
 
-    frequency_score = unique_papers_in_cluster / total_papers_in_domain, capped at 1.0.
+    Each unique paper contributes its tier weight (explicit=1.0, conclusion=0.75,
+    inferred=0.5; default 1.0 when tier is missing). frequency_score = sum of those
+    weights / total_papers_in_domain, capped at 1.0.
     """
     if total_papers <= 0:
         return 0.0
-    unique_papers: set[str] = set()
+
+    # A paper's tier is consistent across its limitations; if it somehow appears
+    # with several tiers, keep the strongest (highest weight).
+    paper_weights: dict[str, float] = {}
     for lim in cluster:
-        unique_papers.update(lim.get("paper_ids", []))
-    return min(len(unique_papers) / total_papers, 1.0)
+        paper_ids = lim.get("paper_ids", [])
+        tiers = lim.get("tiers", [])
+        for i, paper_id in enumerate(paper_ids):
+            tier = tiers[i] if i < len(tiers) else None
+            weight = _TIER_WEIGHTS.get(tier, _DEFAULT_TIER_WEIGHT)
+            if paper_id not in paper_weights or weight > paper_weights[paper_id]:
+                paper_weights[paper_id] = weight
+
+    weighted_sum = sum(paper_weights.values())
+    return min(weighted_sum / total_papers, 1.0)
 
 
 def compute_recency_score(cluster: list[dict], current_year: int = 2024) -> float:

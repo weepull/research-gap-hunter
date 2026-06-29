@@ -54,17 +54,25 @@ def upsert_paper(tx, paper: dict) -> None:
     )
 
 
-def upsert_limitation(tx, paper_arxiv_id: str, limitation_text: str) -> None:
-    """MERGE Limitation node on text; MERGE REPORTS_LIMITATION relationship to Paper."""
+def upsert_limitation(
+    tx, paper_arxiv_id: str, limitation_text: str, tier: str = "explicit"
+) -> None:
+    """MERGE Limitation node on text; MERGE REPORTS_LIMITATION relationship to Paper.
+
+    Stores the extraction tier ("explicit" | "conclusion" | "inferred") as a
+    property on the REPORTS_LIMITATION relationship.
+    """
     tx.run(
         """
         MERGE (l:Limitation {text: $text})
         WITH l
         MATCH (p:Paper {arxiv_id: $arxiv_id})
-        MERGE (p)-[:REPORTS_LIMITATION]->(l)
+        MERGE (p)-[r:REPORTS_LIMITATION]->(l)
+        SET r.tier = $tier
         """,
         text=limitation_text,
         arxiv_id=paper_arxiv_id,
+        tier=tier,
     )
 
 
@@ -170,6 +178,7 @@ def _upsert_paper_counting(tx, paper: dict) -> dict:
     nodes += summary.counters.nodes_created
     rels += summary.counters.relationships_created
 
+    tier = paper.get("extraction_tier", "explicit")
     for limitation in paper.get("limitations") or []:
         if not limitation:
             continue
@@ -178,10 +187,12 @@ def _upsert_paper_counting(tx, paper: dict) -> dict:
             MERGE (l:Limitation {text: $text})
             WITH l
             MATCH (p:Paper {arxiv_id: $arxiv_id})
-            MERGE (p)-[:REPORTS_LIMITATION]->(l)
+            MERGE (p)-[r:REPORTS_LIMITATION]->(l)
+            SET r.tier = $tier
             """,
             text=limitation,
             arxiv_id=arxiv_id,
+            tier=tier,
         )
         s = res.consume()
         nodes += s.counters.nodes_created

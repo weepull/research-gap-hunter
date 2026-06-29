@@ -89,6 +89,36 @@ def test_compute_frequency_score_range():
     assert 0.0 <= score <= 1.0
 
 
+def test_compute_frequency_score_defaults_to_full_weight_without_tiers():
+    """Missing tier data weights each paper as 1.0 (backwards-compatible behaviour)."""
+    cluster = [{"text": "x", "paper_ids": ["a", "b"], "years": [2024, 2024]}]
+    assert compute_frequency_score(cluster, 4) == 0.5  # (1.0 + 1.0) / 4
+
+
+def test_compute_frequency_score_weights_by_tier():
+    """Each paper contributes its tier weight: explicit=1.0, conclusion=0.75, inferred=0.5."""
+    cluster = [
+        {
+            "text": "x",
+            "paper_ids": ["a", "b", "c"],
+            "years": [2024, 2024, 2024],
+            "tiers": ["explicit", "conclusion", "inferred"],
+        }
+    ]
+    # (1.0 + 0.75 + 0.5) / 3 = 0.75
+    assert compute_frequency_score(cluster, 3) == 0.75
+
+
+def test_compute_frequency_score_keeps_strongest_tier_per_paper():
+    """A paper appearing with several tiers counts once, at its strongest weight."""
+    cluster = [
+        {"text": "x", "paper_ids": ["a"], "years": [2024], "tiers": ["inferred"]},
+        {"text": "y", "paper_ids": ["a"], "years": [2024], "tiers": ["explicit"]},
+    ]
+    # Paper 'a' counted once at the explicit weight 1.0 → 1.0 / 2
+    assert compute_frequency_score(cluster, 2) == 0.5
+
+
 # ---------------------------------------------------------------------------
 # compute_recency_score
 # ---------------------------------------------------------------------------

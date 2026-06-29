@@ -9,7 +9,9 @@ import pytest
 from pydantic import ValidationError
 
 from pipeline.extractor import (
+    ExtractionTier,
     PaperExtract,
+    _build_prompt,
     _extract_pdf_text,
     _extract_section,
     _select_section_from_pages,
@@ -266,10 +268,13 @@ def test_extract_pdf_text_limits_to_20_pages():
 # ---------------------------------------------------------------------------
 
 
-def test_select_section_empty_returns_empty():
-    """No pages, or pages with no headings, yields an empty string."""
-    assert _select_section_from_pages([]) == ""
-    assert _select_section_from_pages(["just body text", "more body, no heading"]) == ""
+def test_select_section_empty_returns_inferred():
+    """No pages, or pages with no headings, yields ('', 'inferred')."""
+    assert _select_section_from_pages([]) == ("", "inferred")
+    assert _select_section_from_pages(["just body text", "more body, no heading"]) == (
+        "",
+        "inferred",
+    )
 
 
 def test_select_section_searches_tail_first():
@@ -281,9 +286,10 @@ def test_select_section_searches_tail_first():
         "p3 body text",
         "Limitations\nReal limitations live here.\n",  # tail region (page 4 of 5)
     ]
-    result = _select_section_from_pages(pages)
-    assert "real limitations live here" in result.lower()
-    assert "early conclusion" not in result.lower()
+    text, tier = _select_section_from_pages(pages)
+    assert "real limitations live here" in text.lower()
+    assert "early conclusion" not in text.lower()
+    assert tier == "explicit"
 
 
 def test_select_section_includes_next_page():
@@ -295,9 +301,10 @@ def test_select_section_includes_next_page():
         "Limitations\nGPU memory is a problem.",  # tail heading (page 3 of 5)
         "Continued discussion of memory limits.",  # spillover page
     ]
-    result = _select_section_from_pages(pages)
-    assert "gpu memory" in result.lower()
-    assert "continued discussion" in result.lower()
+    text, tier = _select_section_from_pages(pages)
+    assert "gpu memory" in text.lower()
+    assert "continued discussion" in text.lower()
+    assert tier == "explicit"
 
 
 def test_select_section_falls_back_to_head_pages():
@@ -309,15 +316,45 @@ def test_select_section_falls_back_to_head_pages():
         "p3 body",
         "p4 body",
     ]
-    result = _select_section_from_pages(pages)
-    assert "found only in the head region" in result.lower()
+    text, tier = _select_section_from_pages(pages)
+    assert "found only in the head region" in text.lower()
+    assert tier == "explicit"
 
 
 def test_select_section_caps_at_4000_chars():
     """The selected section never exceeds 4000 characters."""
     pages = ["Limitations\n" + ("a" * 3000), "b" * 3000]
-    result = _select_section_from_pages(pages)
-    assert len(result) <= 4000
+    text, _tier = _select_section_from_pages(pages)
+    assert len(text) <= 4000
+
+
+def test_select_section_conclusion_tier():
+    """Only a conclusion/discussion heading yields the 'conclusion' tier."""
+    pages = [
+        "p0 intro",
+        "p1 body",
+        "p2 body",
+        "Conclusion\nWe summarise our contributions here.\n",  # tail heading
+        "p4 references",
+    ]
+    text, tier = _select_section_from_pages(pages)
+    assert "summarise our contributions" in text.lower()
+    assert tier == "conclusion"
+
+
+def test_select_section_prefers_explicit_over_conclusion():
+    """An explicit heading wins over a conclusion heading even if it appears later."""
+    pages = [
+        "p0",
+        "p1",
+        "p2",
+        "Conclusion\nConcluding remarks here.\n",  # tail, conclusion-type (page 3)
+        "Limitations\nThe explicit limitation text.\n",  # tail, explicit-type (page 4)
+    ]
+    text, tier = _select_section_from_pages(pages)
+    assert tier == "explicit"
+    assert "explicit limitation text" in text.lower()
+    assert "concluding remarks" not in text.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -344,9 +381,10 @@ def test_fetch_full_text_returns_section(monkeypatch):
         lambda _b: ["Intro and background.", "Limitations\nThe model is slow on large inputs.\n"],
     )
 
-    result = fetch_full_text("2301.00234", abstract="ABSTRACT")
-    assert "model is slow" in result.lower()
-    assert result != "ABSTRACT"
+    text, tier = fetch_full_text("2301.00234", abstract="ABSTRACT")
+    assert "model is slow" in text.lower()
+    assert text != "ABSTRACT"
+    assert tier == "explicit"
 
 
 def test_fetch_full_text_uses_browser_user_agent(monkeypatch):
@@ -377,8 +415,9 @@ def test_fetch_full_text_falls_back_to_abstract_on_fetch_failure(monkeypatch):
     monkeypatch.setattr(mod.requests, "get", MagicMock(side_effect=Exception("403 Forbidden")))
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
 
-    result = fetch_full_text("2301.00234", abstract="FALLBACK ABSTRACT")
-    assert result == "FALLBACK ABSTRACT"
+    text, tier = fetch_full_text("2301.00234", abstract="FALLBACK ABSTRACT")
+    assert text == "FALLBACK ABSTRACT"
+    assert tier == "inferred"
 
 
 def test_fetch_full_text_falls_back_when_no_section(monkeypatch):
@@ -392,8 +431,9 @@ def test_fetch_full_text_falls_back_when_no_section(monkeypatch):
         lambda _b: ["Only intro and methods text.", "More body, nothing relevant."],
     )
 
-    result = fetch_full_text("2301.00234", abstract="ABS FALLBACK")
-    assert result == "ABS FALLBACK"
+    text, tier = fetch_full_text("2301.00234", abstract="ABS FALLBACK")
+    assert text == "ABS FALLBACK"
+    assert tier == "inferred"
 
 
 def test_fetch_full_text_retries_then_succeeds(monkeypatch):
@@ -414,8 +454,9 @@ def test_fetch_full_text_retries_then_succeeds(monkeypatch):
         mod, "_extract_pdf_text", lambda _b: ["Body text page.", "Conclusion\nit works well.\n"]
     )
 
-    result = fetch_full_text("2301.00234", abstract="ABS")
-    assert "it works well" in result.lower()
+    text, tier = fetch_full_text("2301.00234", abstract="ABS")
+    assert "it works well" in text.lower()
+    assert tier == "conclusion"
     assert attempts == []  # both queued outcomes consumed
 
 
@@ -474,7 +515,7 @@ def _patch_extract(monkeypatch, llm_dict: dict | None = None, meta: dict | None 
     resolved_meta = meta or MOCK_PAPER_META
     monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: resolved_meta)
     monkeypatch.setattr(
-        mod, "fetch_full_text", lambda _id, abstract="": resolved_meta["abstract"]
+        mod, "fetch_full_text", lambda _id, abstract="": (resolved_meta["abstract"], "explicit")
     )
     monkeypatch.setattr(mod, "call_ollama", lambda _prompt: llm_dict or MOCK_LLM_DICT)
 
@@ -507,7 +548,9 @@ def test_extract_paper_uses_full_text_in_prompt(monkeypatch):
 
     monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: MOCK_PAPER_META)
     monkeypatch.setattr(
-        mod, "fetch_full_text", lambda _id, abstract="": "Limitations: GPU memory bound."
+        mod,
+        "fetch_full_text",
+        lambda _id, abstract="": ("Limitations: GPU memory bound.", "explicit"),
     )
 
     captured = {}
@@ -538,7 +581,7 @@ def test_extract_paper_logs_on_validation_failure(monkeypatch, tmp_path):
     log_file = tmp_path / "failed_extractions.log"
     monkeypatch.setattr(mod, "_LOG_PATH", log_file)
     monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: MOCK_PAPER_META)
-    monkeypatch.setattr(mod, "fetch_full_text", lambda _id, abstract="": abstract)
+    monkeypatch.setattr(mod, "fetch_full_text", lambda _id, abstract="": (abstract, "inferred"))
     monkeypatch.setattr(mod, "call_ollama", lambda _prompt: MOCK_LLM_DICT)
 
     # Force PaperExtract to raise by replacing it with a broken subclass inside the module
@@ -604,3 +647,94 @@ def test_paper_extract_model_rejects_missing_fields():
     """PaperExtract should raise ValidationError when mandatory fields are absent."""
     with pytest.raises(ValidationError):
         PaperExtract(arxiv_id="x", title="T")  # year, objectives, etc. are missing
+
+
+def test_paper_extract_defaults_extraction_tier():
+    """PaperExtract should default extraction_tier to 'explicit'."""
+    paper = PaperExtract(
+        arxiv_id="2301.00234",
+        title="Test Paper",
+        year=2023,
+        objectives=["obj"],
+        methods=["method"],
+        datasets=["ImageNet"],
+        evaluation_metrics=["mAP"],
+        limitations=["slow inference"],
+        future_directions=["speed up"],
+        raw_json="{}",
+        ingested_at="2026-06-29T00:00:00+00:00",
+    )
+    assert paper.extraction_tier == "explicit"
+
+
+# ---------------------------------------------------------------------------
+# ExtractionTier enum + tier-driven prompts
+# ---------------------------------------------------------------------------
+
+
+def test_extraction_tier_enum_values():
+    """The ExtractionTier enum exposes the three expected string values."""
+    assert ExtractionTier.EXPLICIT.value == "explicit"
+    assert ExtractionTier.CONCLUSION.value == "conclusion"
+    assert ExtractionTier.INFERRED.value == "inferred"
+
+
+def test_build_prompt_explicit_is_unchanged():
+    """The explicit tier renders the base prompt with no extra instructions."""
+    from pipeline.extractor import _EXTRACTION_PROMPT
+
+    paper_text = "Title: X\n\nLimitations\nslow."
+    expected = _EXTRACTION_PROMPT.format(paper_text=paper_text)
+    assert _build_prompt(paper_text, "explicit") == expected
+
+
+def test_build_prompt_conclusion_adds_instruction():
+    """The conclusion tier injects the conclusion-specific guidance."""
+    prompt = _build_prompt("Title: X\n\nConclusion\nwe conclude.", "conclusion")
+    assert "conclusion section" in prompt
+    assert "remains challenging" in prompt
+    assert "Paper text:" in prompt
+
+
+def test_build_prompt_inferred_adds_instruction():
+    """The inferred tier injects the conservative-inference guidance."""
+    prompt = _build_prompt("Title: X\n\nabstract only", "inferred")
+    assert "not explicitly stated" in prompt
+    assert "Be conservative" in prompt
+
+
+def test_extract_paper_sets_extraction_tier(monkeypatch):
+    """extract_paper should record the tier returned by fetch_full_text."""
+    import pipeline.extractor as mod
+
+    monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: MOCK_PAPER_META)
+    monkeypatch.setattr(
+        mod,
+        "fetch_full_text",
+        lambda _id, abstract="": ("Conclusion\nwe conclude something.", "conclusion"),
+    )
+    monkeypatch.setattr(mod, "call_ollama", lambda _prompt: MOCK_LLM_DICT)
+
+    result = extract_paper("2301.00234")
+    assert result.extraction_tier == "conclusion"
+
+
+def test_extract_paper_conclusion_tier_shapes_prompt(monkeypatch):
+    """A conclusion-tier extraction sends the conclusion instruction to the LLM."""
+    import pipeline.extractor as mod
+
+    monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: MOCK_PAPER_META)
+    monkeypatch.setattr(
+        mod, "fetch_full_text", lambda _id, abstract="": ("Conclusion\nblah.", "conclusion")
+    )
+
+    captured = {}
+
+    def fake_call_ollama(prompt):
+        captured["prompt"] = prompt
+        return MOCK_LLM_DICT
+
+    monkeypatch.setattr(mod, "call_ollama", fake_call_ollama)
+
+    extract_paper("2301.00234")
+    assert "conclusion section" in captured["prompt"]

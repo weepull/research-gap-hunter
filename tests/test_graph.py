@@ -7,6 +7,7 @@ import pytest
 import graph.populate as graph_mod
 from graph.populate import (
     _CONSTRAINTS,
+    _upsert_paper_counting,
     create_constraints,
     get_neo4j_driver,
     populate_graph,
@@ -180,6 +181,33 @@ def test_upsert_limitation_creates_node_and_relationship():
     assert "REPORTS_LIMITATION" in cypher
     assert tx.run.call_args[1]["text"] == "Slow convergence"
     assert tx.run.call_args[1]["arxiv_id"] == "2301.00234"
+    # Defaults to the explicit tier and writes it onto the relationship.
+    assert "r.tier" in cypher
+    assert tx.run.call_args[1]["tier"] == "explicit"
+
+
+def test_upsert_limitation_records_given_tier():
+    """upsert_limitation should store the supplied extraction tier on the relationship."""
+    tx = _make_tx()
+    upsert_limitation(tx, "2301.00234", "Inferred limitation", tier="inferred")
+
+    assert tx.run.call_args[1]["tier"] == "inferred"
+
+
+def test_upsert_paper_counting_sets_limitation_tier():
+    """_upsert_paper_counting should tag REPORTS_LIMITATION with the paper's tier."""
+    tx = _make_tx()
+    paper = {**SAMPLE_PAPER, "extraction_tier": "conclusion"}
+
+    _upsert_paper_counting(tx, paper)
+
+    limitation_calls = [
+        c for c in tx.run.call_args_list if "REPORTS_LIMITATION" in c[0][0]
+    ]
+    assert limitation_calls, "expected at least one REPORTS_LIMITATION query"
+    for c in limitation_calls:
+        assert "r.tier" in c[0][0]
+        assert c[1]["tier"] == "conclusion"
 
 
 # ---------------------------------------------------------------------------

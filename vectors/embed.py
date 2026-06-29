@@ -30,11 +30,22 @@ def get_qdrant_client() -> QdrantClient:
 
 
 def load_embedding_model():
-    """Load allenai/specter2_base via sentence-transformers, cached for the process lifetime."""
+    """Load allenai/specter2_base via sentence-transformers, cached for the process lifetime.
+
+    Points the model, tokenizer, and config loaders at the local HuggingFace hub
+    cache so repeated loads read from disk instead of hitting the HuggingFace API.
+    """
     if "model" not in _model_cache:
         from sentence_transformers import SentenceTransformer
         logger.info("Loading embedding model %s", _MODEL_NAME)
-        _model_cache["model"] = SentenceTransformer(_MODEL_NAME)
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        _model_cache["model"] = SentenceTransformer(
+            _MODEL_NAME,
+            model_kwargs={"cache_dir": cache_dir},
+            tokenizer_kwargs={"cache_dir": cache_dir},
+            config_kwargs={"cache_dir": cache_dir},
+        )
     return _model_cache["model"]
 
 

@@ -1,5 +1,6 @@
 """Tests for vectors/embed.py and vectors/search.py."""
 
+import os
 import types
 from unittest.mock import MagicMock, call, patch
 
@@ -121,7 +122,14 @@ def test_load_embedding_model_loads_correct_model(monkeypatch):
     with patch.dict("sys.modules", {"sentence_transformers": MagicMock(SentenceTransformer=mock_st)}):
         load_embedding_model()
 
-    mock_st.assert_called_once_with("allenai/specter2_base")
+    # Loaded by name, with all loaders pointed at the local HuggingFace hub cache.
+    mock_st.assert_called_once()
+    args, kwargs = mock_st.call_args
+    assert args == ("allenai/specter2_base",)
+    cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+    assert kwargs["model_kwargs"] == {"cache_dir": cache_dir}
+    assert kwargs["tokenizer_kwargs"] == {"cache_dir": cache_dir}
+    assert kwargs["config_kwargs"] == {"cache_dir": cache_dir}
     embed_mod._model_cache.clear()
 
 

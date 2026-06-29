@@ -8,7 +8,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from pipeline.extractor import PaperExtract, call_ollama, extract_paper, fetch_paper_text
+from pipeline.extractor import (
+    PaperExtract,
+    _extract_section,
+    call_ollama,
+    extract_paper,
+    fetch_full_text,
+    fetch_paper_text,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +132,136 @@ def test_fetch_paper_text_raises_after_max_retries():
 
 
 # ---------------------------------------------------------------------------
+# _extract_section — pure section-selection logic
+# ---------------------------------------------------------------------------
+
+
+def test_extract_section_prefers_limitation():
+    """When multiple headers exist, the limitations section is preferred."""
+    text = "Discussion of stuff. Future Work is broad. Limitations: it is slow."
+    result = _extract_section(text)
+    assert result.lower().startswith("limitation")
+
+
+def test_extract_section_finds_future_work():
+    """Falls through to 'future work' when no limitations header is present."""
+    text = "Methods are described here. Future Work: extend the model to video."
+    result = _extract_section(text)
+    assert result.lower().startswith("future work")
+
+
+def test_extract_section_is_case_insensitive():
+    """Headers are matched regardless of case (e.g. all-caps CONCLUSION)."""
+    text = "intro paragraph CONCLUSION here is the closing summary"
+    result = _extract_section(text)
+    assert "summary" in result.lower()
+
+
+def test_extract_section_caps_at_2000_chars():
+    """The returned section never exceeds 2000 characters."""
+    text = "Limitations " + ("a" * 5000)
+    result = _extract_section(text)
+    assert len(result) <= 2000
+
+
+def test_extract_section_returns_empty_without_header():
+    """No recognised header (or empty input) yields an empty string."""
+    assert _extract_section("Just methods and results, nothing relevant here.") == ""
+    assert _extract_section("") == ""
+
+
+# ---------------------------------------------------------------------------
+# fetch_full_text — PDF download + section extraction + fallback
+# ---------------------------------------------------------------------------
+
+
+def _make_pdf_response() -> MagicMock:
+    """A mock requests.Response for a successful PDF download."""
+    resp = MagicMock()
+    resp.content = b"%PDF-1.5 fake bytes"
+    resp.raise_for_status.return_value = None
+    return resp
+
+
+def test_fetch_full_text_returns_section(monkeypatch):
+    """A successful fetch returns the extracted relevant section, not the abstract."""
+    import pipeline.extractor as mod
+
+    monkeypatch.setattr(mod.requests, "get", lambda *a, **k: _make_pdf_response())
+    monkeypatch.setattr(
+        mod, "_extract_pdf_text", lambda _b: "Intro. Limitations: the model is slow."
+    )
+
+    result = fetch_full_text("2301.00234", abstract="ABSTRACT")
+    assert "model is slow" in result.lower()
+    assert result != "ABSTRACT"
+
+
+def test_fetch_full_text_uses_browser_user_agent(monkeypatch):
+    """The PDF request must carry a browser-like User-Agent and the arXiv PDF URL."""
+    import pipeline.extractor as mod
+
+    captured: dict = {}
+
+    def fake_get(url, headers=None, timeout=None, **kw):
+        captured["url"] = url
+        captured["headers"] = headers
+        return _make_pdf_response()
+
+    monkeypatch.setattr(mod.requests, "get", fake_get)
+    monkeypatch.setattr(mod, "_extract_pdf_text", lambda _b: "Limitations: something")
+
+    fetch_full_text("2301.00234", abstract="ABS")
+
+    assert "2301.00234" in captured["url"]
+    assert "User-Agent" in captured["headers"]
+    assert "Mozilla" in captured["headers"]["User-Agent"]
+
+
+def test_fetch_full_text_falls_back_to_abstract_on_fetch_failure(monkeypatch):
+    """If every download attempt raises, the abstract is returned."""
+    import pipeline.extractor as mod
+
+    monkeypatch.setattr(mod.requests, "get", MagicMock(side_effect=Exception("403 Forbidden")))
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+
+    result = fetch_full_text("2301.00234", abstract="FALLBACK ABSTRACT")
+    assert result == "FALLBACK ABSTRACT"
+
+
+def test_fetch_full_text_falls_back_when_no_section(monkeypatch):
+    """If the PDF has no recognised section, the abstract is returned."""
+    import pipeline.extractor as mod
+
+    monkeypatch.setattr(mod.requests, "get", lambda *a, **k: _make_pdf_response())
+    monkeypatch.setattr(mod, "_extract_pdf_text", lambda _b: "Only intro and methods text.")
+
+    result = fetch_full_text("2301.00234", abstract="ABS FALLBACK")
+    assert result == "ABS FALLBACK"
+
+
+def test_fetch_full_text_retries_then_succeeds(monkeypatch):
+    """A transient failure is retried with backoff before a successful fetch."""
+    import pipeline.extractor as mod
+
+    attempts = [Exception("temporary"), _make_pdf_response()]
+
+    def fake_get(*a, **k):
+        outcome = attempts.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(mod.requests, "get", fake_get)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(mod, "_extract_pdf_text", lambda _b: "Conclusion: it works well.")
+
+    result = fetch_full_text("2301.00234", abstract="ABS")
+    assert "it works well" in result.lower()
+    assert attempts == []  # both queued outcomes consumed
+
+
+# ---------------------------------------------------------------------------
 # call_ollama — patch sys.modules so the lazy import picks up the mock
 # ---------------------------------------------------------------------------
 
@@ -174,9 +311,13 @@ def test_call_ollama_raises_on_missing_keys():
 
 
 def _patch_extract(monkeypatch, llm_dict: dict | None = None, meta: dict | None = None):
-    """Monkeypatch fetch_paper_text and call_ollama for extract_paper tests."""
+    """Monkeypatch fetch_paper_text, fetch_full_text, and call_ollama for extract_paper tests."""
     import pipeline.extractor as mod
-    monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: meta or MOCK_PAPER_META)
+    resolved_meta = meta or MOCK_PAPER_META
+    monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: resolved_meta)
+    monkeypatch.setattr(
+        mod, "fetch_full_text", lambda _id, abstract="": resolved_meta["abstract"]
+    )
     monkeypatch.setattr(mod, "call_ollama", lambda _prompt: llm_dict or MOCK_LLM_DICT)
 
 
@@ -202,6 +343,28 @@ def test_extract_paper_sets_title_and_year(monkeypatch):
     assert result.year == MOCK_PAPER_META["year"]
 
 
+def test_extract_paper_uses_full_text_in_prompt(monkeypatch):
+    """extract_paper should feed fetch_full_text output (not just abstract) into the LLM."""
+    import pipeline.extractor as mod
+
+    monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: MOCK_PAPER_META)
+    monkeypatch.setattr(
+        mod, "fetch_full_text", lambda _id, abstract="": "Limitations: GPU memory bound."
+    )
+
+    captured = {}
+
+    def fake_call_ollama(prompt):
+        captured["prompt"] = prompt
+        return MOCK_LLM_DICT
+
+    monkeypatch.setattr(mod, "call_ollama", fake_call_ollama)
+
+    extract_paper("2301.00234")
+
+    assert "GPU memory bound" in captured["prompt"]
+
+
 def test_extract_paper_raw_json_contains_limitations(monkeypatch):
     """raw_json field should be deserializable and contain the limitations key."""
     _patch_extract(monkeypatch)
@@ -217,6 +380,7 @@ def test_extract_paper_logs_on_validation_failure(monkeypatch, tmp_path):
     log_file = tmp_path / "failed_extractions.log"
     monkeypatch.setattr(mod, "_LOG_PATH", log_file)
     monkeypatch.setattr(mod, "fetch_paper_text", lambda _id: MOCK_PAPER_META)
+    monkeypatch.setattr(mod, "fetch_full_text", lambda _id, abstract="": abstract)
     monkeypatch.setattr(mod, "call_ollama", lambda _prompt: MOCK_LLM_DICT)
 
     # Force PaperExtract to raise by replacing it with a broken subclass inside the module

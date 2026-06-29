@@ -1,5 +1,6 @@
 """Extracts structured information from arXiv papers via Ollama llama3.1:8b."""
 
+import io
 import json
 import logging
 import os
@@ -14,7 +15,22 @@ from pydantic import BaseModel, ValidationError
 load_dotenv()
 
 _SEMANTIC_SCHOLAR_BASE = "https://api.semanticscholar.org/graph/v1"
+_ARXIV_PDF_BASE = "https://arxiv.org/pdf"
 _LOG_PATH = Path("data/failed_extractions.log")
+
+# A browser-like User-Agent — arxiv.org returns 403 for default python-requests UA.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+# Section headers in priority order — the earliest-priority match wins, so the
+# limitations section (most valuable for this project) is preferred when present.
+_SECTION_HEADERS = ("limitation", "future work", "conclusion", "discussion")
+_MAX_SECTION_CHARS = 2000
 _EXTRACTION_PROMPT = """\
 You are a scientific paper analyst. Extract structured information from the following paper.
 
@@ -93,6 +109,81 @@ def fetch_paper_text(arxiv_id: str) -> dict:
     raise RuntimeError("fetch_paper_text exhausted retries")
 
 
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract all text from PDF bytes using pdfplumber. Returns concatenated pages."""
+    import pdfplumber  # lazy import so the module loads without pdfplumber present
+
+    parts: list[str] = []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            parts.append(page.extract_text() or "")
+    return "\n".join(parts)
+
+
+def _extract_section(text: str) -> str:
+    """Return the most relevant section's text, capped at 2000 chars.
+
+    Searches case-insensitively for the section headers in _SECTION_HEADERS, in
+    priority order, and returns the text from the first matching header onward.
+    Returns "" when no header is found.
+    """
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    for header in _SECTION_HEADERS:
+        idx = lowered.find(header)
+        if idx != -1:
+            return text[idx : idx + _MAX_SECTION_CHARS].strip()
+    return ""
+
+
+def fetch_full_text(arxiv_id: str, abstract: str = "") -> str:
+    """Download the arXiv PDF and return its limitations/future-work/conclusion section.
+
+    Downloads https://arxiv.org/pdf/{arxiv_id} with a browser-like User-Agent,
+    extracts text via pdfplumber, and returns the most relevant section (max 2000
+    chars). Falls back to the supplied abstract if the PDF cannot be fetched or no
+    relevant section is found. Uses exponential backoff, up to 3 attempts.
+    """
+    url = f"{_ARXIV_PDF_BASE}/{arxiv_id}"
+    max_attempts = 3
+    pdf_text = ""
+
+    for attempt in range(max_attempts):
+        try:
+            response = requests.get(url, headers=_BROWSER_HEADERS, timeout=30)
+            response.raise_for_status()
+            pdf_text = _extract_pdf_text(response.content)
+            break
+        except Exception as exc:  # noqa: BLE001 — any failure should retry then fall back
+            if attempt == max_attempts - 1:
+                logger.warning(
+                    "PDF fetch failed for %s after %d attempts (%s); falling back to abstract",
+                    arxiv_id,
+                    max_attempts,
+                    exc,
+                )
+                return abstract
+            wait = 2 ** attempt
+            logger.warning(
+                "PDF fetch failed for %s (attempt %d/%d): %s; retrying in %ds",
+                arxiv_id,
+                attempt + 1,
+                max_attempts,
+                exc,
+                wait,
+            )
+            time.sleep(wait)
+
+    section = _extract_section(pdf_text)
+    if section:
+        return section
+
+    logger.info("No relevant section found in PDF for %s; falling back to abstract", arxiv_id)
+    return abstract
+
+
 def call_ollama(prompt: str) -> dict:
     """Send prompt to Ollama and return parsed JSON dict.
 
@@ -146,7 +237,10 @@ def extract_paper(arxiv_id: str) -> PaperExtract:
     On validation failure, logs to data/failed_extractions.log and re-raises.
     """
     paper_meta = fetch_paper_text(arxiv_id)
-    paper_text = f"Title: {paper_meta['title']}\n\nAbstract:\n{paper_meta['abstract']}"
+    # Semantic Scholar supplies metadata (title, year); the body text comes from the
+    # PDF's limitations/future-work/conclusion section, falling back to the abstract.
+    body_text = fetch_full_text(arxiv_id, abstract=paper_meta["abstract"])
+    paper_text = f"Title: {paper_meta['title']}\n\n{body_text}"
     prompt = _EXTRACTION_PROMPT.format(paper_text=paper_text)
 
     raw_dict = call_ollama(prompt)

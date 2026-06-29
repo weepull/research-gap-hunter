@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from pipeline.extractor import (
     PaperExtract,
+    _extract_pdf_text,
     _extract_section,
     call_ollama,
     extract_paper,
@@ -157,17 +158,103 @@ def test_extract_section_is_case_insensitive():
     assert "summary" in result.lower()
 
 
-def test_extract_section_caps_at_2000_chars():
-    """The returned section never exceeds 2000 characters."""
-    text = "Limitations " + ("a" * 5000)
+def test_extract_section_caps_at_4000_chars():
+    """The returned section never exceeds 4000 characters."""
+    text = "Limitations " + ("a" * 8000)
     result = _extract_section(text)
-    assert len(result) <= 2000
+    assert len(result) <= 4000
 
 
 def test_extract_section_returns_empty_without_header():
     """No recognised header (or empty input) yields an empty string."""
     assert _extract_section("Just methods and results, nothing relevant here.") == ""
     assert _extract_section("") == ""
+
+
+def test_extract_section_matches_numbered_heading():
+    """A numbered heading like '5. Limitations' on its own line is detected."""
+    text = "Body of paper.\n5. Limitations\nThe method is slow on large inputs.\n"
+    result = _extract_section(text)
+    assert result.lower().startswith("5. limitation")
+    assert "slow on large inputs" in result
+
+
+def test_extract_section_matches_bare_line_heading():
+    """A bare heading at the start of a line (no number) is detected."""
+    text = "Results were strong.\nConclusion\nWe presented a new approach.\n"
+    result = _extract_section(text)
+    assert result.lower().startswith("conclusion")
+    assert "new approach" in result
+
+
+def test_extract_section_ignores_midsentence_keyword():
+    """A mid-sentence mention is ignored in favour of an actual heading elsewhere."""
+    text = (
+        "We address a key limitation of prior work in the introduction.\n"
+        "\n"
+        "Discussion\n"
+        "Here we analyse the results in depth.\n"
+    )
+    result = _extract_section(text)
+    # The mid-sentence 'limitation' is not a heading, so the Discussion heading wins.
+    assert result.lower().startswith("discussion")
+    assert "analyse the results" in result
+
+
+def test_extract_section_heading_priority_over_position():
+    """When several headings exist, higher-priority headers win over earlier ones."""
+    text = (
+        "5. Discussion\n"
+        "We discuss broadly here.\n"
+        "6. Limitations\n"
+        "Memory usage is high.\n"
+    )
+    result = _extract_section(text)
+    # 'limitation' outranks 'discussion' even though Discussion appears first.
+    assert result.lower().startswith("6. limitation")
+    assert "memory usage is high" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# _extract_pdf_text — page limiting
+# ---------------------------------------------------------------------------
+
+
+def test_extract_pdf_text_limits_to_12_pages():
+    """Only the first 12 pages are read; later pages are never extracted."""
+
+    class _Page:
+        def __init__(self, n):
+            self.n = n
+            self.extracted = False
+
+        def extract_text(self):
+            self.extracted = True
+            return f"page{self.n}"
+
+    pages = [_Page(i) for i in range(20)]
+
+    class _PDF:
+        def __init__(self):
+            self.pages = pages
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fake_plumber = MagicMock()
+    fake_plumber.open.return_value = _PDF()
+
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        result = _extract_pdf_text(b"fake bytes")
+
+    assert "page0" in result
+    assert "page11" in result
+    assert "page12" not in result
+    assert pages[11].extracted is True
+    assert pages[12].extracted is False
 
 
 # ---------------------------------------------------------------------------

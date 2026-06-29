@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +31,16 @@ _BROWSER_HEADERS = {
 # Section headers in priority order — the earliest-priority match wins, so the
 # limitations section (most valuable for this project) is preferred when present.
 _SECTION_HEADERS = ("limitation", "future work", "conclusion", "discussion")
-_MAX_SECTION_CHARS = 2000
+_MAX_SECTION_CHARS = 4000
+# Limitation/conclusion sections live in the last ~30% of a paper; 12 pages is
+# enough body to reach them without wading through every appendix.
+_MAX_PDF_PAGES = 12
+# Matches a header that looks like an actual section heading: at the start of a
+# line, optionally preceded by a section number ("5." / "5"), and ending the line.
+_SECTION_HEADING_RE = re.compile(
+    r"(?:^|\n)\s*(?:\d+\.?\s+)?(limitation|future work|conclusion|discussion)s?\s*\n",
+    re.IGNORECASE,
+)
 _EXTRACTION_PROMPT = """\
 You are a scientific paper analyst. Extract structured information from the following paper.
 
@@ -109,27 +119,43 @@ def fetch_paper_text(arxiv_id: str) -> dict:
     raise RuntimeError("fetch_paper_text exhausted retries")
 
 
-def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Extract all text from PDF bytes using pdfplumber. Returns concatenated pages."""
+def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = _MAX_PDF_PAGES) -> str:
+    """Extract text from the first max_pages pages of a PDF using pdfplumber."""
     import pdfplumber  # lazy import so the module loads without pdfplumber present
 
     parts: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
+        for page in pdf.pages[:max_pages]:
             parts.append(page.extract_text() or "")
     return "\n".join(parts)
 
 
 def _extract_section(text: str) -> str:
-    """Return the most relevant section's text, capped at 2000 chars.
+    """Return the most relevant section's text, capped at _MAX_SECTION_CHARS chars.
 
-    Searches case-insensitively for the section headers in _SECTION_HEADERS, in
-    priority order, and returns the text from the first matching header onward.
-    Returns "" when no header is found.
+    First looks for an actual section *heading* (header at the start of a line,
+    optionally numbered like "5. Limitations"), preferring higher-priority headers
+    in _SECTION_HEADERS. If no heading is found, falls back to a plain substring
+    search for the header anywhere in the text. Returns "" when nothing matches.
     """
     if not text:
         return ""
 
+    # Prefer a real section heading. Among all heading matches, pick the one with
+    # the highest-priority header (lowest index), breaking ties by position.
+    best_start: int | None = None
+    best_rank: tuple[int, int] | None = None
+    for match in _SECTION_HEADING_RE.finditer(text):
+        keyword = match.group(1).lower()
+        rank = (_SECTION_HEADERS.index(keyword), match.start())
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_start = match.start()
+
+    if best_start is not None:
+        return text[best_start : best_start + _MAX_SECTION_CHARS].strip()
+
+    # Fallback: substring search anywhere, still in priority order.
     lowered = text.lower()
     for header in _SECTION_HEADERS:
         idx = lowered.find(header)
@@ -142,8 +168,8 @@ def fetch_full_text(arxiv_id: str, abstract: str = "") -> str:
     """Download the arXiv PDF and return its limitations/future-work/conclusion section.
 
     Downloads https://arxiv.org/pdf/{arxiv_id} with a browser-like User-Agent,
-    extracts text via pdfplumber, and returns the most relevant section (max 2000
-    chars). Falls back to the supplied abstract if the PDF cannot be fetched or no
+    extracts text via pdfplumber (first 12 pages), and returns the most relevant
+    section (max 4000 chars). Falls back to the abstract if the PDF cannot be fetched or no
     relevant section is found. Uses exponential backoff, up to 3 attempts.
     """
     url = f"{_ARXIV_PDF_BASE}/{arxiv_id}"

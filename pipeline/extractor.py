@@ -32,9 +32,11 @@ _BROWSER_HEADERS = {
 # limitations section (most valuable for this project) is preferred when present.
 _SECTION_HEADERS = ("limitation", "future work", "conclusion", "discussion")
 _MAX_SECTION_CHARS = 4000
-# Limitation/conclusion sections live in the last ~30% of a paper; 12 pages is
-# enough body to reach them without wading through every appendix.
-_MAX_PDF_PAGES = 12
+# Limitation/conclusion sections live in the last ~30% of a paper; 20 pages
+# gives longer papers enough coverage to reach them.
+_MAX_PDF_PAGES = 20
+# Fraction of a paper (from the end) where limitation/conclusion sections cluster.
+_TAIL_FRACTION = 0.4
 # Matches a header that looks like an actual section heading: at the start of a
 # line, optionally preceded by a section number ("5." / "5"), and ending the line.
 _SECTION_HEADING_RE = re.compile(
@@ -119,15 +121,15 @@ def fetch_paper_text(arxiv_id: str) -> dict:
     raise RuntimeError("fetch_paper_text exhausted retries")
 
 
-def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = _MAX_PDF_PAGES) -> str:
-    """Extract text from the first max_pages pages of a PDF using pdfplumber."""
+def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = _MAX_PDF_PAGES) -> list[str]:
+    """Extract text from the first max_pages pages of a PDF, one string per page."""
     import pdfplumber  # lazy import so the module loads without pdfplumber present
 
-    parts: list[str] = []
+    pages: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages[:max_pages]:
-            parts.append(page.extract_text() or "")
-    return "\n".join(parts)
+            pages.append(page.extract_text() or "")
+    return pages
 
 
 def _extract_section(text: str) -> str:
@@ -164,23 +166,62 @@ def _extract_section(text: str) -> str:
     return ""
 
 
+def _page_section_text(pages: list[str], index: int) -> str:
+    """Return text from the heading on pages[index] through the next page, capped.
+
+    Anchors at the heading match within the page (so leading body text on that
+    page is dropped) and appends the following page, since a section often spills
+    across a page boundary. Truncated to _MAX_SECTION_CHARS.
+    """
+    page_text = pages[index]
+    match = _SECTION_HEADING_RE.search(page_text)
+    start = match.start() if match else 0
+
+    combined = page_text[start:]
+    if index + 1 < len(pages):
+        combined = combined + "\n" + pages[index + 1]
+    return combined[:_MAX_SECTION_CHARS].strip()
+
+
+def _select_section_from_pages(pages: list[str]) -> str:
+    """Find a section heading across pages, preferring the last _TAIL_FRACTION.
+
+    Searches the tail pages (where limitation/conclusion sections cluster) first,
+    then falls back to the head pages. Returns the heading page plus the following
+    page (see _page_section_text), or "" if no page contains a heading.
+    """
+    if not pages:
+        return ""
+
+    total = len(pages)
+    tail_start = int(total * (1 - _TAIL_FRACTION))
+    # Tail pages first, then the head pages as a fallback over the whole document.
+    search_order = list(range(tail_start, total)) + list(range(tail_start))
+
+    for index in search_order:
+        if _SECTION_HEADING_RE.search(pages[index]):
+            return _page_section_text(pages, index)
+    return ""
+
+
 def fetch_full_text(arxiv_id: str, abstract: str = "") -> str:
     """Download the arXiv PDF and return its limitations/future-work/conclusion section.
 
     Downloads https://arxiv.org/pdf/{arxiv_id} with a browser-like User-Agent,
-    extracts text via pdfplumber (first 12 pages), and returns the most relevant
-    section (max 4000 chars). Falls back to the abstract if the PDF cannot be fetched or no
-    relevant section is found. Uses exponential backoff, up to 3 attempts.
+    extracts text page by page via pdfplumber (first 20 pages), and returns the
+    most relevant section (max 4000 chars), searching the last 40% of pages first.
+    Falls back to the abstract if the PDF cannot be fetched or no relevant section
+    is found. Uses exponential backoff, up to 3 attempts.
     """
     url = f"{_ARXIV_PDF_BASE}/{arxiv_id}"
     max_attempts = 3
-    pdf_text = ""
+    pages: list[str] = []
 
     for attempt in range(max_attempts):
         try:
             response = requests.get(url, headers=_BROWSER_HEADERS, timeout=30)
             response.raise_for_status()
-            pdf_text = _extract_pdf_text(response.content)
+            pages = _extract_pdf_text(response.content)
             break
         except Exception as exc:  # noqa: BLE001 — any failure should retry then fall back
             if attempt == max_attempts - 1:
@@ -202,7 +243,7 @@ def fetch_full_text(arxiv_id: str, abstract: str = "") -> str:
             )
             time.sleep(wait)
 
-    section = _extract_section(pdf_text)
+    section = _select_section_from_pages(pages)
     if section:
         return section
 

@@ -12,6 +12,7 @@ from pipeline.extractor import (
     PaperExtract,
     _extract_pdf_text,
     _extract_section,
+    _select_section_from_pages,
     call_ollama,
     extract_paper,
     fetch_full_text,
@@ -216,12 +217,12 @@ def test_extract_section_heading_priority_over_position():
 
 
 # ---------------------------------------------------------------------------
-# _extract_pdf_text — page limiting
+# _extract_pdf_text — page limiting, list-of-pages return
 # ---------------------------------------------------------------------------
 
 
-def test_extract_pdf_text_limits_to_12_pages():
-    """Only the first 12 pages are read; later pages are never extracted."""
+def test_extract_pdf_text_limits_to_20_pages():
+    """Returns a list of page strings, reading only the first 20 pages."""
 
     class _Page:
         def __init__(self, n):
@@ -232,7 +233,7 @@ def test_extract_pdf_text_limits_to_12_pages():
             self.extracted = True
             return f"page{self.n}"
 
-    pages = [_Page(i) for i in range(20)]
+    pages = [_Page(i) for i in range(25)]
 
     class _PDF:
         def __init__(self):
@@ -250,11 +251,72 @@ def test_extract_pdf_text_limits_to_12_pages():
     with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
         result = _extract_pdf_text(b"fake bytes")
 
-    assert "page0" in result
-    assert "page11" in result
-    assert "page12" not in result
-    assert pages[11].extracted is True
-    assert pages[12].extracted is False
+    assert isinstance(result, list)
+    assert len(result) == 20
+    assert result[0] == "page0"
+    assert "page19" in result
+    assert "page20" not in result
+    assert pages[19].extracted is True
+    assert pages[20].extracted is False
+
+
+# ---------------------------------------------------------------------------
+# _select_section_from_pages — page-aware section selection
+# ---------------------------------------------------------------------------
+
+
+def test_select_section_empty_returns_empty():
+    """No pages, or pages with no headings, yields an empty string."""
+    assert _select_section_from_pages([]) == ""
+    assert _select_section_from_pages(["just body text", "more body, no heading"]) == ""
+
+
+def test_select_section_searches_tail_first():
+    """A heading in the last 40% of pages is preferred over one in the head."""
+    pages = [
+        "p0 intro text",
+        "Conclusion\nThis is an early conclusion block.\n",  # head region (page 1 of 5)
+        "p2 body text",
+        "p3 body text",
+        "Limitations\nReal limitations live here.\n",  # tail region (page 4 of 5)
+    ]
+    result = _select_section_from_pages(pages)
+    assert "real limitations live here" in result.lower()
+    assert "early conclusion" not in result.lower()
+
+
+def test_select_section_includes_next_page():
+    """The heading page is returned together with the following page."""
+    pages = [
+        "p0",
+        "p1",
+        "p2",
+        "Limitations\nGPU memory is a problem.",  # tail heading (page 3 of 5)
+        "Continued discussion of memory limits.",  # spillover page
+    ]
+    result = _select_section_from_pages(pages)
+    assert "gpu memory" in result.lower()
+    assert "continued discussion" in result.lower()
+
+
+def test_select_section_falls_back_to_head_pages():
+    """When the tail has no heading, head pages are searched as a fallback."""
+    pages = [
+        "Limitations\nFound only in the head region.\n",
+        "p1 body",
+        "p2 body",
+        "p3 body",
+        "p4 body",
+    ]
+    result = _select_section_from_pages(pages)
+    assert "found only in the head region" in result.lower()
+
+
+def test_select_section_caps_at_4000_chars():
+    """The selected section never exceeds 4000 characters."""
+    pages = ["Limitations\n" + ("a" * 3000), "b" * 3000]
+    result = _select_section_from_pages(pages)
+    assert len(result) <= 4000
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +338,9 @@ def test_fetch_full_text_returns_section(monkeypatch):
 
     monkeypatch.setattr(mod.requests, "get", lambda *a, **k: _make_pdf_response())
     monkeypatch.setattr(
-        mod, "_extract_pdf_text", lambda _b: "Intro. Limitations: the model is slow."
+        mod,
+        "_extract_pdf_text",
+        lambda _b: ["Intro and background.", "Limitations\nThe model is slow on large inputs.\n"],
     )
 
     result = fetch_full_text("2301.00234", abstract="ABSTRACT")
@@ -296,7 +360,7 @@ def test_fetch_full_text_uses_browser_user_agent(monkeypatch):
         return _make_pdf_response()
 
     monkeypatch.setattr(mod.requests, "get", fake_get)
-    monkeypatch.setattr(mod, "_extract_pdf_text", lambda _b: "Limitations: something")
+    monkeypatch.setattr(mod, "_extract_pdf_text", lambda _b: ["Limitations\nsomething here.\n"])
 
     fetch_full_text("2301.00234", abstract="ABS")
 
@@ -321,7 +385,11 @@ def test_fetch_full_text_falls_back_when_no_section(monkeypatch):
     import pipeline.extractor as mod
 
     monkeypatch.setattr(mod.requests, "get", lambda *a, **k: _make_pdf_response())
-    monkeypatch.setattr(mod, "_extract_pdf_text", lambda _b: "Only intro and methods text.")
+    monkeypatch.setattr(
+        mod,
+        "_extract_pdf_text",
+        lambda _b: ["Only intro and methods text.", "More body, nothing relevant."],
+    )
 
     result = fetch_full_text("2301.00234", abstract="ABS FALLBACK")
     assert result == "ABS FALLBACK"
@@ -341,7 +409,9 @@ def test_fetch_full_text_retries_then_succeeds(monkeypatch):
 
     monkeypatch.setattr(mod.requests, "get", fake_get)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(mod, "_extract_pdf_text", lambda _b: "Conclusion: it works well.")
+    monkeypatch.setattr(
+        mod, "_extract_pdf_text", lambda _b: ["Body text page.", "Conclusion\nit works well.\n"]
+    )
 
     result = fetch_full_text("2301.00234", abstract="ABS")
     assert "it works well" in result.lower()

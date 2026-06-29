@@ -222,22 +222,22 @@ def test_extract_section_heading_priority_over_position():
 
 
 def test_extract_pdf_text_limits_to_20_pages():
-    """Returns a list of page strings, reading only the first 20 pages."""
+    """Returns a list of page strings via fitz, reading only the first 20 pages."""
 
     class _Page:
         def __init__(self, n):
             self.n = n
             self.extracted = False
 
-        def extract_text(self):
+        def get_text(self, mode):
             self.extracted = True
             return f"page{self.n}"
 
     pages = [_Page(i) for i in range(25)]
 
-    class _PDF:
-        def __init__(self):
-            self.pages = pages
+    class _Doc:
+        def __iter__(self):
+            return iter(pages)
 
         def __enter__(self):
             return self
@@ -245,10 +245,10 @@ def test_extract_pdf_text_limits_to_20_pages():
         def __exit__(self, *exc):
             return False
 
-    fake_plumber = MagicMock()
-    fake_plumber.open.return_value = _PDF()
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = _Doc()
 
-    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+    with patch.dict(sys.modules, {"fitz": fake_fitz}):
         result = _extract_pdf_text(b"fake bytes")
 
     assert isinstance(result, list)
@@ -258,6 +258,7 @@ def test_extract_pdf_text_limits_to_20_pages():
     assert "page20" not in result
     assert pages[19].extracted is True
     assert pages[20].extracted is False
+    fake_fitz.open.assert_called_once_with(stream=b"fake bytes", filetype="pdf")
 
 
 # ---------------------------------------------------------------------------

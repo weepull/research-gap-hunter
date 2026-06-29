@@ -19,7 +19,7 @@ dependencies = [
     "uvicorn",
     "hdbscan",
     "numpy",
-    "pdfplumber",
+    "pymupdf",
 ]
 
 [project.optional-dependencies]

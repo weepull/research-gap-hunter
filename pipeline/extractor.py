@@ -1,6 +1,5 @@
 """Extracts structured information from arXiv papers via Ollama llama3.1:8b."""
 
-import io
 import json
 import logging
 import os
@@ -122,13 +121,19 @@ def fetch_paper_text(arxiv_id: str) -> dict:
 
 
 def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = _MAX_PDF_PAGES) -> list[str]:
-    """Extract text from the first max_pages pages of a PDF, one string per page."""
-    import pdfplumber  # lazy import so the module loads without pdfplumber present
+    """Extract text from the first max_pages pages of a PDF, one string per page.
+
+    Uses PyMuPDF (fitz): page.get_text("text") preserves proper newlines and
+    handles multi-column layouts better than pdfplumber.
+    """
+    import fitz  # PyMuPDF; lazy import so the module loads without it present
 
     pages: list[str] = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages[:max_pages]:
-            pages.append(page.extract_text() or "")
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        for index, page in enumerate(doc):
+            if index >= max_pages:
+                break
+            pages.append(page.get_text("text") or "")
     return pages
 
 
@@ -208,7 +213,7 @@ def fetch_full_text(arxiv_id: str, abstract: str = "") -> str:
     """Download the arXiv PDF and return its limitations/future-work/conclusion section.
 
     Downloads https://arxiv.org/pdf/{arxiv_id} with a browser-like User-Agent,
-    extracts text page by page via pdfplumber (first 20 pages), and returns the
+    extracts text page by page via PyMuPDF (first 20 pages), and returns the
     most relevant section (max 4000 chars), searching the last 40% of pages first.
     Falls back to the abstract if the PDF cannot be fetched or no relevant section
     is found. Uses exponential backoff, up to 3 attempts.

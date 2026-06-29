@@ -322,7 +322,7 @@ def test_find_similar_limitations_returns_list(monkeypatch):
     """find_similar_limitations should return a list of dicts with required keys."""
     hits = [_make_search_hit("slow training", ["2301.00234"], "computer_vision", 0.92)]
     client = _make_qdrant_mock()
-    client.search.return_value = hits
+    client.query_points.return_value = types.SimpleNamespace(points=hits)
     model = _make_model_mock()
 
     monkeypatch.setattr(search_mod, "get_qdrant_client", lambda: client)
@@ -339,7 +339,7 @@ def test_find_similar_limitations_returns_list(monkeypatch):
 def test_find_similar_limitations_respects_top_k(monkeypatch):
     """find_similar_limitations should pass top_k as limit to Qdrant."""
     client = _make_qdrant_mock()
-    client.search.return_value = []
+    client.query_points.return_value = types.SimpleNamespace(points=[])
     model = _make_model_mock()
 
     monkeypatch.setattr(search_mod, "get_qdrant_client", lambda: client)
@@ -347,7 +347,7 @@ def test_find_similar_limitations_respects_top_k(monkeypatch):
 
     find_similar_limitations("query", top_k=3)
 
-    _, kwargs = client.search.call_args
+    _, kwargs = client.query_points.call_args
     assert kwargs["limit"] == 3
 
 
@@ -356,7 +356,7 @@ def test_find_similar_limitations_applies_domain_filter(monkeypatch):
     from qdrant_client.models import Filter
 
     client = _make_qdrant_mock()
-    client.search.return_value = []
+    client.query_points.return_value = types.SimpleNamespace(points=[])
     model = _make_model_mock()
 
     monkeypatch.setattr(search_mod, "get_qdrant_client", lambda: client)
@@ -364,14 +364,14 @@ def test_find_similar_limitations_applies_domain_filter(monkeypatch):
 
     find_similar_limitations("query", domain="computer_vision")
 
-    _, kwargs = client.search.call_args
+    _, kwargs = client.query_points.call_args
     assert isinstance(kwargs["query_filter"], Filter)
 
 
 def test_find_similar_limitations_returns_empty_list_gracefully(monkeypatch):
     """find_similar_limitations should return [] when Qdrant returns no hits."""
     client = _make_qdrant_mock()
-    client.search.return_value = []
+    client.query_points.return_value = types.SimpleNamespace(points=[])
     model = _make_model_mock()
 
     monkeypatch.setattr(search_mod, "get_qdrant_client", lambda: client)
@@ -386,7 +386,7 @@ def test_find_similar_limitations_score_is_float(monkeypatch):
     """Score field in each result should be a float."""
     hits = [_make_search_hit("memory issue", ["2301.00234"], "computer_vision", 0.87)]
     client = _make_qdrant_mock()
-    client.search.return_value = hits
+    client.query_points.return_value = types.SimpleNamespace(points=hits)
     model = _make_model_mock()
 
     monkeypatch.setattr(search_mod, "get_qdrant_client", lambda: client)
@@ -406,7 +406,7 @@ def test_find_similar_future_directions_returns_list(monkeypatch):
     """find_similar_future_directions should return a list of result dicts."""
     hits = [_make_search_hit("extend to video", ["2303.05499"], "computer_vision", 0.88)]
     client = _make_qdrant_mock()
-    client.search.return_value = hits
+    client.query_points.return_value = types.SimpleNamespace(points=hits)
     model = _make_model_mock()
 
     monkeypatch.setattr(search_mod, "get_qdrant_client", lambda: client)
@@ -422,7 +422,7 @@ def test_find_similar_future_directions_returns_list(monkeypatch):
 def test_find_similar_future_directions_no_domain_filter(monkeypatch):
     """find_similar_future_directions with domain=None should pass no filter to Qdrant."""
     client = _make_qdrant_mock()
-    client.search.return_value = []
+    client.query_points.return_value = types.SimpleNamespace(points=[])
     model = _make_model_mock()
 
     monkeypatch.setattr(search_mod, "get_qdrant_client", lambda: client)
@@ -430,7 +430,7 @@ def test_find_similar_future_directions_no_domain_filter(monkeypatch):
 
     find_similar_future_directions("some query", domain=None)
 
-    _, kwargs = client.search.call_args
+    _, kwargs = client.query_points.call_args
     assert kwargs["query_filter"] is None
 
 
@@ -439,7 +439,7 @@ def test_find_similar_future_directions_with_domain_filter(monkeypatch):
     from qdrant_client.models import Filter
 
     client = _make_qdrant_mock()
-    client.search.return_value = []
+    client.query_points.return_value = types.SimpleNamespace(points=[])
     model = _make_model_mock()
 
     monkeypatch.setattr(search_mod, "get_qdrant_client", lambda: client)
@@ -447,5 +447,5 @@ def test_find_similar_future_directions_with_domain_filter(monkeypatch):
 
     find_similar_future_directions("query", domain="medical_imaging")
 
-    _, kwargs = client.search.call_args
+    _, kwargs = client.query_points.call_args
     assert isinstance(kwargs["query_filter"], Filter)

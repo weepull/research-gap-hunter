@@ -31,9 +31,9 @@ def find_similar_limitations(
         must=[FieldCondition(key="domain", match=MatchValue(value=domain))]
     )
 
-    hits = client.search(
+    results = client.query_points(
         collection_name=_COLLECTION_LIMITATIONS,
-        query_vector=vector,
+        query=vector,
         query_filter=query_filter,
         limit=top_k,
     )
@@ -45,7 +45,7 @@ def find_similar_limitations(
             "domain": hit.payload.get("domain", ""),
             "score": hit.score,
         }
-        for hit in hits
+        for hit in results.points
     ]
 
 
@@ -69,9 +69,9 @@ def find_similar_future_directions(
             must=[FieldCondition(key="domain", match=MatchValue(value=domain))]
         )
 
-    hits = client.search(
+    results = client.query_points(
         collection_name=_COLLECTION_FUTURE_DIRECTIONS,
-        query_vector=vector,
+        query=vector,
         query_filter=query_filter,
         limit=top_k,
     )
@@ -83,5 +83,5 @@ def find_similar_future_directions(
             "domain": hit.payload.get("domain", ""),
             "score": hit.score,
         }
-        for hit in hits
+        for hit in results.points
     ]

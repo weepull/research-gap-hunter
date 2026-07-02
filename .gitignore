@@ -7,3 +7,4 @@ qdrant_storage/
 
 # Runtime extraction failure log
 data/failed_extractions.log
+uv.lock

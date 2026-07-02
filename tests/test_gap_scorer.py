@@ -44,6 +44,19 @@ def _make_qdrant_query_mock(points: list) -> MagicMock:
     return client
 
 
+def _make_qdrant_batch_mock(points_per_index: list[list]) -> MagicMock:
+    """Mock QdrantClient whose query_batch_points() returns one response per input vector.
+
+    points_per_index is index-aligned with the limitations passed to
+    cluster_limitations: entry i holds the Qdrant hits for limitation i's vector.
+    """
+    client = MagicMock()
+    client.query_batch_points.return_value = [
+        types.SimpleNamespace(points=points) for points in points_per_index
+    ]
+    return client
+
+
 def _patch_vector_backends(monkeypatch, client, model) -> None:
     monkeypatch.setattr(gs, "get_qdrant_client", lambda: client)
     monkeypatch.setattr(gs, "load_embedding_model", lambda: model)
@@ -173,17 +186,20 @@ def test_compute_solution_deficit_no_future_directions(monkeypatch):
 def test_compute_solution_deficit_partial_coverage(monkeypatch):
     """One of two reporting papers addressed => deficit 1 - 1/2 = 0.5."""
     cluster = [{"text": "slow training", "paper_ids": ["a", "b"], "years": [2024, 2024]}]
-    # One hit above 0.75, one below — only the first counts.
-    hits = [_make_hit("use adamw", 0.90), _make_hit("unrelated", 0.50)]
+    # One hit above 0.85, one below — only the first counts. The 0.80 hit would have
+    # counted under the old 0.75 threshold but no longer does.
+    hits = [_make_hit("use adamw", 0.90), _make_hit("close but weak", 0.80)]
     client = _make_qdrant_query_mock(hits)
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
     assert compute_solution_deficit_score(cluster) == 0.5
 
 
 def test_compute_solution_deficit_clamped_to_zero(monkeypatch):
-    """More matches than reporting papers clamps the score to 0.0, never negative."""
+    """More matches than reporting papers caps the ratio, never yielding a negative score."""
     cluster = [{"text": "slow training", "paper_ids": ["a"], "years": [2024]}]
-    hits = [_make_hit("fix one", 0.9), _make_hit("fix two", 0.8), _make_hit("fix three", 0.79)]
+    # Three matches all above 0.85 but only one reporting paper: matches cap at 1,
+    # so 1 - 1/1 = 0.0 rather than the negative 1 - 3/1.
+    hits = [_make_hit("fix one", 0.9), _make_hit("fix two", 0.88), _make_hit("fix three", 0.87)]
     client = _make_qdrant_query_mock(hits)
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
     assert compute_solution_deficit_score(cluster) == 0.0
@@ -198,7 +214,7 @@ def test_compute_solution_deficit_no_papers_returns_one():
 def test_compute_solution_deficit_range(monkeypatch):
     """solution_deficit_score stays within [0.0, 1.0]."""
     cluster = [{"text": "x", "paper_ids": ["a", "b", "c"], "years": [2024, 2024, 2024]}]
-    client = _make_qdrant_query_mock([_make_hit("sol", 0.8)])
+    client = _make_qdrant_query_mock([_make_hit("sol", 0.9)])
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
     score = compute_solution_deficit_score(cluster)
     assert 0.0 <= score <= 1.0
@@ -215,13 +231,17 @@ def test_cluster_limitations_empty_input():
 
 
 def test_cluster_limitations_groups_similar(monkeypatch):
-    """Limitations matching each other above 0.82 collapse into one cluster."""
+    """Limitations scoring >= 0.86 against the seed collapse into one cluster."""
     lims = [
-        {"text": "slow convergence", "paper_ids": ["a"], "years": [2024]},
+        # Longest text → picked as seed first.
+        {"text": "convergence is slow on long sequences", "paper_ids": ["a"], "years": [2024]},
         {"text": "training is slow", "paper_ids": ["b"], "years": [2024]},
     ]
-    hits = [_make_hit("slow convergence", 0.95), _make_hit("training is slow", 0.90)]
-    client = _make_qdrant_query_mock(hits)
+    seed_hits = [
+        _make_hit("convergence is slow on long sequences", 1.0),
+        _make_hit("training is slow", 0.90),
+    ]
+    client = _make_qdrant_batch_mock([seed_hits, []])
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
 
     clusters = cluster_limitations(lims)
@@ -231,38 +251,128 @@ def test_cluster_limitations_groups_similar(monkeypatch):
 
 
 def test_cluster_limitations_singletons_below_threshold(monkeypatch):
-    """Limitations whose neighbours all score below 0.82 stay as singletons."""
+    """Limitations whose neighbours all score below 0.86 stay as singleton clusters."""
     lims = [
         {"text": "slow convergence", "paper_ids": ["a"], "years": [2024]},
         {"text": "high memory use", "paper_ids": ["b"], "years": [2024]},
     ]
-    hits = [_make_hit("slow convergence", 0.50), _make_hit("high memory use", 0.40)]
-    client = _make_qdrant_query_mock(hits)
+    hits_0 = [_make_hit("high memory use", 0.40)]
+    hits_1 = [_make_hit("slow convergence", 0.40)]
+    client = _make_qdrant_batch_mock([hits_0, hits_1])
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
 
     clusters = cluster_limitations(lims)
 
+    # Singletons are valid clusters — never discarded.
     assert len(clusters) == 2
     assert all(len(c) == 1 for c in clusters)
+
+
+def test_cluster_limitations_non_transitive(monkeypatch):
+    """A~B and B~C above threshold but A~C below → two clusters, not one.
+
+    Union-find would have chained A→B→C into a single cluster; seed-anchored
+    grouping only admits members similar to the seed itself.
+    """
+    a = {"text": "attention maps degrade badly at high image resolution", "paper_ids": ["p1"], "years": [2024]}
+    b = {"text": "attention degrades at high resolution", "paper_ids": ["p2"], "years": [2024]}
+    c = {"text": "attention is costly", "paper_ids": ["p3"], "years": [2024]}
+    # a is the longest text → first seed. sim(a,b)=0.90, sim(b,c)=0.90, sim(a,c)=0.50.
+    hits_a = [_make_hit(a["text"], 1.0), _make_hit(b["text"], 0.90), _make_hit(c["text"], 0.50)]
+    hits_b = [_make_hit(b["text"], 1.0), _make_hit(a["text"], 0.90), _make_hit(c["text"], 0.90)]
+    hits_c = [_make_hit(c["text"], 1.0), _make_hit(b["text"], 0.90), _make_hit(a["text"], 0.50)]
+    client = _make_qdrant_batch_mock([hits_a, hits_b, hits_c])
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    clusters = cluster_limitations([a, b, c])
+
+    assert len(clusters) == 2
+    by_size = sorted(clusters, key=len, reverse=True)
+    assert {lim["text"] for lim in by_size[0]} == {a["text"], b["text"]}
+    assert {lim["text"] for lim in by_size[1]} == {c["text"]}
+
+
+def test_cluster_limitations_seed_anchored_assignment(monkeypatch):
+    """An assigned limitation never joins a later seed's cluster, even above threshold."""
+    a = {"text": "gradient noise dominates at very small batch sizes", "paper_ids": ["p1"], "years": [2024]}
+    b = {"text": "gradient noise at small batch sizes", "paper_ids": ["p2"], "years": [2024]}
+    d = {"text": "noisy gradients", "paper_ids": ["p3"], "years": [2024]}
+    # Seed order by length: a, b, d. b is similar to both a and d.
+    hits_a = [_make_hit(b["text"], 0.90)]
+    hits_b = [_make_hit(a["text"], 0.90), _make_hit(d["text"], 0.90)]
+    hits_d = [_make_hit(b["text"], 0.90)]  # b already claimed by a's cluster
+    client = _make_qdrant_batch_mock([hits_a, hits_b, hits_d])
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    clusters = cluster_limitations([a, b, d])
+
+    assert len(clusters) == 2
+    by_size = sorted(clusters, key=len, reverse=True)
+    assert {lim["text"] for lim in by_size[0]} == {a["text"], b["text"]}
+    assert {lim["text"] for lim in by_size[1]} == {d["text"]}
+
+
+def test_cluster_limitations_batch_embedding_called_once(monkeypatch):
+    """All texts are embedded in one encode() call and one batched Qdrant query."""
+    lims = [
+        {"text": f"limitation number {i}", "paper_ids": [f"p{i}"], "years": [2024]}
+        for i in range(3)
+    ]
+    client = _make_qdrant_batch_mock([[], [], []])
+    model = _make_model_mock()
+    _patch_vector_backends(monkeypatch, client, model)
+
+    cluster_limitations(lims)
+
+    assert model.encode.call_count == 1
+    encoded_texts = model.encode.call_args.args[0]
+    assert list(encoded_texts) == [lim["text"] for lim in lims]
+    assert model.encode.call_args.kwargs.get("batch_size") == 32
+    assert client.query_batch_points.call_count == 1
+    assert client.query_points.call_count == 0
+
+
+def test_cluster_limitations_sequential_fallback(monkeypatch):
+    """Clients without query_batch_points fall back to one query_points per cached vector."""
+    lims = [
+        {"text": "slow convergence", "paper_ids": ["a"], "years": [2024]},
+        {"text": "high memory use", "paper_ids": ["b"], "years": [2024]},
+    ]
+    client = MagicMock()
+    del client.query_batch_points  # simulate an older client without the batch endpoint
+    client.query_points.side_effect = [
+        types.SimpleNamespace(points=[]),
+        types.SimpleNamespace(points=[]),
+    ]
+    model = _make_model_mock()
+    _patch_vector_backends(monkeypatch, client, model)
+
+    clusters = cluster_limitations(lims)
+
+    assert len(clusters) == 2
+    assert client.query_points.call_count == 2
+    assert model.encode.call_count == 1  # embeddings still batched and reused
 
 
 def test_cluster_limitations_partitions_all_inputs(monkeypatch):
     """Every input limitation appears in exactly one cluster."""
     lims = [
-        {"text": "a", "paper_ids": ["p1"], "years": [2024]},
-        {"text": "b", "paper_ids": ["p2"], "years": [2024]},
-        {"text": "c", "paper_ids": ["p3"], "years": [2024]},
+        {"text": "aaaa", "paper_ids": ["p1"], "years": [2024]},
+        {"text": "bbb", "paper_ids": ["p2"], "years": [2024]},
+        {"text": "cc", "paper_ids": ["p3"], "years": [2024]},
     ]
     # a and b are similar (0.9); c matches nothing.
-    hits = [_make_hit("a", 0.9), _make_hit("b", 0.9), _make_hit("c", 0.3)]
-    client = _make_qdrant_query_mock(hits)
+    hits_a = [_make_hit("bbb", 0.9)]
+    hits_b = [_make_hit("aaaa", 0.9)]
+    hits_c = [_make_hit("bbb", 0.3)]
+    client = _make_qdrant_batch_mock([hits_a, hits_b, hits_c])
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
 
     clusters = cluster_limitations(lims)
 
     total = sum(len(c) for c in clusters)
     assert total == 3
-    assert {lim["text"] for c in clusters for lim in c} == {"a", "b", "c"}
+    assert {lim["text"] for c in clusters for lim in c} == {"aaaa", "bbb", "cc"}
 
 
 # ---------------------------------------------------------------------------

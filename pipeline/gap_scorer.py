@@ -11,7 +11,9 @@ import logging
 import os
 from collections import Counter
 
+import numpy as np
 from pydantic import BaseModel
+from qdrant_client.models import QueryRequest
 
 from graph.populate import get_neo4j_driver
 from vectors.embed import (
@@ -25,9 +27,11 @@ from vectors.embed import (
 logger = logging.getLogger(__name__)
 
 # Similarity threshold for grouping two limitation statements into one cluster.
-_CLUSTER_THRESHOLD = 0.82
+# Specter2-base pairwise similarities on this corpus are compressed (median ~0.82),
+# so the threshold sits well above the median to keep clusters tight.
+_CLUSTER_THRESHOLD = 0.86
 # Similarity threshold for deciding a FutureDirection "addresses" a Limitation.
-_SOLUTION_THRESHOLD = 0.75
+_SOLUTION_THRESHOLD = 0.85
 # Upper bound on how many future-direction hits we inspect per cluster.
 _MAX_FD_RESULTS = 100
 # How much each paper's report counts toward frequency, by extraction tier.
@@ -85,12 +89,19 @@ def get_all_limitations(domain: str = "computer_vision") -> list[dict]:
 def cluster_limitations(
     limitations: list[dict], min_cluster_size: int = 2
 ) -> list[list[dict]]:
-    """Group semantically-similar limitations into clusters using Qdrant similarity.
+    """Group semantically-similar limitations via seed-anchored direct grouping.
 
-    For each limitation we embed its text and search the 'limitations' collection,
-    then union it with any other limitation in the input whose stored embedding
-    scores at or above _CLUSTER_THRESHOLD (0.82). Limitations that match nothing
-    else end up as singleton clusters.
+    All limitation texts are embedded in one batched Specter2 call and their
+    Qdrant neighbours fetched up front (one batched query when the client
+    supports it). Limitations are then visited longest-text-first (a proxy for
+    specificity): each unassigned limitation seeds a new cluster and pulls in
+    only the still-unassigned limitations whose similarity *to the seed itself*
+    is at or above _CLUSTER_THRESHOLD (0.86). Anchoring membership to the seed
+    — rather than to any member, as the previous union-find did — prevents
+    transitive A→B→C chains from collapsing unrelated limitations into one
+    giant cluster. Assigned limitations never join a second cluster.
+
+    Singleton clusters are valid output and are never discarded.
 
     Returns a list of clusters; each cluster is a list of limitation dicts.
     """
@@ -100,45 +111,71 @@ def cluster_limitations(
     client = get_qdrant_client()
     model = load_embedding_model()
 
+    # One batched encode call for every text — never one call per limitation.
+    texts = [lim["text"] for lim in limitations]
+    embeddings = model.encode(
+        texts, batch_size=32, show_progress_bar=False, convert_to_numpy=True
+    )
+    vectors = [np.asarray(vec, dtype=float).tolist() for vec in embeddings]
+
     # Map limitation text -> its index so we can resolve Qdrant hits back to inputs.
     text_to_idx: dict[str, int] = {}
     for i, lim in enumerate(limitations):
         text_to_idx.setdefault(lim["text"], i)
 
-    # Union-find over limitation indices.
-    parent = list(range(len(limitations)))
+    neighbours = _query_neighbours(client, vectors, limit=len(limitations))
 
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+    # Longest text first: more specific statements make better cluster seeds.
+    seed_order = sorted(
+        range(len(limitations)), key=lambda i: len(texts[i]), reverse=True
+    )
 
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    for i, lim in enumerate(limitations):
-        vector = _embed_texts(model, [lim["text"]])[0]
-        results = client.query_points(
-            collection_name=_COLLECTION_LIMITATIONS,
-            query=vector,
-            limit=len(limitations),
-        )
-        for hit in results.points:
+    assigned = [False] * len(limitations)
+    clusters: list[list[dict]] = []
+    for seed in seed_order:
+        if assigned[seed]:
+            continue
+        assigned[seed] = True
+        member_idxs = [seed]
+        for hit in neighbours[seed]:
+            # hit.score is cosine similarity against the seed's own vector, so
+            # this threshold anchors membership to the seed, not to other members.
             if hit.score < _CLUSTER_THRESHOLD:
                 continue
-            hit_text = hit.payload.get("limitation_text", "")
-            j = text_to_idx.get(hit_text)
-            if j is not None and j != i:
-                union(i, j)
+            j = text_to_idx.get(hit.payload.get("limitation_text", ""))
+            if j is None or assigned[j]:
+                continue
+            assigned[j] = True
+            member_idxs.append(j)
+        clusters.append([limitations[k] for k in member_idxs])
 
-    groups: dict[int, list[dict]] = {}
-    for i in range(len(limitations)):
-        groups.setdefault(find(i), []).append(limitations[i])
+    return clusters
 
-    return list(groups.values())
+
+def _query_neighbours(client, vectors: list[list[float]], limit: int) -> list[list]:
+    """Fetch each vector's neighbours from the 'limitations' collection.
+
+    Uses Qdrant's batch query endpoint (a single round trip) when the client
+    provides it; otherwise falls back to sequential query_points calls reusing
+    the cached embeddings. Returns hit lists index-aligned with `vectors`.
+    """
+    batch_query = getattr(client, "query_batch_points", None)
+    if callable(batch_query):
+        requests = [
+            QueryRequest(query=vector, limit=limit, with_payload=True)
+            for vector in vectors
+        ]
+        responses = batch_query(
+            collection_name=_COLLECTION_LIMITATIONS, requests=requests
+        )
+        return [response.points for response in responses]
+
+    return [
+        client.query_points(
+            collection_name=_COLLECTION_LIMITATIONS, query=vector, limit=limit
+        ).points
+        for vector in vectors
+    ]
 
 
 def compute_frequency_score(cluster: list[dict], total_papers: int) -> float:
@@ -194,8 +231,10 @@ def compute_solution_deficit_score(cluster: list[dict]) -> float:
 
     solution_deficit = 1 - (future_directions_addressing / papers_reporting), where
     an addressing future direction is any FutureDirection whose embedding scores at
-    or above _SOLUTION_THRESHOLD (0.75) against the cluster's centroid text. Capped
-    to [0.0, 1.0]. A cluster nobody has proposed solutions for scores near 1.0.
+    or above _SOLUTION_THRESHOLD (0.85) against the cluster's centroid text. Matches
+    are capped at papers_reporting so the ratio never exceeds 1 and the score never
+    goes negative. Capped to [0.0, 1.0]. A cluster nobody has proposed solutions for
+    scores near 1.0.
     """
     if not cluster:
         return 1.0
@@ -208,7 +247,7 @@ def compute_solution_deficit_score(cluster: list[dict]) -> float:
         return 1.0
 
     centroid_text = _cluster_centroid_text(cluster)
-    matches = len(_find_addressing_solutions(centroid_text))
+    matches = min(len(_find_addressing_solutions(centroid_text)), papers_reporting)
 
     score = 1.0 - (matches / papers_reporting)
     return max(0.0, min(1.0, score))

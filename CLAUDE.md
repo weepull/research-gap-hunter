@@ -140,7 +140,7 @@ class GapResult(BaseModel):
 class CrossDomainMatch(BaseModel):
     source_gap: str              # unresolved limitation in source domain
     target_solution: str         # future_direction from target domain
-    similarity_score: float      # cosine similarity, threshold 0.78
+    similarity_score: float      # cosine similarity, threshold 0.84 (Specter2 sims are compressed; 0.78 accepted ~50% of pairs)
     source_papers: list[str]
     target_papers: list[str]
     source_domain: str

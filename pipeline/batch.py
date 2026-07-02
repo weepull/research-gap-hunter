@@ -164,5 +164,8 @@ def get_paper(arxiv_id: str) -> dict | None:
     row = dict(rows[0])
     for field in _LIST_FIELDS:
         if isinstance(row.get(field), str):
-            row[field] = json.loads(row[field])
+            try:
+                row[field] = json.loads(row[field])
+            except (json.JSONDecodeError, TypeError):
+                row[field] = []
     return row

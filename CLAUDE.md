@@ -270,3 +270,73 @@ Test paper IDs to validate against:
 - Paper volume: 50 papers (Phase 1), 500 papers (Phase 3 scale-up)
 - Frontend: 3 pages only — gaps, search, cross-domain
 - No user auth, no cloud deployment of backend — demo mode only
+
+## Known Pitfalls — Do Not Repeat
+
+### PDF Extraction
+- pdfplumber fails on two-column academic PDFs — use PyMuPDF (fitz) only, never switch back
+- Never search for section headings in joined full-text string — always use page-by-page _select_section_from_pages()
+- Section heading regex must match at line start, not mid-sentence — _SECTION_HEADING_RE handles this
+- Search last 40% of pages first (tail_start = int(total * 0.6)) — limitations sections are always near the end
+- Cap at 20 pages (_MAX_PDF_PAGES = 20), 4000 chars per section (_MAX_SECTION_CHARS = 4000)
+- Always use browser-like User-Agent header for arXiv PDF requests to avoid 403s
+- Pre-2022 papers often have no limitations section — returning [] is correct behaviour, not a bug
+- MuPDF "cannot find ExtGState resource" errors are harmless — PyMuPDF still extracts text, ignore these warnings
+- Papers with corrupted PDF resources still get processed via fallback — do not add special handling
+
+### SQLite Serialisation
+- NEVER use str(list) to store list fields — produces Python repr format that json.loads cannot parse
+- ALWAYS use json.dumps(v) for list fields when writing to SQLite
+- ALWAYS use json.loads() with try/except fallback to [] when reading from SQLite
+- New fields added to PaperExtract need manual db['papers'].add_column() on existing DBs — SQLite does not auto-migrate
+- The extraction_tier column was added manually after initial schema creation — always check for missing columns before ingestion
+
+### Neo4j
+- Instance name (rgh-mvp) is NOT the database name — actual database name is 'neo4j', set NEO4J_DATABASE=neo4j in .env
+- nodes_created=0 on re-runs is normal — MERGE finds existing nodes, only counts new ones
+- Always verify green Active status in Neo4j Desktop before running any pipeline commands
+- Constraint "already exists" INFO logs are normal and harmless — not errors
+
+### Semantic Scholar API
+- Free tier = 1 req/sec — always time.sleep(2) between individual paper fetches, time.sleep(5) between batch queries
+- API returns abstracts only — full paper text must come from arXiv PDF via fetch_full_text()
+- 429 errors after 3 retries log to data/failed_extractions.log and continue — correct behaviour, do not crash
+- data/failed_extractions.log must stay in .gitignore — never commit runtime logs
+- 3 failed papers per batch of 20 is normal — do not retry immediately, wait 60s for rate limit reset
+
+### HuggingFace / Specter2
+- Model re-downloads on every process unless cache_dir is explicitly set in model_kwargs, processor_kwargs, config_kwargs
+- Do not set HF_HUB_OFFLINE=1 — breaks fresh installs on new machines
+- Deprecation warnings from sentence-transformers are harmless — do not attempt to fix them
+- "No modules.json found" warning is harmless — Specter2 base does not have a modules.json
+
+### Gap Scorer
+- Only 1 gap returned at small corpus size is correct — frequency scores are low when denominator is small
+- Never lower scoring weights to make demo look better — the formula (0.40/0.35/0.25) is core IP
+- Need minimum ~50 papers with explicit limitations for meaningful ranked output
+- solution_deficit_score near 0 with fewer than 20 papers is expected — future_directions too sparse to be selective
+- Tier weights: explicit=1.0, conclusion=0.75, inferred=0.5 — never change these without updating tests
+
+### Ollama
+- Must be running before any extract_paper() call — ConnectionError otherwise
+- "address already in use" on ollama serve means it is already running in background — not an error, proceed normally
+- Cold start 500 error on first request is handled by retry logic — not a bug
+- Always keep ollama serve running in a dedicated terminal tab throughout the session
+
+### Ingestion Script
+- Always use the direct arXiv ID ingestion script (not ingest_from_query) for curated paper lists — more reliable
+- Always check existing papers first to avoid re-ingesting: existing = set(r['arxiv_id'] for r in db['papers'].rows)
+- Always serialize with json.dumps inline: row[k] = json.dumps(v) for list fields before upsert
+
+### Services Startup Order (Every Session)
+1. Ollama — run ollama serve (ignore "address already in use" — means already running)
+2. Docker Desktop — open app, wait for whale icon to stop animating
+3. Qdrant — docker run -p 6333:6333 -v ~/research-gap-hunter/qdrant_storage:/qdrant/storage qdrant/qdrant
+4. Neo4j Desktop — open app, start rgh-mvp instance, wait for green Active status
+5. Working terminal — cd research-gap-hunter
+
+### Git Hygiene
+- Always commit before every Claude Code session — clean working tree = safe rollback
+- Runtime artifacts that must stay in .gitignore: data/failed_extractions.log, data/papers.db, qdrant_storage/
+- Never commit with misleading messages — Opus caught a commit that said "PDF extraction working" but only contained a failure log
+- data/ directory should only have .gitkeep tracked, never actual database files

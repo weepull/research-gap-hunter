@@ -58,7 +58,7 @@ no preamble."""
 class CrossDomainMatch(BaseModel):
     source_gap: str              # unresolved limitation in source domain
     target_solution: str         # future_direction from target domain
-    similarity_score: float      # cosine similarity, threshold 0.84
+    similarity_score: float      # cosine similarity; cross-domain default 0.82 (lower than clustering 0.86 — cross-domain vocab divergence compresses scores)
     source_papers: list[str]
     target_papers: list[str]
     source_domain: str
@@ -148,9 +148,12 @@ def find_cross_domain_matches(
     source_domain: str = "computer_vision",
     target_domain: str = "medical_imaging",
     top_n: int = 10,
-    # 0.84: Specter2 pairwise similarities on this corpus are compressed (median
-    # ~0.82), so 0.78 accepted ~half of all pairs; discrimination starts ~0.84.
-    similarity_threshold: float = 0.84,
+    # Cross-domain threshold is intentionally lower than the within-domain cluster
+    # threshold (0.86): different field vocabularies (CV "tracking" vs MI
+    # "registration") naturally compress Specter2 scores, so the best achievable
+    # cross-domain pairs peak at ~0.83-0.84 even when semantically equivalent.
+    # 0.82 is the right operating point here; 0.84 only passes within-domain pairs.
+    similarity_threshold: float = 0.82,
 ) -> list[CrossDomainMatch]:
     """Match unresolved source-domain gaps to target-domain future directions.
 

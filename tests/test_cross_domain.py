@@ -214,8 +214,8 @@ def test_find_cross_domain_matches_applies_domain_filter_and_threshold(monkeypat
     monkeypatch.setattr(cd, "get_unresolved_gaps", lambda domain: [gap])
     hits = [
         _make_fd_hit("uncertainty quantification for segmentation", 0.85, ["mi1", "mi2"]),
-        # 0.80 would have passed the old 0.78 threshold but fails the 0.84 default.
-        _make_fd_hit("too weak a match", 0.80),
+        # 0.79 fails the 0.82 cross-domain threshold.
+        _make_fd_hit("too weak a match", 0.79),
     ]
     client = MagicMock()
     client.query_points.return_value = types.SimpleNamespace(points=hits)
@@ -230,7 +230,7 @@ def test_find_cross_domain_matches_applies_domain_filter_and_threshold(monkeypat
     condition = kwargs["query_filter"].must[0]
     assert condition.key == "domain"
     assert condition.match.value == "medical_imaging"
-    # Only the >= 0.84 hit survives, fully populated.
+    # Only the >= 0.82 cross-domain threshold hit survives, fully populated.
     assert len(matches) == 1
     match = matches[0]
     assert isinstance(match, CrossDomainMatch)

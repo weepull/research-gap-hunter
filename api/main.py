@@ -25,7 +25,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 from graph.populate import _upsert_paper_counting, get_neo4j_driver  # noqa: E402
 from pipeline.batch import _get_db, _log_failure, _paper_to_row, get_paper  # noqa: E402
-from pipeline.cross_domain import CrossDomainMatch, find_cross_domain_matches  # noqa: E402
+from pipeline.cross_domain import (  # noqa: E402
+    CrossDomainMatch,
+    explain_match,
+    find_cross_domain_matches,
+)
 from pipeline.extractor import extract_paper  # noqa: E402
 from pipeline.gap_scorer import GapResult, score_gaps  # noqa: E402
 from vectors.embed import (  # noqa: E402
@@ -70,6 +74,10 @@ class IngestResponse(BaseModel):
 class ErrorResponse(BaseModel):
     status: str
     message: str
+
+
+class ExplainResponse(BaseModel):
+    explanation: str
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +233,33 @@ def ingest_paper(body: IngestRequest) -> IngestResponse:
     except Exception as exc:  # noqa: BLE001
         logger.error("Ingest failed for %s: %s", arxiv_id, exc)
         _log_failure(arxiv_id, str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/explain", response_model=ExplainResponse)
+def explain_connection(
+    source_gap: str = Query(..., min_length=1),
+    target_solution: str = Query(..., min_length=1),
+    source: str = Query(default="computer_vision"),
+    target: str = Query(default="medical_imaging"),
+) -> ExplainResponse:
+    """Generate an Ollama explanation for a cross-domain gap↔solution pairing.
+
+    Calls llama3.1:8b — expect a few seconds of latency per request.
+    """
+    match = CrossDomainMatch(
+        source_gap=source_gap,
+        target_solution=target_solution,
+        similarity_score=0.0,  # not used by the explanation prompt
+        source_papers=[],
+        target_papers=[],
+        source_domain=source,
+        target_domain=target,
+    )
+    try:
+        return ExplainResponse(explanation=explain_match(match))
+    except Exception as exc:  # noqa: BLE001 — Ollama may be down
+        logger.error("Explain failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

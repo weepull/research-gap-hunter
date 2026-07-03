@@ -380,6 +380,67 @@ def test_ingest_missing_body_returns_422(client):
 
 
 # ---------------------------------------------------------------------------
+# /explain
+# ---------------------------------------------------------------------------
+
+
+def test_explain_returns_explanation(client, monkeypatch):
+    """GET /explain builds a CrossDomainMatch and returns the Ollama explanation."""
+    captured = {}
+
+    def fake_explain(match):
+        captured["source_gap"] = match.source_gap
+        captured["target_solution"] = match.target_solution
+        captured["source_domain"] = match.source_domain
+        captured["target_domain"] = match.target_domain
+        return "Both domains share a registration problem."
+
+    monkeypatch.setattr("api.main.explain_match", fake_explain)
+
+    r = client.get(
+        "/explain",
+        params={
+            "source_gap": "loses track of objects",
+            "target_solution": "robust registration techniques",
+            "source": "computer_vision",
+            "target": "medical_imaging",
+        },
+    )
+
+    assert r.status_code == 200
+    assert r.json() == {"explanation": "Both domains share a registration problem."}
+    assert captured == {
+        "source_gap": "loses track of objects",
+        "target_solution": "robust registration techniques",
+        "source_domain": "computer_vision",
+        "target_domain": "medical_imaging",
+    }
+
+
+def test_explain_missing_params_returns_422(client):
+    """Omitting source_gap or target_solution yields 422."""
+    assert client.get("/explain").status_code == 422
+    assert client.get("/explain", params={"source_gap": "x"}).status_code == 422
+
+
+def test_explain_ollama_failure_returns_500(monkeypatch):
+    """If Ollama is unreachable, /explain returns HTTP 500."""
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
+    monkeypatch.setattr(
+        "api.main.explain_match",
+        lambda match: (_ for _ in ()).throw(ConnectionError("ollama down")),
+    )
+
+    from api.main import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.get("/explain", params={"source_gap": "a", "target_solution": "b"})
+
+    assert r.status_code == 500
+
+
+# ---------------------------------------------------------------------------
 # /paper/{arxiv_id}
 # ---------------------------------------------------------------------------
 

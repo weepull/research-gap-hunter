@@ -145,7 +145,7 @@ The third dimension is the most novel: cross-domain hypothesis generation. Spect
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/your-username/research-gap-hunter.git
+git clone https://github.com/weepull/research-gap-hunter.git
 cd research-gap-hunter
 
 python3.11 -m venv .venv

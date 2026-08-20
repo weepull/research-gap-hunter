@@ -10,6 +10,7 @@ each cluster with the weighted formula from CLAUDE.md:
 import logging
 import os
 from collections import Counter
+from datetime import datetime, timezone
 
 import numpy as np
 from pydantic import BaseModel
@@ -204,12 +205,20 @@ def compute_frequency_score(cluster: list[dict], total_papers: int) -> float:
     return min(weighted_sum / total_papers, 1.0)
 
 
-def compute_recency_score(cluster: list[dict], current_year: int = 2024) -> float:
+def compute_recency_score(cluster: list[dict], current_year: int | None = None) -> float:
     """Ratio of last-2-year papers vs all-time papers reporting this cluster.
 
-    "Last 2 years" means year >= current_year - 1 (e.g. 2023 and 2024 for a 2024
+    "Last 2 years" means year >= current_year - 1 (e.g. 2024 and 2025 for a 2025
     baseline). Returns 0.5 when no year data is available for any paper.
+
+    current_year is the baseline the window hangs off. score_gaps() always passes
+    the corpus-derived reference year explicitly — see _corpus_reference_year for
+    why the corpus, not the wall clock, defines "now". The wall-clock fallback
+    here only applies to standalone calls that supply no baseline of their own.
     """
+    if current_year is None:
+        current_year = _current_year()
+
     paper_year: dict[str, int] = {}
     for lim in cluster:
         paper_ids = lim.get("paper_ids", [])
@@ -267,10 +276,15 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
     total_papers = _count_papers_in_domain(domain)
     clusters = cluster_limitations(limitations)
 
+    # One corpus-wide baseline for every cluster. Deriving it per-cluster would be
+    # wrong: a cluster's own newest paper would always fall inside its own window,
+    # so an all-2019 cluster would score as recent as an all-2025 one.
+    reference_year = _corpus_reference_year(limitations)
+
     results: list[GapResult] = []
     for cluster in clusters:
         frequency = compute_frequency_score(cluster, total_papers)
-        recency = compute_recency_score(cluster)
+        recency = compute_recency_score(cluster, current_year=reference_year)
         deficit = compute_solution_deficit_score(cluster)
 
         score = (0.40 * frequency) + (0.35 * recency) + (0.25 * deficit)
@@ -300,6 +314,46 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _current_year() -> int:
+    """The wall-clock year. Isolated so tests can pin 'today' without patching time."""
+    return datetime.now(timezone.utc).year
+
+
+def _corpus_reference_year(limitations: list[dict]) -> int:
+    """The baseline year recency is measured against: the corpus's leading edge.
+
+    Recency is a *relative* discriminator carrying 0.35 of the composite score, so
+    it is anchored to the newest publication year actually present in the corpus
+    rather than to the wall clock. Two reasons:
+
+    1. The term keeps discriminating. Ingestion always lags publication, and the
+       gap only widens as a corpus sits. Measuring against the calendar means an
+       ageing corpus eventually has *no* papers inside the window, every cluster
+       scores 0.0, and 35% of the formula silently becomes dead weight that
+       separates nothing. Anchoring to the data guarantees a non-empty numerator.
+    2. Scoring stays deterministic. score_gaps() is a ranking function; the same
+       corpus must rank the same way whenever it runs. A wall-clock baseline makes
+       rankings drift with no data change and makes a stored GapResult
+       incomparable to a freshly computed one.
+
+    The one thing the corpus cannot self-correct is future-dated metadata: a
+    single paper mislabelled 2030 would push the window past every real paper and
+    zero out the term for everything. The result is therefore clamped to the
+    current year. For any sane corpus the clamp never binds, so determinism holds.
+
+    Falls back to the current year when no usable year data exists at all.
+    """
+    years = [
+        yr
+        for lim in limitations
+        for yr in lim.get("years", [])
+        if isinstance(yr, int) and yr > 0
+    ]
+    if not years:
+        return _current_year()
+    return min(max(years), _current_year())
 
 
 def _cluster_centroid_text(cluster: list[dict]) -> str:

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 import pipeline.gap_scorer as gs
 from pipeline.gap_scorer import (
     GapResult,
+    _corpus_reference_year,
     cluster_limitations,
     compute_frequency_score,
     compute_recency_score,
@@ -168,6 +169,151 @@ def test_compute_recency_score_range():
     cluster = [{"text": "x", "paper_ids": ["a", "b", "c"], "years": [2024, 2023, 2010]}]
     score = compute_recency_score(cluster, current_year=2024)
     assert 0.0 <= score <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# recency baseline: no hardcoded "now"
+# ---------------------------------------------------------------------------
+
+
+def test_compute_recency_score_window_slides_with_current_year():
+    """The 2-year window tracks current_year instead of a fixed baseline.
+
+    Regression guard for the hardcoded current_year=2024 default. The same cluster
+    is scored against an advancing baseline; each step should drop the papers that
+    have fallen out of the window. A reintroduced 2024 constant freezes this
+    sequence and the assertion fails.
+    """
+    cluster = [
+        {"text": "x", "paper_ids": ["a", "b", "c", "d"], "years": [2022, 2023, 2024, 2025]}
+    ]
+    # The window is an open-ended lower bound: year >= current_year - 1. Advancing
+    # the baseline drops one paper at a time off the old end.
+    assert compute_recency_score(cluster, current_year=2023) == 1.0  # >=2022: all 4
+    assert compute_recency_score(cluster, current_year=2024) == 0.75  # >=2023: 3
+    assert compute_recency_score(cluster, current_year=2025) == 0.5  # >=2024: 2
+    assert compute_recency_score(cluster, current_year=2026) == 0.25  # >=2025: 1
+    assert compute_recency_score(cluster, current_year=2027) == 0.0  # >=2026: none
+
+
+@pytest.mark.parametrize("year", [2015, 2019, 2024, 2025, 2031])
+def test_compute_recency_score_default_baseline_has_no_privileged_year(monkeypatch, year):
+    """The *default* baseline tracks the clock rather than a frozen constant.
+
+    This exercises the no-argument path deliberately. Passing current_year
+    explicitly would prove nothing: the old hardcoded implementation honoured an
+    explicit argument too, so only the default can expose a frozen year. 2024 is
+    one parameter among several so it cannot pass by coincidence.
+    """
+    monkeypatch.setattr(gs, "_current_year", lambda: year)
+
+    at_baseline = [{"text": "x", "paper_ids": ["a"], "years": [year]}]
+    assert compute_recency_score(at_baseline) == 1.0
+
+    well_before = [{"text": "x", "paper_ids": ["a"], "years": [year - 5]}]
+    assert compute_recency_score(well_before) == 0.0
+
+
+def test_compute_recency_score_defaults_to_wall_clock(monkeypatch):
+    """With no baseline supplied, the fallback is the real current year, not 2024."""
+    monkeypatch.setattr(gs, "_current_year", lambda: 2031)
+    cluster = [{"text": "x", "paper_ids": ["a", "b"], "years": [2030, 2024]}]
+    # only the 2030 paper is inside a 2031 window
+    assert compute_recency_score(cluster) == 0.5
+
+
+# ---------------------------------------------------------------------------
+# _corpus_reference_year
+# ---------------------------------------------------------------------------
+
+
+def test_corpus_reference_year_uses_newest_paper(monkeypatch):
+    """The baseline is the corpus's leading edge, not the wall clock."""
+    monkeypatch.setattr(gs, "_current_year", lambda: 2031)
+    limitations = [
+        {"text": "x", "paper_ids": ["a"], "years": [2019, 2023]},
+        {"text": "y", "paper_ids": ["b"], "years": [2025]},
+    ]
+    assert _corpus_reference_year(limitations) == 2025
+
+
+def test_corpus_reference_year_clamps_future_dated_metadata(monkeypatch):
+    """A mislabelled future year cannot push the window past every real paper."""
+    monkeypatch.setattr(gs, "_current_year", lambda: 2026)
+    limitations = [{"text": "x", "paper_ids": ["a", "b"], "years": [2025, 2099]}]
+    assert _corpus_reference_year(limitations) == 2026
+
+
+def test_corpus_reference_year_ignores_missing_years(monkeypatch):
+    """None / 0 year entries are skipped rather than treated as year zero."""
+    monkeypatch.setattr(gs, "_current_year", lambda: 2031)
+    limitations = [{"text": "x", "paper_ids": ["a", "b", "c"], "years": [None, 0, 2023]}]
+    assert _corpus_reference_year(limitations) == 2023
+
+
+def test_corpus_reference_year_falls_back_when_no_year_data(monkeypatch):
+    """With no usable years at all, fall back to the current year."""
+    monkeypatch.setattr(gs, "_current_year", lambda: 2031)
+    assert _corpus_reference_year([]) == 2031
+    assert _corpus_reference_year([{"text": "x", "paper_ids": ["a"], "years": []}]) == 2031
+
+
+def test_score_gaps_anchors_recency_to_corpus_not_wall_clock(monkeypatch):
+    """score_gaps derives the baseline from the corpus so an ageing corpus still ranks.
+
+    The corpus tops out at 2025 while 'today' is 2031. Against the wall clock every
+    paper would be stale and recency would collapse to 0.0 for every cluster,
+    nulling 35% of the formula. Anchored to the corpus, the 2024/2025 cluster still
+    scores as recent and stays separable from the 2019 one.
+    """
+    monkeypatch.setattr(gs, "_current_year", lambda: 2031)
+    # Corpus tops out at 2025, so the window is year >= 2024. The 2023 cluster is
+    # the discriminating case: it is inside a hardcoded-2024 window (>= 2023) but
+    # outside the corpus-anchored one, so a frozen constant fails on it. The 2025
+    # cluster catches the opposite error — a wall-clock baseline would zero it.
+    recent = [{"text": "recent gap", "paper_ids": ["a"], "years": [2025]}]
+    mid = [{"text": "mid gap", "paper_ids": ["b"], "years": [2023]}]
+    stale = [{"text": "stale gap", "paper_ids": ["c"], "years": [2019]}]
+
+    monkeypatch.setattr(
+        gs,
+        "get_all_limitations",
+        lambda domain="computer_vision": recent + mid + stale,
+    )
+    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
+    monkeypatch.setattr(
+        gs, "cluster_limitations", lambda lims, min_cluster_size=2: [recent, mid, stale]
+    )
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: [])
+
+    results = {r.gap_description: r for r in score_gaps()}
+
+    assert results["recent gap"].recency_score == 1.0  # fails under a wall clock
+    assert results["mid gap"].recency_score == 0.0  # fails under a frozen 2024
+    assert results["stale gap"].recency_score == 0.0
+
+
+def test_score_gaps_recency_baseline_is_corpus_wide_not_per_cluster(monkeypatch):
+    """An old cluster is not rescued by being measured against its own newest paper."""
+    monkeypatch.setattr(gs, "_current_year", lambda: 2031)
+    recent = [{"text": "recent gap", "paper_ids": ["a"], "years": [2025]}]
+    stale = [{"text": "stale gap", "paper_ids": ["b", "c"], "years": [2018, 2019]}]
+
+    monkeypatch.setattr(
+        gs, "get_all_limitations", lambda domain="computer_vision": recent + stale
+    )
+    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
+    monkeypatch.setattr(
+        gs, "cluster_limitations", lambda lims, min_cluster_size=2: [recent, stale]
+    )
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: [])
+
+    results = {r.gap_description: r for r in score_gaps()}
+
+    # Per-cluster baselines would give the stale cluster 2019 as its own "now"
+    # and score it 1.0. Corpus-wide (2025) correctly scores it 0.0.
+    assert results["stale gap"].recency_score == 0.0
+    assert results["recent gap"].recency_score == 1.0
 
 
 # ---------------------------------------------------------------------------

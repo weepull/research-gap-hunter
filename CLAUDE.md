@@ -293,8 +293,10 @@ a shared store (Redis); revisit if deployment happens.
 
 - ADVISOR = Fable 5 (external chat, relayed by Vipul). Owns architecture,
   algorithm/threshold design, and any stack decision.
-- EXECUTOR = Claude Code (Sonnet). Owns implementation, tests, and mechanical
-  fixes. Does not make architectural calls on its own.
+- EXECUTOR = Claude Code, whichever model the session happens to run on. Owns
+  implementation, tests, and mechanical fixes. Does not make architectural calls
+  on its own. The constraint is the role, not the model — a more capable
+  executor model does not earn it architectural authority.
 - Executor stops and raises an ADVISOR QUERY (context, decision needed,
   options, optional lean) instead of proceeding whenever a change touches:
   gap-scoring weights/formula, clustering approach, cross-domain threshold
@@ -312,7 +314,7 @@ a shared store (Redis); revisit if deployment happens.
 
 1. **One module per session.** Never work on multiple files across layers simultaneously.
 2. **Always read this CLAUDE.md at the start of every session** before writing any code.
-3. **Never change the stack unilaterally.** No swapping Neo4j for another DB, no changing Qdrant collection names, no switching embedding models, no changing the clustering algorithm or similarity thresholds — these go through the advisor–executor protocol (Fable 5 decides, Sonnet implements) and get logged here with rationale once decided. An external review recommending a stack change is input to that decision, not authorization to make it.
+3. **Never change the stack unilaterally.** No swapping Neo4j for another DB, no changing Qdrant collection names, no switching embedding models, no changing the clustering algorithm or similarity thresholds — these go through the advisor–executor protocol (the advisor decides, the executor implements) and get logged here with rationale once decided. An external review recommending a stack change is input to that decision, not authorization to make it.
 4. **Always write pytest tests** for every function you implement.
 5. **Never hardcode secrets.** All credentials come from `.env` via `python-dotenv`.
 6. **Validate Pydantic models strictly.** If LLM output fails validation, log the failure to `data/failed_extractions.log` and continue — do not crash.

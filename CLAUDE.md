@@ -6,7 +6,7 @@ Research Gap Hunter is an AI-powered scientific discovery platform. It does NOT 
 
 The system ingests academic papers, extracts structured information using a local LLM, builds a knowledge graph, embeds limitation statements as vectors, and runs a discovery engine that surfaces ranked research gaps and cross-domain hypothesis matches.
 
-MVP domain: Computer Vision (CV papers only for Phase 1–4)
+MVP domain: Computer Vision, extended to Computer Vision ↔ Medical Imaging for cross-domain matching.
 
 ---
 
@@ -27,7 +27,7 @@ Neo4j rgh-mvp → nodes + relationships
 Specter2 embeddings → Qdrant collection: "limitations"
         ↓
 [Discovery: pipeline/gap_scorer.py]
-Gap scoring + HDBSCAN clustering → ranked GapResult list
+Gap scoring + seed-anchored union-find clustering → ranked GapResult list
         ↓
 [Cross-domain: pipeline/cross_domain.py]
 CV ↔ Medical Imaging structural matching
@@ -174,7 +174,7 @@ class CrossDomainMatch(BaseModel):
 - Distance: Cosine
 - Payload fields: `paper_id`, `limitation_text`, `year`, `domain`, `cluster_id`
 
-### `future_directions` (Phase 4+)
+### `future_directions`
 - Same structure as limitations
 - Used for cross-domain matching
 
@@ -190,7 +190,34 @@ score = (0.40 × frequency_score) + (0.35 × recency_score) + (0.25 × solution_
 - `recency_score` = papers_last_2yr_reporting / papers_all_time_reporting
 - `solution_deficit_score` = 1 - (future_directions_addressing / papers_reporting)
 
-HDBSCAN clusters similar limitation statements before scoring. Cluster centroid text is used as `gap_description`.
+Seed-anchored union-find clustering groups similar limitation statements before scoring (HDBSCAN was the original design but was replaced — do not reintroduce it without an explicit advisor decision). Cluster representative text is used as `gap_description`.
+
+### Recency baseline — decided 2026-08-20
+
+`recency_score` counts papers with `year >= baseline - 1`. The baseline is the
+**newest publication year present in the corpus**, computed once per `score_gaps()`
+call by `_corpus_reference_year()` — *not* the wall-clock year, and *not* per
+cluster. Rationale:
+
+- **The term must keep discriminating.** Ingestion lags publication and the lag
+  grows as a corpus sits. On the current corpus (newest CV paper 2025, wall clock
+  2026) a wall-clock baseline leaves only 6 of 64 limitations with any recency
+  signal, mean 0.094 — the 0.35-weighted term is effectively dead and separates
+  nothing. Corpus-anchored gives 28 of 64, mean 0.438.
+- **Scoring must be deterministic.** `score_gaps()` is a ranking function; the
+  same corpus has to rank the same way whenever it runs. A wall-clock baseline
+  makes rankings drift with no data change and makes a stored `GapResult`
+  incomparable to a freshly computed one.
+- **Corpus-wide, not per-cluster.** A cluster's own newest paper always falls
+  inside its own window, so per-cluster baselines would score an all-2019 cluster
+  as recent as an all-2025 one.
+- Clamped to the current year so a single future-dated paper (bad metadata)
+  cannot push the window past every real paper. For a sane corpus the clamp never
+  binds, so determinism holds.
+
+Do not reintroduce a hardcoded year. `tests/test_gap_scorer.py` guards both
+failure modes (frozen constant, and wall-clock baseline); the guards were
+verified to fail against each regression before being committed.
 
 ---
 
@@ -238,11 +265,54 @@ GET https://api.semanticscholar.org/graph/v1/paper/{paper_id}
 
 ---
 
+## API Rate Limiting
+
+`api/rate_limit.py` — in-process token bucket, registered as HTTP middleware in
+`api/main.py`. No new dependency (deliberately not `slowapi`; see the module
+docstring for why). Buckets are keyed by peer address + cost tier:
+
+| Tier | Endpoints | Sustained rate | Burst |
+|---|---|---|---|
+| `ingest` | `/ingest` | 3/min | 3 |
+| `llm` | `/explain` | 10/min | 10 |
+| `heavy` | `/gaps`, `/cross-domain` | 20/min | 20 |
+| `search` | `/search` | 30/min | 30 |
+| `light` | `/health`, `/paper/*`, unmapped | 120/min | 120 |
+
+Over-quota requests get `429` with a `Retry-After` header. Set
+`RATE_LIMIT_ENABLED=false` to disable. Middleware registration order matters:
+the limiter is registered **before** CORS so CORS ends up outermost and a 429
+still carries CORS headers — otherwise the frontend sees an opaque network error.
+
+State is per-process and in-memory. A multi-worker or deployed setup would need
+a shared store (Redis); revisit if deployment happens.
+
+---
+
+## Advisor–Executor Protocol
+
+- ADVISOR = Fable 5 (external chat, relayed by Vipul). Owns architecture,
+  algorithm/threshold design, and any stack decision.
+- EXECUTOR = Claude Code (Sonnet). Owns implementation, tests, and mechanical
+  fixes. Does not make architectural calls on its own.
+- Executor stops and raises an ADVISOR QUERY (context, decision needed,
+  options, optional lean) instead of proceeding whenever a change touches:
+  gap-scoring weights/formula, clustering approach, cross-domain threshold
+  or matching logic, or any stack component swap.
+- A recommendation from a prior external review (e.g. a Fable 5 static
+  review) is not standing authorization — it must go through this loop
+  again in the current session before being implemented.
+- Once the advisor decides, the executor implements and updates this file
+  with the decision + rationale before moving on, so it isn't re-litigated
+  next session.
+
+---
+
 ## Rules for Claude Code Sessions
 
 1. **One module per session.** Never work on multiple files across layers simultaneously.
 2. **Always read this CLAUDE.md at the start of every session** before writing any code.
-3. **Never change the stack.** No swapping Neo4j for another DB, no changing Qdrant collection names, no switching embedding models without explicit instruction.
+3. **Never change the stack unilaterally.** No swapping Neo4j for another DB, no changing Qdrant collection names, no switching embedding models, no changing the clustering algorithm or similarity thresholds — these go through the advisor–executor protocol (Fable 5 decides, Sonnet implements) and get logged here with rationale once decided. An external review recommending a stack change is input to that decision, not authorization to make it.
 4. **Always write pytest tests** for every function you implement.
 5. **Never hardcode secrets.** All credentials come from `.env` via `python-dotenv`.
 6. **Validate Pydantic models strictly.** If LLM output fails validation, log the failure to `data/failed_extractions.log` and continue — do not crash.
@@ -253,23 +323,58 @@ GET https://api.semanticscholar.org/graph/v1/paper/{paper_id}
 
 ## Current Phase
 
-**Phase 1 — Extraction Pipeline**
+**MVP is built, not Phase 1.** The full pipeline described in the architecture
+diagram above (extraction → graph → vectors → gap scoring → cross-domain
+matching → API → frontend) exists end to end, including the CV ↔ Medical
+Imaging cross-domain matcher. The "Phase 1 — Extraction Pipeline" label
+previously in this file was stale and has been removed — do not reintroduce
+phase language that implies only the extractor exists.
 
-Goal: `extract_paper(arxiv_id: str) -> PaperExtract` working on real CV papers.
+**Do not trust a specific test-pass count or "everything works" claim from
+this file, from memory, or from a prior session's summary without verifying
+it yourself at the start of the session:**
+```
+pytest -q
+git log --oneline -10
+git status
+```
+Treat the actual output of these commands as ground truth for "what phase
+we're really in," not any number written in prose (here or anywhere else).
+If the test count or git state doesn't match what a prior note claims,
+say so explicitly before doing any new work — do not silently assume the
+higher (or lower) number is correct.
 
-Test paper IDs to validate against:
-- `2301.00234` — object detection
-- `2303.05499` — image segmentation  
-- `2212.09748` — vision transformers
+**Active work is post-MVP hardening**, structured as a four-session plan
+from an external Fable 5 review:
+- Session 1: three cheap bug fixes (hardcoded year, pyproject.toml typo,
+  missing rate limiting)
+- Session 2: cross-domain similarity threshold re-derivation, possible
+  LLM verification stage
+- Session 3: deliberate go/no-go decision on keeping Neo4j (requires the
+  advisor–executor loop below — not a unilateral change)
+- Session 4: remaining improvements
+
+Confirm which of these sessions is actually done (via git log / tests),
+not which one this file last said was done.
+
+Regarding the test arXiv IDs previously listed here (`2301.00234`,
+`2303.05499`, `2212.09748`): arXiv IDs generated or recalled from an LLM's
+memory are unreliable and have previously pointed to unrelated papers.
+Verify any arXiv ID against the actual arXiv listing or Semantic Scholar
+before using it as a validation case — do not trust an ID just because
+it appears in this file or in chat.
 
 ---
 
-## MVP Scope (Do Not Expand Until Phase 5 Is Complete)
+## MVP Scope
 
-- Domains: Computer Vision only (Phase 1–3), Computer Vision + Medical Imaging (Phase 4)
-- Paper volume: 50 papers (Phase 1), 500 papers (Phase 3 scale-up)
-- Frontend: 3 pages only — gaps, search, cross-domain
-- No user auth, no cloud deployment of backend — demo mode only
+The original MVP scope (CV-only corpus, then CV + Medical Imaging for
+cross-domain, ~50→500 papers, 3-page frontend, no auth, no cloud deploy)
+has been built. Scope expansion (100-paper corpus growth, deployment to
+Railway/Vercel/AuraDB/Qdrant Cloud, Kaggle-related work) is tracked
+separately and is not gated behind a "Phase 5" that no longer exists in
+this plan — it's gated behind finishing the four-session hardening plan
+above.
 
 ## Known Pitfalls — Do Not Repeat
 
@@ -340,3 +445,22 @@ Test paper IDs to validate against:
 - Runtime artifacts that must stay in .gitignore: data/failed_extractions.log, data/papers.db, qdrant_storage/
 - Never commit with misleading messages — Opus caught a commit that said "PDF extraction working" but only contained a failure log
 - data/ directory should only have .gitkeep tracked, never actual database files
+- All commits must be under vipulparmar3018@gmail.com — the local machine's
+  default git email created a duplicate contributor entry on GitHub in the
+  past. Check `git config user.email` at the start of a session if commits
+  ever show up under an unexpected identity.
+
+### ArXiv ID Verification
+- Never trust an arXiv ID as correct just because it was generated or recalled
+  by an LLM (including this file's own history, or Claude chat output) — IDs
+  have previously pointed to unrelated or nonexistent papers.
+- Before using any arXiv ID for ingestion, testing, or validation, confirm it
+  independently against arxiv.org or the Semantic Scholar API — don't chain
+  trust from one AI-generated list to the next.
+
+### Verifying Claimed Project State
+- Any statement in this file, in chat memory, or in a prior session summary
+  about "N tests passing," "phase X is done," or "feature Y is working" is a
+  claim, not a fact, until re-verified in the current session (`pytest -q`,
+  `git log`, actually exercising the code path). Do not build new work on top
+  of an unverified claim of prior completion.

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from api import rate_limit
 from pipeline.cross_domain import CrossDomainMatch
 from pipeline.extractor import PaperExtract
 from pipeline.gap_scorer import GapResult
@@ -14,6 +15,18 @@ from pipeline.gap_scorer import GapResult
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_rate_limit_buckets():
+    """Token buckets live on the module, and every test shares one `app`.
+
+    Without this, quota consumed by one test would leak into the next and make
+    failures depend on test ordering.
+    """
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
 
 
 def _make_gap(desc: str = "slow convergence on large datasets", score: float = 0.72) -> GapResult:

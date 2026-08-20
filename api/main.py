@@ -40,6 +40,8 @@ from vectors.embed import (  # noqa: E402
 )
 from vectors.search import find_similar_limitations  # noqa: E402
 
+from api.rate_limit import rate_limit_middleware  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
@@ -106,6 +108,12 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Order matters: Starlette runs the *last* registered middleware outermost, so
+# the rate limiter is registered first and CORS second. That puts CORS outside
+# the limiter, which means a short-circuited 429 still carries CORS headers and
+# the frontend can read the status instead of seeing an opaque network error.
+app.middleware("http")(rate_limit_middleware)
 
 app.add_middleware(
     CORSMiddleware,

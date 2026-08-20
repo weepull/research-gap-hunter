@@ -8,3 +8,8 @@ qdrant_storage/
 # Runtime extraction failure log
 data/failed_extractions.log
 uv.lock
+
+# setuptools build artifacts (produced now that the editable build works)
+*.egg-info/
+build/
+dist/

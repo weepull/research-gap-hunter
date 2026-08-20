@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "research-gap-hunter"
@@ -24,6 +24,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+
+# Flat layout: setuptools cannot auto-discover here because the repo root holds
+# several importable packages alongside non-package directories (data/, frontend/,
+# qdrant_storage/). Listing them explicitly keeps the build deterministic; tests/
+# is intentionally omitted so it is not installed into site-packages.
+[tool.setuptools]
+packages = ["pipeline", "graph", "vectors", "api"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

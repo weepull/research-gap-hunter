@@ -188,7 +188,9 @@ score = (0.40 × frequency_score) + (0.35 × recency_score) + (0.25 × solution_
 
 - `frequency_score` = papers_reporting_limitation / total_papers_in_domain
 - `recency_score` = papers_last_2yr_reporting / papers_all_time_reporting
-- `solution_deficit_score` = 1 - (future_directions_addressing / papers_reporting)
+- `solution_deficit_score` = 1 - (future_directions_addressing / papers_reporting),
+  where "addressing" means same-domain **and** not authored by a paper that reports
+  the limitation — see the decision below
 
 Seed-anchored union-find clustering groups similar limitation statements before scoring (HDBSCAN was the original design but was replaced — do not reintroduce it without an explicit advisor decision). Cluster representative text is used as `gap_description`.
 
@@ -218,6 +220,47 @@ cluster. Rationale:
 Do not reintroduce a hardcoded year. `tests/test_gap_scorer.py` guards both
 failure modes (frozen constant, and wall-clock baseline); the guards were
 verified to fail against each regression before being committed.
+
+### Solution-deficit scoring — decided 2026-08-21 (advisor: Fable 5)
+
+Three defects from the Fable 5 review, all re-verified against the live stack
+before the decision. Advisor chose options 1A / 2A / 3A:
+
+1. **Domain filter (1A).** `_find_addressing_solutions()` now applies a
+   server-side Qdrant filter on `domain`. Previously unfiltered, so a
+   medical-imaging future direction could mark a CV gap as solved — 15/27
+   clusters were contaminated. This also settles a conflict: `cross_domain.py`
+   treats a CV-gap ↔ MI-solution pairing as a *discovery*, while the deficit term
+   was reading the same signal as *already solved*, demoting exactly the gaps the
+   cross-domain feature exists to surface. Same-domain-only is now canonical.
+2. **Self-match exclusion (2A).** A future direction is ignored if any of its
+   papers also reports the limitation. A paper restating its own open problem as
+   future work is the definition of an unsolved gap; counting it inverted the
+   signal. 12/27 clusters were affected.
+3. **Dead cap removed (3A).** `min(matches, papers_reporting)` was verified to be
+   a **no-op** — the outer `max(0.0, ...)` clamp already floors any ratio above
+   1.0 at zero, producing identical scores on all 27 clusters. Removing it changed
+   no ranking. It was deleted as misleading code, not as a scoring fix.
+
+Both call sites share one policy by explicit advisor decision: the
+`proposed_solutions` shown to users are exactly the ones counted against the
+score, never a looser set.
+
+**Deferred — do not treat as settled.** The deficit metric is dimensionally
+incoherent: it divides a corpus-wide count of future directions by a
+cluster-local count of papers, so it is not a proportion and it saturates. Even
+after these fixes 17/27 clusters sit at exactly 0.0 with only 5 distinct values
+across the corpus, and 13/27 clusters are singletons where the metric is strictly
+binary. Options 3B (redefine the denominator) and 3C (saturating function) were
+raised and **explicitly deferred to a future session** — they change the formula
+and need their own advisor decision.
+
+Measured impact when implemented: 17/27 clusters (63%) reordered; deficit
+distribution moved from `{0.0: 21, 0.5: 2, 0.667: 1, 1.0: 3}` to
+`{0.0: 17, 0.2: 1, 0.286: 1, 0.5: 1, 1.0: 7}`. Live output was verified to
+contain zero self-match and zero cross-domain leaks across 79 displayed
+solutions. The 9 regression tests were confirmed to fail against the
+pre-fix code before landing.
 
 ---
 

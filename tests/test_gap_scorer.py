@@ -284,7 +284,7 @@ def test_score_gaps_anchors_recency_to_corpus_not_wall_clock(monkeypatch):
     monkeypatch.setattr(
         gs, "cluster_limitations", lambda lims, min_cluster_size=2: [recent, mid, stale]
     )
-    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: [])
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
     results = {r.gap_description: r for r in score_gaps()}
 
@@ -306,7 +306,7 @@ def test_score_gaps_recency_baseline_is_corpus_wide_not_per_cluster(monkeypatch)
     monkeypatch.setattr(
         gs, "cluster_limitations", lambda lims, min_cluster_size=2: [recent, stale]
     )
-    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: [])
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
     results = {r.gap_description: r for r in score_gaps()}
 
@@ -341,10 +341,11 @@ def test_compute_solution_deficit_partial_coverage(monkeypatch):
 
 
 def test_compute_solution_deficit_clamped_to_zero(monkeypatch):
-    """More matches than reporting papers caps the ratio, never yielding a negative score."""
+    """More matches than reporting papers floors at zero, never yielding a negative score."""
     cluster = [{"text": "slow training", "paper_ids": ["a"], "years": [2024]}]
-    # Three matches all above 0.85 but only one reporting paper: matches cap at 1,
-    # so 1 - 1/1 = 0.0 rather than the negative 1 - 3/1.
+    # Three matches above 0.85 but only one reporting paper. The raw ratio is 3/1,
+    # so the score is a negative 1 - 3 = -2 before the [0.0, 1.0] clamp floors it.
+    # This is what makes the old min(matches, papers_reporting) cap redundant.
     hits = [_make_hit("fix one", 0.9), _make_hit("fix two", 0.88), _make_hit("fix three", 0.87)]
     client = _make_qdrant_query_mock(hits)
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
@@ -364,6 +365,166 @@ def test_compute_solution_deficit_range(monkeypatch):
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
     score = compute_solution_deficit_score(cluster)
     assert 0.0 <= score <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# _find_addressing_solutions — domain filtering and self-match exclusion
+# ---------------------------------------------------------------------------
+
+
+def _make_fd_hit(
+    text: str,
+    score: float,
+    paper_ids: list[str] | None = None,
+    domain: str = "computer_vision",
+) -> types.SimpleNamespace:
+    """A future-direction hit carrying the full payload embed.py actually writes."""
+    return types.SimpleNamespace(
+        score=score,
+        payload={
+            "limitation_text": text,
+            "paper_ids": paper_ids if paper_ids is not None else [],
+            "domain": domain,
+        },
+    )
+
+
+def test_find_addressing_solutions_applies_domain_filter(monkeypatch):
+    """The Qdrant query must carry a server-side domain filter.
+
+    Regression guard for cross-domain contamination: the old implementation sent
+    no query_filter at all, so a medical-imaging future direction could mark a CV
+    gap as solved.
+    """
+    client = _make_qdrant_query_mock([])
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    gs._find_addressing_solutions("a gap", domain="medical_imaging")
+
+    query_filter = client.query_points.call_args.kwargs["query_filter"]
+    condition = query_filter.must[0]
+    assert condition.key == "domain"
+    assert condition.match.value == "medical_imaging"
+
+
+def test_find_addressing_solutions_excludes_self_authored(monkeypatch):
+    """A future direction from a paper that reports the limitation does not count."""
+    hits = [
+        _make_fd_hit("we leave this to future work", 0.95, paper_ids=["p1"]),
+        _make_fd_hit("an independent proposal", 0.95, paper_ids=["p9"]),
+    ]
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    solutions = gs._find_addressing_solutions(
+        "a gap", domain="computer_vision", exclude_paper_ids={"p1"}
+    )
+
+    assert solutions == ["an independent proposal"]
+
+
+def test_find_addressing_solutions_excludes_on_any_shared_paper(monkeypatch):
+    """A future direction attached to several papers is excluded if *any* reports it."""
+    hits = [_make_fd_hit("shared direction", 0.95, paper_ids=["p9", "p1"])]
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    assert (
+        gs._find_addressing_solutions(
+            "a gap", domain="computer_vision", exclude_paper_ids={"p1"}
+        )
+        == []
+    )
+
+
+def test_find_addressing_solutions_keeps_third_party_solutions(monkeypatch):
+    """Exclusion is targeted — unrelated papers' directions still count."""
+    hits = [_make_fd_hit("genuine solution", 0.95, paper_ids=["p7"])]
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    assert gs._find_addressing_solutions(
+        "a gap", domain="computer_vision", exclude_paper_ids={"p1", "p2"}
+    ) == ["genuine solution"]
+
+
+def test_compute_solution_deficit_ignores_self_authored_solution(monkeypatch):
+    """A paper restating its own open problem leaves the gap fully deficient.
+
+    Under the old code this scored 0.0 — the limitation looked completely solved
+    because the only 'solution' was the reporting paper's own future work.
+    """
+    cluster = [{"text": "an open problem", "paper_ids": ["p1"], "years": [2025]}]
+    hits = [_make_fd_hit("we plan to address this", 0.95, paper_ids=["p1"])]
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    assert compute_solution_deficit_score(cluster) == 1.0
+
+
+def test_compute_solution_deficit_counts_only_independent_solutions(monkeypatch):
+    """With two reporting papers, only the outside proposal reduces the deficit."""
+    cluster = [{"text": "an open problem", "paper_ids": ["p1", "p2"], "years": [2025, 2025]}]
+    hits = [
+        _make_fd_hit("p1's own future work", 0.95, paper_ids=["p1"]),
+        _make_fd_hit("outside proposal", 0.95, paper_ids=["p9"]),
+    ]
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    # 1 independent match against 2 reporting papers => 1 - 1/2
+    assert compute_solution_deficit_score(cluster) == 0.5
+
+
+def test_compute_solution_deficit_threads_domain_to_query(monkeypatch):
+    """The cluster's domain reaches the Qdrant filter rather than defaulting."""
+    cluster = [{"text": "x", "paper_ids": ["p1"], "years": [2025]}]
+    client = _make_qdrant_query_mock([])
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    compute_solution_deficit_score(cluster, domain="medical_imaging")
+
+    condition = client.query_points.call_args.kwargs["query_filter"].must[0]
+    assert condition.match.value == "medical_imaging"
+
+
+def test_score_gaps_display_solutions_match_scored_solutions(monkeypatch):
+    """proposed_solutions shows exactly what the deficit counted — never a looser set.
+
+    The advisor decision was that both call sites share one filtering policy, so a
+    self-authored direction must be absent from the user-facing list too.
+    """
+    cluster = [{"text": "an open gap", "paper_ids": ["p1"], "years": [2025]}]
+    monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
+    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, min_cluster_size=2: [cluster])
+
+    hits = [
+        _make_fd_hit("p1's own future work", 0.95, paper_ids=["p1"]),
+        _make_fd_hit("an independent proposal", 0.95, paper_ids=["p9"]),
+    ]
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    result = score_gaps()[0]
+
+    assert result.proposed_solutions == ["an independent proposal"]
+    assert result.solution_deficit_score == 0.0  # one independent match, one paper
+
+
+def test_score_gaps_threads_domain_into_solution_search(monkeypatch):
+    """score_gaps(domain=...) reaches the future-direction filter."""
+    cluster = [{"text": "an open gap", "paper_ids": ["p1"], "years": [2025]}]
+    monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
+    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, min_cluster_size=2: [cluster])
+    client = _make_qdrant_query_mock([])
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    score_gaps(domain="medical_imaging")
+
+    for call in client.query_points.call_args_list:
+        assert call.kwargs["query_filter"].must[0].match.value == "medical_imaging"
 
 
 # ---------------------------------------------------------------------------
@@ -540,8 +701,8 @@ def test_score_gaps_formula_weights(monkeypatch):
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, min_cluster_size=2: [cluster])
     monkeypatch.setattr(gs, "compute_frequency_score", lambda c, t: 0.6)
     monkeypatch.setattr(gs, "compute_recency_score", lambda c, current_year=2024: 0.4)
-    monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c: 0.8)
-    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: [])
+    monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.8)
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
     results = score_gaps()
 
@@ -563,8 +724,8 @@ def test_score_gaps_returns_sorted_list(monkeypatch):
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, min_cluster_size=2: [c_low, c_high])
     monkeypatch.setattr(gs, "compute_frequency_score", lambda c, t: 0.9 if c is c_high else 0.1)
     monkeypatch.setattr(gs, "compute_recency_score", lambda c, current_year=2024: 0.5)
-    monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c: 0.5)
-    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: [])
+    monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.5)
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
     results = score_gaps()
 
@@ -583,7 +744,7 @@ def test_score_gaps_respects_top_n(monkeypatch):
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 5)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, min_cluster_size=2: clusters)
     # avoid Qdrant: no addressing solutions => deficit computed without network
-    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: [])
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
     results = score_gaps(top_n=2)
 
@@ -600,7 +761,7 @@ def test_score_gaps_uses_most_frequent_text_as_description(monkeypatch):
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, min_cluster_size=2: [cluster])
-    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: [])
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
     results = score_gaps()
 
@@ -615,8 +776,8 @@ def test_score_gaps_collects_proposed_solutions(monkeypatch):
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, min_cluster_size=2: [cluster])
-    monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c: 0.0)
-    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text: ["try approach X"])
+    monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.0)
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: ["try approach X"])
 
     results = score_gaps()
 

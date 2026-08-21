@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 from pydantic import BaseModel
-from qdrant_client.models import QueryRequest
+from qdrant_client.models import FieldCondition, Filter, MatchValue, QueryRequest
 
 from graph.populate import get_neo4j_driver
 from vectors.embed import (
@@ -235,15 +235,17 @@ def compute_recency_score(cluster: list[dict], current_year: int | None = None) 
     return recent / all_time
 
 
-def compute_solution_deficit_score(cluster: list[dict]) -> float:
+def compute_solution_deficit_score(
+    cluster: list[dict], domain: str = "computer_vision"
+) -> float:
     """How unaddressed this cluster is by the corpus's future directions.
 
     solution_deficit = 1 - (future_directions_addressing / papers_reporting), where
-    an addressing future direction is any FutureDirection whose embedding scores at
-    or above _SOLUTION_THRESHOLD (0.85) against the cluster's centroid text. Matches
-    are capped at papers_reporting so the ratio never exceeds 1 and the score never
-    goes negative. Capped to [0.0, 1.0]. A cluster nobody has proposed solutions for
-    scores near 1.0.
+    an addressing future direction is any FutureDirection that scores at or above
+    _SOLUTION_THRESHOLD (0.85) against the cluster's centroid text, is in the same
+    domain, and does not come from a paper that reports this limitation itself
+    (see _find_addressing_solutions). Clamped to [0.0, 1.0]. A cluster nobody has
+    proposed solutions for scores near 1.0.
     """
     if not cluster:
         return 1.0
@@ -256,8 +258,15 @@ def compute_solution_deficit_score(cluster: list[dict]) -> float:
         return 1.0
 
     centroid_text = _cluster_centroid_text(cluster)
-    matches = min(len(_find_addressing_solutions(centroid_text)), papers_reporting)
+    matches = len(
+        _find_addressing_solutions(
+            centroid_text, domain=domain, exclude_paper_ids=unique_papers
+        )
+    )
 
+    # No min(matches, papers_reporting) here: it was dead code. The clamp below
+    # already floors any ratio above 1.0 at zero, and capping was verified to
+    # produce identical scores on every cluster in the corpus.
     score = 1.0 - (matches / papers_reporting)
     return max(0.0, min(1.0, score))
 
@@ -285,7 +294,7 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
     for cluster in clusters:
         frequency = compute_frequency_score(cluster, total_papers)
         recency = compute_recency_score(cluster, current_year=reference_year)
-        deficit = compute_solution_deficit_score(cluster)
+        deficit = compute_solution_deficit_score(cluster, domain=domain)
 
         score = (0.40 * frequency) + (0.35 * recency) + (0.25 * deficit)
 
@@ -293,7 +302,11 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
         supporting_papers = sorted(
             {pid for lim in cluster for pid in lim.get("paper_ids", [])}
         )
-        proposed_solutions = _find_addressing_solutions(centroid_text)
+        # Same filtering as the score above — the solutions shown to the user are
+        # exactly the ones counted against the deficit, never a looser set.
+        proposed_solutions = _find_addressing_solutions(
+            centroid_text, domain=domain, exclude_paper_ids=set(supporting_papers)
+        )
 
         results.append(
             GapResult(
@@ -364,11 +377,29 @@ def _cluster_centroid_text(cluster: list[dict]) -> str:
     return counter.most_common(1)[0][0]
 
 
-def _find_addressing_solutions(centroid_text: str) -> list[str]:
-    """Return future-direction texts that address a limitation above threshold.
+def _find_addressing_solutions(
+    centroid_text: str,
+    domain: str = "computer_vision",
+    exclude_paper_ids: set[str] | None = None,
+) -> list[str]:
+    """Return future-direction texts that genuinely address a limitation.
 
-    Searches the Qdrant 'future_directions' collection with the centroid embedding
-    and returns the payload text of every hit scoring >= _SOLUTION_THRESHOLD.
+    A future direction counts only if all three hold:
+
+    1. It scores >= _SOLUTION_THRESHOLD (0.85) against the centroid embedding.
+    2. It belongs to `domain`. Without this filter a medical-imaging suggestion
+       could mark a CV gap as solved. Note that pipeline/cross_domain.py treats
+       exactly that pairing as a *discovery* — so counting it here as a solution
+       would demote the very gaps the cross-domain feature exists to surface.
+    3. It comes from a paper outside `exclude_paper_ids` — the papers reporting
+       this limitation. A paper restating its own open problem as future work is
+       the definition of an unsolved gap, not evidence that anyone solved it;
+       counting it inverted the signal.
+
+    The domain filter is applied server-side by Qdrant, mirroring the pattern in
+    vectors/search.py's find_similar_future_directions(). The query is kept here
+    rather than delegated so the threshold and self-exclusion happen in one pass
+    over the hits, and so this module's Qdrant client stays a single test seam.
     """
     if not centroid_text:
         return []
@@ -380,12 +411,20 @@ def _find_addressing_solutions(centroid_text: str) -> list[str]:
     results = client.query_points(
         collection_name=_COLLECTION_FUTURE_DIRECTIONS,
         query=vector,
+        query_filter=Filter(
+            must=[FieldCondition(key="domain", match=MatchValue(value=domain))]
+        ),
         limit=_MAX_FD_RESULTS,
     )
 
+    excluded = exclude_paper_ids or set()
     solutions: list[str] = []
     for hit in results.points:
         if hit.score < _SOLUTION_THRESHOLD:
+            continue
+        # A future direction can be attached to several papers; if any of them
+        # reports this limitation, it is self-referential and does not count.
+        if excluded and set(hit.payload.get("paper_ids") or []) & excluded:
             continue
         # embed.py stores future-direction payloads under the 'limitation_text' key.
         text = hit.payload.get("limitation_text", "")

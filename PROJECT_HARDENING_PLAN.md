@@ -155,7 +155,7 @@ corpus grows. Options: raise to cover the collection; make it a function of coll
 or keep and log what was dropped.
 
 ### A7 · `min_cluster_size` parameter is declared but never used — MINOR
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `1d080c7 / e3c6324`
 
 `cluster_limitations(limitations, min_cluster_size=2)` (`pipeline/gap_scorer.py:91`) never
 references `min_cluster_size` in its body. It implies singletons are filtered; they are not —
@@ -186,7 +186,7 @@ corpus. Carried forward here so it is not lost.
 ## B. Data integrity
 
 ### B1 · `ingest_from_query()` has no pacing between papers — IMPORTANT
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `8ccdb00`
 
 `pipeline/batch.py:129-145` loops over papers with **no `time.sleep`**, while
 `cross_domain.ingest_domain_papers` correctly sleeps `_FETCH_SLEEP_SECONDS = 2`. CLAUDE.md
@@ -200,7 +200,7 @@ it), losing 6 papers.
 > the original review meant.
 
 ### B2 · Semantic Scholar backoff budget is far too short — IMPORTANT
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `8ccdb00`
 
 `extractor.fetch_paper_text` and `batch.search_papers` retry 3 times with `2**attempt`
 seconds — waits of 1s then 2s, so they give up **~3 seconds** after the first 429. CLAUDE.md
@@ -210,7 +210,7 @@ failures despite requests being ~13s apart.
 present) so a rate-limited fetch actually survives the window.
 
 ### B3 · `ingest_from_query()` will crash on schema drift — IMPORTANT
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `8ccdb00`
 
 `pipeline/batch.py:140` calls `table.insert(row, pk="arxiv_id", replace=False)` **without
 `alter=True`**, while every other write path passes it. CLAUDE.md documents that new
@@ -241,7 +241,7 @@ since that is what scoring uses; or add an explicit consistency check that fails
 Fixed in `c1f4c1a`; root cause and prevention documented in CLAUDE.md. Listed for completeness.
 
 ### B7 · `populate_graph()` leaks the driver on exception — MINOR
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `1d080c7`
 `graph/populate.py:134-154` calls `driver.close()` only on the success path.
 **Recommended fix:** wrap in `try/finally`.
 
@@ -250,7 +250,7 @@ Fixed in `c1f4c1a`; root cause and prevention documented in CLAUDE.md. Listed fo
 ## C. Test coverage gaps
 
 ### C1 · ~17 tests validate dead code — IMPORTANT
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `1d080c7`
 
 Two clusters of tests exercise functions **production never calls**:
 
@@ -269,7 +269,7 @@ new contributor to wire back in.
 construction — nothing calls them.
 
 ### C2 · The real graph-write path is barely tested — IMPORTANT
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `1d080c7`
 
 `_upsert_paper_counting` — which creates every Paper, Limitation, FutureDirection, Method and
 Dataset in production — has **one** direct test (tier tagging), while its unused twin has
@@ -278,12 +278,12 @@ eight. Coverage is inverted.
 the C1 deletion, so total coverage rises rather than falls.
 
 ### C3 · No test would catch B1/B2/B3 — MINOR
-**Status: SAFE TO AUTO-FIX** (alongside those fixes)
+**Status: DONE 2026-08-23** — commit `8ccdb00`
 No test asserts pacing between ingestion iterations, backoff duration, or `alter=True`. Add
 assertions when fixing them, and confirm each fails against current code first.
 
 ### C4 · Frontend has no tests — MINOR
-**Status: SAFE TO AUTO-FIX** (or accept)
+**Status: OPEN — accepted, documented 2026-08-23.** Standing up a JS test runner is new infrastructure rather than a bounded fix, so it was not improvised. Stated explicitly here so a reviewer does not have to discover it: `frontend/` has no test runner configured and zero tests.
 No test runner configured in `frontend/`. Acceptable for an MVP; worth stating explicitly
 rather than leaving a reviewer to discover it.
 
@@ -291,7 +291,7 @@ rather than leaving a reviewer to discover it.
 
 ## D. Code quality / maintainability
 
-All **SAFE TO AUTO-FIX** — none touch scoring or output.
+**All DONE 2026-08-23** — commits `1d080c7` (D1, D4, D5, D6), `e3c6324` (D2, D3), `59d2bab` (D7). None touched scoring or output.
 
 | # | Issue | Location | Recommended fix |
 |---|---|---|---|
@@ -318,7 +318,7 @@ sustained CPU load. Options: require an API key/admin token; disable `/ingest` e
 read-only demo deployment; or move ingestion to an out-of-band job.
 
 ### E2 · Error responses leak internal details — BLOCKING for public deploy
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `b74d130`
 
 `api/main.py` returns `HTTPException(status_code=500, detail=str(exc))` in both `/ingest` and
 `/explain`. `str(exc)` on a driver or HTTP error routinely contains connection URIs, file
@@ -328,7 +328,7 @@ paths, and library internals — and the frontend surfaces the raw body in its e
 id to the client.
 
 ### E3 · No arXiv ID validation → path injection into outbound URLs — IMPORTANT
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `b74d130`
 
 `arxiv_id` flows unvalidated from the request body/path into f-string URLs:
 `f"{_ARXIV_PDF_BASE}/{arxiv_id}"` and `f"{_SEMANTIC_SCHOLAR_BASE}/paper/arXiv:{arxiv_id}"`.
@@ -339,12 +339,12 @@ reaching an outbound request.
 older `archive/YYMMNNN` form) and reject otherwise, in the Pydantic model and the path param.
 
 ### E4 · CORS is fully open — IMPORTANT
-**Status: SAFE TO AUTO-FIX** (at deploy time)
+**Status: OPEN — explicitly withheld by the operator (2026-08-23)** despite being marked safe here, alongside E1. Treat as advisor-owned.
 `allow_origins=["*"]`, `allow_methods=["*"]`, `allow_headers=["*"]` (`api/main.py:110-115`).
 Fine locally; should be restricted to the Vercel origin before public deploy.
 
 ### E5 · Unbounded PDF download into memory — MINOR
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `b74d130`
 `extractor.fetch_full_text` reads `response.content` with no size cap. A very large PDF
 inflates memory. **Recommended fix:** stream with a max-bytes guard.
 
@@ -357,7 +357,7 @@ committed files; the rate limiter correctly ignores spoofable `X-Forwarded-For`.
 
 ## F. Documentation accuracy
 
-All **SAFE TO AUTO-FIX** except F2.
+**F1, F3–F7 DONE 2026-08-23** in commit `59d2bab`. F2 remains advisor-owned but is now flagged in the README as disputed with the null-distribution numbers, so it no longer reads as settled fact.
 
 | # | Claim | Reality |
 |---|---|---|
@@ -384,7 +384,7 @@ free" property in the README and the stack table); ship a read-only demo with `/
 `/explain` disabled; or self-host Ollama on a GPU box and point the deployed API at it.
 
 ### G2 · `get_qdrant_client()` cannot reach Qdrant Cloud — BLOCKER
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `2cbf248`
 `vectors/embed.py:25-29` constructs `QdrantClient(host=..., port=...)` only. Qdrant Cloud
 requires an HTTPS URL **and an API key**, neither of which is plumbed through.
 **Recommended fix:** support `QDRANT_URL` + `QDRANT_API_KEY` env vars, falling back to
@@ -407,26 +407,26 @@ live. Options: bake weights into the image; lazy-load on first use and accept a 
 request; or move embedding to a separate service.
 
 ### G5 · Rate limiter state is per-process — IMPORTANT
-**Status: SAFE TO AUTO-FIX** (already documented in CLAUDE.md)
+**Status: OPEN — needs a deployment choice.** Both remedies (pin to one worker, or move buckets to Redis) are deploy-time decisions, not code changes; Redis would be new infrastructure. Already documented in CLAUDE.md and in `api/rate_limit.py`.
 In-memory token buckets do not coordinate across workers, so limits multiply by worker count.
 **Recommended fix:** pin to one worker for the demo, or move buckets to Redis.
 
 ### G6 · `NEXT_PUBLIC_API_URL` is inlined at build time — IMPORTANT
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `271657f`
 `frontend/lib/api.ts:6` defaults to `http://localhost:8000`. Next.js inlines `NEXT_PUBLIC_*`
 at **build** time, so if it is not set in the Vercel build environment the deployed site will
 call localhost and fail with no server-side error.
 **Recommended fix:** set it in Vercel and fail the build loudly when it is missing.
 
 ### G7 · Frontend does not handle 429 — MINOR
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `271657f`
 No 429 handling anywhere in the frontend; a rate-limited user sees a raw `API 429: {...}`
 string. `/explain` is capped at 10/min and has a visible "Generate Explanation" button, so
 this is reachable by ordinary clicking. **Recommended fix:** detect 429, read `Retry-After`,
 show a friendly message.
 
 ### G8 · Neo4j URI scheme default — MINOR
-**Status: SAFE TO AUTO-FIX**
+**Status: DONE 2026-08-23** — commit `59d2bab`
 Default is `bolt://localhost:7687`; AuraDB requires `neo4j+s://`. Env-only change, but worth
 documenting in the README deploy section so it is not discovered at deploy time.
 
@@ -462,7 +462,7 @@ in the domain" is the single most reputationally risky thing in the project. Opt
 singletons but label them "single-source".
 
 ### H4 · README overclaims scope — IMPORTANT
-**Status: SAFE TO AUTO-FIX** (wording only)
+**Status: OPEN — explicitly withheld by the operator (2026-08-23)** despite being marked safe here, as part of the H1–H5 corpus-honesty block. Treat as advisor-owned.
 `README.md:18` — "ranks research gaps … the most urgent, underserved open problems in the
 domain" and "over the entire corpus". At 63 papers, "the domain" is not covered.
 **Recommended fix:** state the corpus size and frame as a working prototype over a curated
@@ -535,3 +535,87 @@ follow the demo.
 ```
 
 _(No decisions recorded yet — audit delivered 2026-08-22.)_
+
+---
+
+## Session summary — 2026-08-23 (autonomous safe-fix pass)
+
+**Branch:** `hardening/safe-auto-fixes` · 8 commits · **not pushed**, not merged
+**Base:** `c1f4c1a` (= `main`, = `origin/main`) · **Tests: 234 → 255 passing**
+**Scope honoured:** only items marked SAFE TO AUTO-FIX. No threshold, weight, formula
+or ranking-affecting change. Nothing pushed. No data deleted.
+
+### Completed
+
+| Commit | Items | What changed |
+|---|---|---|
+| `3493d30` | — | The audit itself (this file) + CLAUDE.md pointer |
+| `1d080c7` | C1, C2, D1, D4, D5, D6, B7 | Deleted dead code; ported its tests onto the real write path |
+| `8ccdb00` | B1, B2, B3, C3 | Ingestion pacing, 60s retry budget, `alter=True` |
+| `b74d130` | E2, E3, E5 | Error leakage, arXiv id validation, PDF size cap |
+| `e3c6324` | D2, D3, A7 | One failure logger, no library logging config, dead param |
+| `2cbf248` | G2 | Managed Qdrant via `QDRANT_URL` / `QDRANT_API_KEY` |
+| `271657f` | G6, G7 | Fail build on missing API URL; typed 429 handling |
+| `59d2bab` | F1, F3–F7, D7, G8 | Documentation corrected to match the code |
+
+**Test count 234 → 255.** Net of removing 17 dead-code tests and adding 38 real ones.
+Coverage of `_upsert_paper_counting`, the sole production graph-write path, went from
+**1 test to 10**. Every new behavioural test was confirmed to fail against the pre-fix
+code before being committed.
+
+### Three things worth knowing
+
+1. **A latent bug was fixed that the audit had not found.** Consolidating the duplicate
+   `_log_failure` (D2) initially broke log redirection: `batch`'s tests redirect by
+   patching that module's `_LOG_PATH`, and the new delegate resolved the *extractor's*
+   path instead — so the suite wrote to the real `data/failed_extractions.log`. Caught by
+   an existing test, fixed with an explicit `log_path` parameter, and verified by asserting
+   the real log's line count is unchanged across a full run.
+   **Residue: three stray `arxiv_id=bad-id` entries were appended to
+   `data/failed_extractions.log` (lines 13–15) before the fix.** They were left in place
+   rather than deleted, per the no-deletion constraint. Safe to remove by hand — they are
+   test artefacts, not real ingestion failures.
+2. **Some tests were making real network calls.** The new malformed-arXiv-id cases reached
+   the live handler and hit Semantic Scholar and arxiv.org — one run took 97 seconds. They
+   now stub the extraction path, so the suite cannot touch the network even if validation
+   regresses. An autouse fixture also stops the suite really sleeping through the new
+   ingestion pacing (~20s per run otherwise).
+3. **Two items marked SAFE in this plan were deliberately skipped**, because the operator's
+   instruction excluded them and an explicit instruction outranks this file's status field:
+   **E4** (open CORS, excluded with E1) and **H4** (README scope wording, excluded with the
+   H1–H5 block). Both are now marked withheld above rather than left looking available.
+
+Not implemented, and why: **C4** (frontend tests) — standing up a JS test runner is new
+infrastructure, not a bounded fix; documented instead. **G5** (per-process rate limiter) —
+both remedies are deployment choices rather than code changes.
+
+### What is next — advisor decisions, in priority order
+
+**1 · The scoring-integrity block (A1 + A2 + A3) — decide together.**
+These interlock: thresholds and extraction quality trade against each other, and raising
+thresholds will *not* remove boilerplate matches, because generic text scores high. Settle
+A5 and A9 in the same sitting since they consume the same numbers. **If A3-a
+(re-extraction) is chosen, B4 must be fixed first** — re-ingesting a paper that already has
+graph relationships still duplicates its limitations.
+
+**2 · Corpus honesty (H1, H2, H3, H4) — blocks a public demo independently.**
+H3 is the highest-risk item in the whole audit: 13 of 27 clusters are single-paper, and the
+#2 and #3 ranked "research gaps" are one-paper artefacts that are not CV research gaps in
+any meaningful sense. A technical reviewer will notice immediately.
+
+**3 · Deployment (G1 first).** Ollama has no managed equivalent, so `/ingest` and
+`/explain` cannot run on Railway as designed — an architecture decision that may reshape
+G3 (ephemeral SQLite) and G4 (Specter2 startup cost). G2, G6, G7, G8 are already done.
+
+**4 · Public-exposure security (E1, E4).** `/ingest` is an unauthenticated write endpoint
+that burns the Semantic Scholar quota; CORS is fully open.
+
+**5 · Lower priority.** A4 (tier weights — inert today, the whole corpus is `explicit`),
+A6, A8, B5, C4, G5, H5 (needs corpus growth, not code).
+
+### Verification state
+
+`uv run pytest -q` → **255 passed**. Local Qdrant reachable after the client change (both
+collections listed). `npx tsc --noEmit` clean. No live-stack scoring run was performed
+this session because nothing touching scoring was modified — gap rankings are unchanged by
+construction.

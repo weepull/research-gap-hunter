@@ -447,10 +447,15 @@ above.
 - Always verify green Active status in Neo4j Desktop before running any pipeline commands
 - Constraint "already exists" INFO logs are normal and harmless — not errors
 
-### OPEN ISSUE — Neo4j/SQLite paper drift (diagnosed 2026-08-22, unresolved)
+### RESOLVED — Neo4j/SQLite paper drift (diagnosed + fixed 2026-08-22)
 
-Neo4j holds **63 Paper nodes; SQLite holds 44**. The 19 extra are all
-`computer_vision`. Nothing has been deleted — this is a diagnosis only.
+**Fixed.** SQLite now holds 63 papers matching Neo4j's 63 Paper nodes; drift is
+zero in both directions. The 19 missing rows were rebuilt directly from the graph
+— no LLM re-extraction, no network calls, no change to Neo4j. Kept below because
+the root cause can recur and the remedy has non-obvious constraints.
+
+Neo4j held **63 Paper nodes to SQLite's 44**. The 19 extra were all
+`computer_vision`.
 
 **What they are:** real papers, not test data or failed ingestions. Each has a
 genuine title, year, domain, and live relationships (methods/datasets, and 7 of
@@ -467,26 +472,46 @@ after the first CV ingestion run; Neo4j persisted across that reset and kept the
 earlier papers. This is a **restore/rebuild artifact, not an ingestion bug** — no
 current code path writes Neo4j without also writing SQLite.
 
-**Why it matters — this is user-facing, not cosmetic.** Neo4j is the scoring
-source of truth, so these papers fully participate in discovery: they inflate the
-frequency denominator (`_count_papers_in_domain` returns 46, of which only 27 are
-resolvable) and contribute 17 of the 64 limitation nodes feeding the engine. As a
-result **13 of 27 gaps currently cite at least one paper whose `/paper/{arxiv_id}`
-returns 404**, because that endpoint reads SQLite. Confirmed unresolvable and
-cited: 1505.04870, 1904.08980, 2101.09744, 2207.10077, 2305.10683, 2305.17456,
-2409.13112.
+**Why it mattered — user-facing, not cosmetic.** Neo4j is the scoring source of
+truth, so these papers fully participate in discovery: they contributed 17 of the
+64 limitation nodes feeding the engine. The visible symptom was that **13 of 27
+gaps cited at least one paper whose `/paper/{arxiv_id}` returned 404**, because
+that endpoint reads SQLite. Confirmed unresolvable and cited at the time:
+1505.04870, 1904.08980, 2101.09744, 2207.10077, 2305.10683, 2305.17456, 2409.13112.
+All seven now return 200.
 
-**Recommendation: re-ingest, do not delete.** Deleting discards 17 real limitation
-statements and shrinks an already-small corpus, and the papers are legitimate.
-Re-ingesting the 19 through the normal path repopulates SQLite, fixes the 404s,
-and leaves the graph unchanged (MERGE is idempotent). Caveats for whoever does it:
-verify each arXiv ID against arxiv.org first per the rules above; expect ~30–60s
-per paper plus Semantic Scholar rate limits; and note it will re-run extraction, so
-limitation text may differ slightly from what is currently in the graph. Deleting
-is only preferable if the corpus is deliberately being reset to a curated list.
+**The frequency denominator was NOT affected — an earlier draft of this note got
+that wrong.** `_count_papers_in_domain()` counts *Neo4j Paper nodes*, which were
+always 46 for CV and stayed 46. The drift was SQLite missing rows, never the graph
+missing papers, so no scoring input ever changed. Verified empirically: gap
+rankings before and after the fix are byte-identical — 27 gaps, zero reordered,
+zero score changes. Deleting the 19 would have moved the denominator (46 → 27) and
+genuinely changed rankings; repairing SQLite could not.
 
-Either way this changes gap rankings (the frequency denominator moves), so treat
-it as a scoring-affecting change and route it through the advisor protocol.
+**How it was fixed — rebuild from the graph, do not re-extract.** The 19 rows were
+reconstructed directly from Neo4j relationships (title, year, domain, methods,
+datasets, limitations, future_directions, tier) via the project's own
+`_paper_to_row()` so list fields are `json.dumps`'d per the SQLite rule above.
+
+Re-running the normal ingestion path was considered and **rejected**, for a reason
+worth remembering: `graph/populate.py:_upsert_paper_counting()` only ever MERGEs
+and never removes existing relationships, and `Limitation` nodes are keyed on exact
+`text`. Ollama extraction is non-deterministic, so re-extracting a paper that
+already has limitations in the graph creates *new* Limitation nodes while the old
+ones stay attached — the paper then reports both wordings, inflating the corpus
+with near-duplicates and corrupting clustering. **Never re-ingest a paper that
+already has graph relationships without detaching them first.**
+
+Trade-off accepted: Neo4j never stored `objectives`, `evaluation_metrics`, or
+`raw_json`, so those are empty on the 19 rebuilt rows. `raw_json` instead records
+`{"source": "reconstructed_from_neo4j", ...}` so the provenance is visible rather
+than looking like a failed extraction. Anyone wanting those fields populated must
+re-extract, which requires solving the detach problem above first.
+
+**Prevention:** `data/papers.db` is gitignored and disposable while Neo4j persists
+independently, so this can recur any time the DB is rebuilt. After any papers.db
+reset, check `MATCH (p:Paper) RETURN count(p)` against
+`SELECT count(*) FROM papers` before trusting the corpus.
 
 ### Semantic Scholar API
 - Free tier = 1 req/sec — always time.sleep(2) between individual paper fetches, time.sleep(5) between batch queries

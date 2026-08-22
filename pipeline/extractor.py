@@ -118,7 +118,8 @@ _TIER_INSTRUCTIONS = {
     ),
 }
 
-logging.basicConfig(level=logging.INFO)
+# No logging.basicConfig here — a library module must not reconfigure the root
+# logger for everything that imports it. The app entrypoint owns that.
 logger = logging.getLogger(__name__)
 
 
@@ -382,13 +383,34 @@ def call_ollama(prompt: str) -> dict:
     return parsed
 
 
-def _log_failure(arxiv_id: str, reason: str, raw: str) -> None:
-    """Append a failure record to data/failed_extractions.log."""
-    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+def log_extraction_failure(
+    arxiv_id: str,
+    reason: str,
+    raw: str | None = None,
+    source: str | None = None,
+    log_path: Path | None = None,
+) -> None:
+    """Append a failure record to the extraction failure log.
+
+    The single implementation behind every failure log in the project. It
+    previously existed twice with different signatures — one here taking a raw
+    payload, one in pipeline.batch without it — which meant the two formats could
+    drift and a caller could not tell which it was invoking. `raw` and `source`
+    are optional so both original shapes are expressible.
+
+    `log_path` lets a caller supply its own destination. Callers must pass their
+    own module-level path rather than relying on the default: tests redirect the
+    log by patching the *calling* module's _LOG_PATH, and a delegate that always
+    resolved this module's constant would silently write to the real log instead.
+    """
+    destination = log_path if log_path is not None else _LOG_PATH
+    destination.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).isoformat()
-    with _LOG_PATH.open("a", encoding="utf-8") as fh:
-        fh.write(f"[{timestamp}] arxiv_id={arxiv_id} reason={reason}\n")
-        fh.write(f"  raw={raw[:500]}\n")
+    label = f"{source} " if source else ""
+    with destination.open("a", encoding="utf-8") as fh:
+        fh.write(f"[{timestamp}] {label}arxiv_id={arxiv_id} reason={reason}\n")
+        if raw is not None:
+            fh.write(f"  raw={raw[:500]}\n")
 
 
 def _build_prompt(paper_text: str, tier: str) -> str:
@@ -439,7 +461,7 @@ def extract_paper(arxiv_id: str) -> PaperExtract:
             extraction_tier=tier,
         )
     except ValidationError as exc:
-        _log_failure(arxiv_id, str(exc), raw_json_str)
+        log_extraction_failure(arxiv_id, str(exc), raw=raw_json_str)
         raise
 
     return result

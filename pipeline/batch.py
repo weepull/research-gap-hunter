@@ -10,7 +10,11 @@ import requests
 import sqlite_utils
 from dotenv import load_dotenv
 
-from pipeline.extractor import extract_paper, rate_limit_wait_seconds
+from pipeline.extractor import (
+    extract_paper,
+    log_extraction_failure,
+    rate_limit_wait_seconds,
+)
 
 load_dotenv()
 
@@ -29,7 +33,7 @@ _LIST_FIELDS = (
     "future_directions",
 )
 
-logging.basicConfig(level=logging.INFO)
+# No logging.basicConfig here — see pipeline/extractor.py.
 logger = logging.getLogger(__name__)
 
 
@@ -40,12 +44,17 @@ def _get_db() -> sqlite_utils.Database:
 
 
 def _log_failure(arxiv_id: str, reason: str) -> None:
-    """Append a batch-level failure record to data/failed_extractions.log."""
-    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    import datetime
-    ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with _LOG_PATH.open("a", encoding="utf-8") as fh:
-        fh.write(f"[{ts}] batch arxiv_id={arxiv_id} reason={reason}\n")
+    """Record a batch-level failure, tagged so its origin is visible in the log.
+
+    A thin wrapper over extractor.log_extraction_failure rather than a second
+    implementation — the two used to be separate functions with different
+    signatures and formats that could drift apart independently.
+
+    _LOG_PATH is passed explicitly: tests redirect the log by patching this
+    module's constant, and without it the delegate would resolve the extractor's
+    own path and write to the real log during a test run.
+    """
+    log_extraction_failure(arxiv_id, reason, source="batch", log_path=_LOG_PATH)
 
 
 def _paper_to_row(paper) -> dict:

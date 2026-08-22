@@ -87,9 +87,7 @@ def get_all_limitations(domain: str = "computer_vision") -> list[dict]:
     return records
 
 
-def cluster_limitations(
-    limitations: list[dict], min_cluster_size: int = 2
-) -> list[list[dict]]:
+def cluster_limitations(limitations: list[dict]) -> list[list[dict]]:
     """Group semantically-similar limitations via seed-anchored direct grouping.
 
     All limitation texts are embedded in one batched Specter2 call and their
@@ -102,7 +100,10 @@ def cluster_limitations(
     transitive A→B→C chains from collapsing unrelated limitations into one
     giant cluster. Assigned limitations never join a second cluster.
 
-    Singleton clusters are valid output and are never discarded.
+    Singleton clusters are valid output and are never discarded. There is no
+    minimum-size filter: a `min_cluster_size` parameter used to be declared here
+    but was never read, which implied a filtering step that did not exist.
+    Introducing one would change rankings and needs an advisor decision.
 
     Returns a list of clusters; each cluster is a list of limitation dicts.
     """

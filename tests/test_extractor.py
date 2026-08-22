@@ -278,12 +278,57 @@ def test_select_section_prefers_explicit_over_conclusion():
 # ---------------------------------------------------------------------------
 
 
-def _make_pdf_response() -> MagicMock:
-    """A mock requests.Response for a successful PDF download."""
+def _make_pdf_response(body: bytes = b"%PDF-1.5 fake bytes") -> MagicMock:
+    """A mock requests.Response for a streamed PDF download."""
     resp = MagicMock()
-    resp.content = b"%PDF-1.5 fake bytes"
+    resp.content = body
     resp.raise_for_status.return_value = None
+    resp.iter_content.side_effect = lambda chunk_size=8192: (
+        body[i : i + chunk_size] for i in range(0, len(body), chunk_size)
+    )
     return resp
+
+
+def test_download_pdf_rejects_oversized_body(monkeypatch):
+    """A PDF larger than the cap is abandoned instead of buffered in full."""
+    import pipeline.extractor as mod
+
+    monkeypatch.setattr(mod, "_MAX_PDF_BYTES", 1024)
+    oversized = _make_pdf_response(b"x" * 4096)
+    monkeypatch.setattr(mod.requests, "get", lambda *a, **k: oversized)
+
+    with pytest.raises(ValueError, match="exceeds"):
+        mod._download_pdf("https://arxiv.org/pdf/2301.00234")
+
+
+def test_download_pdf_streams_rather_than_buffering(monkeypatch):
+    """The request is made with stream=True so the cap can apply mid-download."""
+    import pipeline.extractor as mod
+
+    captured = {}
+
+    def _fake_get(url, **kwargs):
+        captured.update(kwargs)
+        return _make_pdf_response()
+
+    monkeypatch.setattr(mod.requests, "get", _fake_get)
+    mod._download_pdf("https://arxiv.org/pdf/2301.00234")
+
+    assert captured.get("stream") is True
+
+
+def test_fetch_full_text_falls_back_when_pdf_too_large(monkeypatch):
+    """An oversized PDF degrades to the abstract rather than crashing ingestion."""
+    import pipeline.extractor as mod
+
+    monkeypatch.setattr(mod, "_MAX_PDF_BYTES", 1024)
+    monkeypatch.setattr(mod.requests, "get", lambda *a, **k: _make_pdf_response(b"y" * 4096))
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+
+    text, tier = fetch_full_text("2301.00234", abstract="ABSTRACT FALLBACK")
+
+    assert text == "ABSTRACT FALLBACK"
+    assert tier == "inferred"
 
 
 def test_fetch_full_text_returns_section(monkeypatch):

@@ -9,12 +9,13 @@ at the api.main namespace without touching the real services.
 import json
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 load_dotenv()
 
@@ -30,7 +31,7 @@ from pipeline.cross_domain import (  # noqa: E402
     explain_match,
     find_cross_domain_matches,
 )
-from pipeline.extractor import extract_paper  # noqa: E402
+from pipeline.extractor import extract_paper, is_valid_arxiv_id  # noqa: E402
 from pipeline.gap_scorer import GapResult, score_gaps  # noqa: E402
 from vectors.embed import (  # noqa: E402
     embed_future_directions,
@@ -64,6 +65,16 @@ class LimitationResult(BaseModel):
 class IngestRequest(BaseModel):
     arxiv_id: str
     domain: str = "computer_vision"
+
+    @field_validator("arxiv_id")
+    @classmethod
+    def _check_arxiv_id(cls, value: str) -> str:
+        # arxiv_id is interpolated into outbound arxiv.org / Semantic Scholar
+        # URLs, so reject anything that is not a real id before it gets there.
+        candidate = value.strip()
+        if not is_valid_arxiv_id(candidate):
+            raise ValueError(f"{value!r} is not a valid arXiv id")
+        return candidate
 
 
 class IngestResponse(BaseModel):
@@ -121,6 +132,41 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+
+
+def _internal_error(
+    operation: str,
+    exc: Exception,
+    arxiv_id: str | None = None,
+    log_failure: bool = False,
+) -> HTTPException:
+    """Log an exception in full server-side; return a 500 that reveals nothing.
+
+    str(exc) on a driver or HTTP error routinely carries connection URIs,
+    credentials and filesystem paths, and the frontend renders the response body
+    verbatim. The caller gets an opaque error id that ties their report to the
+    server log line holding the real detail.
+    """
+    error_id = uuid.uuid4().hex[:12]
+    logger.error(
+        "%s failed [error_id=%s]%s: %s",
+        operation,
+        error_id,
+        f" arxiv_id={arxiv_id}" if arxiv_id else "",
+        exc,
+        exc_info=True,
+    )
+    if log_failure and arxiv_id:
+        _log_failure(arxiv_id, str(exc))
+    return HTTPException(
+        status_code=500,
+        detail=f"{operation} failed. Quote error id {error_id} when reporting this.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +285,7 @@ def ingest_paper(body: IngestRequest) -> IngestResponse:
         )
 
     except Exception as exc:  # noqa: BLE001
-        logger.error("Ingest failed for %s: %s", arxiv_id, exc)
-        _log_failure(arxiv_id, str(exc))
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise _internal_error("Ingest", exc, arxiv_id=arxiv_id, log_failure=True)
 
 
 @app.get("/explain", response_model=ExplainResponse)
@@ -267,13 +311,16 @@ def explain_connection(
     try:
         return ExplainResponse(explanation=explain_match(match))
     except Exception as exc:  # noqa: BLE001 — Ollama may be down
-        logger.error("Explain failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise _internal_error("Explain", exc)
 
 
 @app.get("/paper/{arxiv_id}")
 def get_paper_by_id(arxiv_id: str) -> dict:
-    """Return the full stored paper record or 404 if not found."""
+    """Return the full stored paper record, 422 if malformed, 404 if not found."""
+    if not is_valid_arxiv_id(arxiv_id):
+        raise HTTPException(
+            status_code=422, detail=f"{arxiv_id!r} is not a valid arXiv id"
+        )
     paper = get_paper(arxiv_id)
     if paper is None:
         raise HTTPException(status_code=404, detail=f"Paper {arxiv_id!r} not found")

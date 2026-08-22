@@ -18,6 +18,20 @@ load_dotenv()
 
 _SEMANTIC_SCHOLAR_BASE = "https://api.semanticscholar.org/graph/v1"
 _ARXIV_PDF_BASE = "https://arxiv.org/pdf"
+
+# arXiv ids are interpolated straight into outbound URLs, so they are validated
+# before use: an id containing "../" or a query string can redirect a fetch to a
+# different path on arxiv.org or Semantic Scholar. Covers the modern form
+# (2301.00234, optionally versioned) and the pre-2007 form (math/0309136,
+# cs.CV/0309136).
+_ARXIV_ID_RE = re.compile(
+    r"^(?:\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?)$"
+)
+
+# Upper bound on a buffered PDF. response.content would read an arbitrarily
+# large body into memory before any size check could run.
+_MAX_PDF_BYTES = 30 * 1024 * 1024
+_PDF_CHUNK_BYTES = 64 * 1024
 _LOG_PATH = Path("data/failed_extractions.log")
 
 # A browser-like User-Agent — arxiv.org returns 403 for default python-requests UA.
@@ -124,6 +138,15 @@ class PaperExtract(BaseModel):
     extraction_tier: str = "explicit"
 
 
+def is_valid_arxiv_id(arxiv_id: str) -> bool:
+    """True if arxiv_id is safe to interpolate into an outbound URL.
+
+    See _ARXIV_ID_RE. This is a safety check on untrusted input, not a claim that
+    the paper exists — verify real ids against arxiv.org or Semantic Scholar.
+    """
+    return bool(arxiv_id) and bool(_ARXIV_ID_RE.match(arxiv_id))
+
+
 def rate_limit_wait_seconds(attempt: int, response=None) -> float:
     """Seconds to wait before retrying a Semantic Scholar 429.
 
@@ -186,6 +209,29 @@ def fetch_paper_text(arxiv_id: str) -> dict:
 
     # Unreachable but satisfies type checkers
     raise RuntimeError("fetch_paper_text exhausted retries")
+
+
+def _download_pdf(url: str) -> bytes:
+    """Download a PDF, refusing to buffer more than _MAX_PDF_BYTES.
+
+    Streamed with a running byte budget rather than reading response.content,
+    which would materialise the whole body in memory before any check could run.
+    """
+    response = requests.get(url, headers=_BROWSER_HEADERS, timeout=30, stream=True)
+    response.raise_for_status()
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=_PDF_CHUNK_BYTES):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > _MAX_PDF_BYTES:
+            raise ValueError(
+                f"PDF at {url} exceeds the {_MAX_PDF_BYTES}-byte limit; aborting download"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = _MAX_PDF_PAGES) -> list[str]:
@@ -268,9 +314,7 @@ def fetch_full_text(arxiv_id: str, abstract: str = "") -> tuple[str, str]:
 
     for attempt in range(max_attempts):
         try:
-            response = requests.get(url, headers=_BROWSER_HEADERS, timeout=30)
-            response.raise_for_status()
-            pages = _extract_pdf_text(response.content)
+            pages = _extract_pdf_text(_download_pdf(url))
             break
         except Exception as exc:  # noqa: BLE001 — any failure should retry then fall back
             if attempt == max_attempts - 1:

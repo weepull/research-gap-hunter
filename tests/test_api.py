@@ -386,6 +386,137 @@ def test_ingest_extraction_failure_returns_500(monkeypatch):
     assert r.status_code == 500
 
 
+def test_ingest_error_does_not_leak_internals(monkeypatch):
+    """A 500 must not echo the raw exception text back to the caller.
+
+    str(exc) on a driver or HTTP error routinely carries connection URIs, file
+    paths and library internals, and the frontend renders the body verbatim.
+    """
+    secret = "bolt://neo4j:hunter2@10.0.0.5:7687 /Users/someone/secret/path.py"
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
+    monkeypatch.setattr(
+        "api.main.extract_paper",
+        lambda arxiv_id: (_ for _ in ()).throw(RuntimeError(secret)),
+    )
+    monkeypatch.setattr("api.main._log_failure", lambda aid, reason: None)
+
+    from api.main import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.post("/ingest", json={"arxiv_id": "0000.99999"})
+
+    assert r.status_code == 500
+    body = r.text
+    assert "hunter2" not in body
+    assert "bolt://" not in body
+    assert "/Users/" not in body
+
+
+def test_explain_error_does_not_leak_internals(monkeypatch):
+    """/explain must not echo raw exception text either."""
+    secret = "http://localhost:11434 connection refused /private/tmp/x.py"
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
+    monkeypatch.setattr(
+        "api.main.explain_match",
+        lambda match: (_ for _ in ()).throw(ConnectionError(secret)),
+    )
+
+    from api.main import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.get("/explain", params={"source_gap": "a", "target_solution": "b"})
+
+    assert r.status_code == 500
+    assert "11434" not in r.text
+    assert "/private/tmp" not in r.text
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../../../etc/passwd",
+        "2301.00234/../../admin",
+        "not-an-id",
+        "2301.00234?fields=all",
+        "",
+    ],
+)
+def test_ingest_rejects_malformed_arxiv_id(client, monkeypatch, bad_id):
+    """Malformed ids are rejected before reaching an outbound URL.
+
+    arxiv_id is interpolated into arxiv.org and Semantic Scholar URLs, so an
+    unvalidated value can redirect the fetch to another path on those hosts.
+
+    extract_paper is stubbed so this can never make a real network call even if
+    validation regresses — without it, these cases reach the live handler.
+    """
+    called = []
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: called.append(arxiv_id))
+    monkeypatch.setattr("api.main._log_failure", lambda aid, reason: None)
+
+    r = client.post("/ingest", json={"arxiv_id": bad_id})
+
+    assert r.status_code == 422
+    assert called == [], "malformed id reached the extraction path"
+
+
+@pytest.mark.parametrize(
+    "good_id",
+    ["2301.00234", "2301.00234v2", "1234.5678", "math/0309136", "cs.CV/0309136"],
+)
+def test_ingest_accepts_valid_arxiv_id_forms(monkeypatch, good_id):
+    """Both the modern and the pre-2007 arXiv id forms are accepted."""
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
+    monkeypatch.setattr(
+        "api.main.extract_paper",
+        lambda arxiv_id: (_ for _ in ()).throw(RuntimeError("stop here")),
+    )
+    monkeypatch.setattr("api.main._log_failure", lambda aid, reason: None)
+
+    from api.main import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.post("/ingest", json={"arxiv_id": good_id})
+
+    # Reaches the handler (which then fails on the stub) rather than 422ing.
+    assert r.status_code != 422
+
+
+@pytest.mark.parametrize("bad_id", ["not-an-id", "abc", "2301", "v2"])
+def test_get_paper_rejects_malformed_arxiv_id(client, monkeypatch, bad_id):
+    """The path param is validated too, not just the request body.
+
+    A query string is not tested here — HTTP splits it off before routing, so it
+    never reaches the path param. It is covered on the request body instead.
+    """
+    called = []
+    monkeypatch.setattr("api.main.get_paper", lambda aid: called.append(aid))
+
+    r = client.get(f"/paper/{bad_id}")
+
+    assert r.status_code == 422
+    assert called == [], "malformed id reached the SQLite lookup"
+
+
+def test_get_paper_path_traversal_never_reaches_handler(client, monkeypatch):
+    """An encoded traversal attempt is rejected by routing before the handler.
+
+    Decoded, "..%2f..%2fetc" contains slashes, so it does not match the
+    /paper/{arxiv_id} route at all and returns 404 rather than 422. Either way
+    it must not reach the lookup — that is what this asserts.
+    """
+    called = []
+    monkeypatch.setattr("api.main.get_paper", lambda aid: called.append(aid))
+
+    r = client.get("/paper/..%2f..%2fetc")
+
+    assert r.status_code in (404, 422)
+    assert called == []
+
+
 def test_ingest_missing_body_returns_422(client):
     """POST /ingest with no body returns 422."""
     r = client.post("/ingest", json={})

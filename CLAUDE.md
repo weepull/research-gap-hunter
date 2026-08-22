@@ -447,6 +447,47 @@ above.
 - Always verify green Active status in Neo4j Desktop before running any pipeline commands
 - Constraint "already exists" INFO logs are normal and harmless — not errors
 
+### OPEN ISSUE — Neo4j/SQLite paper drift (diagnosed 2026-08-22, unresolved)
+
+Neo4j holds **63 Paper nodes; SQLite holds 44**. The 19 extra are all
+`computer_vision`. Nothing has been deleted — this is a diagnosis only.
+
+**What they are:** real papers, not test data or failed ingestions. Each has a
+genuine title, year, domain, and live relationships (methods/datasets, and 7 of
+the 19 have limitations). Their property keys are identical to healthy nodes.
+None appear in `data/failed_extractions.log` (which holds only 6 entries, all
+429s, none matching).
+
+**Why they diverged:** SQLite `papers` has contiguous rowids 1–44 with no gaps,
+so nothing was ever deleted from it — the 19 were never in *this* file. CV rows
+were ingested 2026-06-29→07-01 and medical imaging 2026-07-03, and the MI counts
+match Neo4j exactly (17 = 17) while only CV diverges (46 vs 27). Best explanation:
+`data/papers.db` is gitignored and disposable, so it was recreated at some point
+after the first CV ingestion run; Neo4j persisted across that reset and kept the
+earlier papers. This is a **restore/rebuild artifact, not an ingestion bug** — no
+current code path writes Neo4j without also writing SQLite.
+
+**Why it matters — this is user-facing, not cosmetic.** Neo4j is the scoring
+source of truth, so these papers fully participate in discovery: they inflate the
+frequency denominator (`_count_papers_in_domain` returns 46, of which only 27 are
+resolvable) and contribute 17 of the 64 limitation nodes feeding the engine. As a
+result **13 of 27 gaps currently cite at least one paper whose `/paper/{arxiv_id}`
+returns 404**, because that endpoint reads SQLite. Confirmed unresolvable and
+cited: 1505.04870, 1904.08980, 2101.09744, 2207.10077, 2305.10683, 2305.17456,
+2409.13112.
+
+**Recommendation: re-ingest, do not delete.** Deleting discards 17 real limitation
+statements and shrinks an already-small corpus, and the papers are legitimate.
+Re-ingesting the 19 through the normal path repopulates SQLite, fixes the 404s,
+and leaves the graph unchanged (MERGE is idempotent). Caveats for whoever does it:
+verify each arXiv ID against arxiv.org first per the rules above; expect ~30–60s
+per paper plus Semantic Scholar rate limits; and note it will re-run extraction, so
+limitation text may differ slightly from what is currently in the graph. Deleting
+is only preferable if the corpus is deliberately being reset to a curated list.
+
+Either way this changes gap rankings (the frequency denominator moves), so treat
+it as a scoring-affecting change and route it through the advisor protocol.
+
 ### Semantic Scholar API
 - Free tier = 1 req/sec — always time.sleep(2) between individual paper fetches, time.sleep(5) between batch queries
 - API returns abstracts only — full paper text must come from arXiv PDF via fetch_full_text()

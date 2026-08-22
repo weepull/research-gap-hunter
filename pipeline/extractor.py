@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -27,6 +28,13 @@ _BROWSER_HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+# Semantic Scholar's free-tier limit resets on roughly a 60-second cadence, so a
+# retry schedule has to approach that before giving up. The previous 2**attempt
+# schedule waited 1s then 2s — it abandoned a paper ~3s after the first 429, far
+# inside the window, which is how every entry in failed_extractions.log was lost.
+_S2_RETRY_WAITS = (15, 45)  # cumulative 60s across the default 3 attempts
+_S2_MAX_RETRY_WAIT = 120  # cap, so a hostile Retry-After cannot stall a batch
 
 _MAX_SECTION_CHARS = 4000
 # Limitation/conclusion sections live in the last ~30% of a paper; 20 pages
@@ -116,6 +124,33 @@ class PaperExtract(BaseModel):
     extraction_tier: str = "explicit"
 
 
+def rate_limit_wait_seconds(attempt: int, response=None) -> float:
+    """Seconds to wait before retrying a Semantic Scholar 429.
+
+    Prefers the server's own ``Retry-After`` header when it sends one, since that
+    is authoritative; otherwise falls back to _S2_RETRY_WAITS. Capped at
+    _S2_MAX_RETRY_WAIT so a malformed or hostile header cannot stall a batch.
+    """
+    # Insist on a real mapping holding a real scalar. Anything looser accepts
+    # objects that merely happen to be float()-able and silently produces a
+    # nonsense wait.
+    headers = getattr(response, "headers", None)
+    raw = headers.get("Retry-After") if isinstance(headers, Mapping) else None
+
+    retry_after = None
+    if isinstance(raw, (str, int, float)) and not isinstance(raw, bool):
+        try:
+            retry_after = float(raw)
+        except ValueError:
+            retry_after = None
+
+    if retry_after is not None and retry_after >= 0:
+        return min(retry_after, _S2_MAX_RETRY_WAIT)
+
+    index = min(attempt, len(_S2_RETRY_WAITS) - 1)
+    return _S2_RETRY_WAITS[index]
+
+
 def fetch_paper_text(arxiv_id: str) -> dict:
     """Fetch paper metadata from Semantic Scholar with exponential backoff on 429.
 
@@ -134,8 +169,8 @@ def fetch_paper_text(arxiv_id: str) -> dict:
         if response.status_code == 429:
             if attempt == max_attempts - 1:
                 response.raise_for_status()
-            wait = 2 ** attempt
-            logger.warning("Rate limited by Semantic Scholar, retrying in %ds", wait)
+            wait = rate_limit_wait_seconds(attempt, response)
+            logger.warning("Rate limited by Semantic Scholar, retrying in %ss", wait)
             time.sleep(wait)
             continue
         response.raise_for_status()

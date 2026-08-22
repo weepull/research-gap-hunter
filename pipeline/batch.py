@@ -10,13 +10,16 @@ import requests
 import sqlite_utils
 from dotenv import load_dotenv
 
-from pipeline.extractor import extract_paper
+from pipeline.extractor import extract_paper, rate_limit_wait_seconds
 
 load_dotenv()
 
 _SEMANTIC_SCHOLAR_BASE = "https://api.semanticscholar.org/graph/v1"
 _DB_PATH = Path("data/papers.db")
 _LOG_PATH = Path("data/failed_extractions.log")
+# Seconds between individual paper fetches (Semantic Scholar free tier: 1 req/sec).
+# Mirrors cross_domain._FETCH_SLEEP_SECONDS.
+_FETCH_SLEEP_SECONDS = 2
 _LIST_FIELDS = (
     "objectives",
     "methods",
@@ -79,8 +82,8 @@ def search_papers(query: str, limit: int = 100) -> list[dict]:
         if response.status_code == 429:
             if attempt == max_attempts - 1:
                 response.raise_for_status()
-            wait = 2 ** attempt
-            logger.warning("Rate limited by Semantic Scholar, retrying in %ds", wait)
+            wait = rate_limit_wait_seconds(attempt, response)
+            logger.warning("Rate limited by Semantic Scholar, retrying in %ss", wait)
             time.sleep(wait)
             continue
         response.raise_for_status()
@@ -137,12 +140,21 @@ def ingest_from_query(query: str, limit: int = 100) -> dict:
         try:
             paper = extract_paper(arxiv_id)
             row = _paper_to_row(paper)
-            table.insert(row, pk="arxiv_id", replace=False)
+            # alter=True: new PaperExtract fields must be added to pre-existing
+            # tables, since SQLite does not auto-migrate. Omitting it is how
+            # extraction_tier broke a live database.
+            table.insert(row, pk="arxiv_id", replace=False, alter=True)
             ingested += 1
         except Exception as exc:
             logger.error("Failed to ingest %s: %s", arxiv_id, exc)
             _log_failure(arxiv_id, str(exc))
             failed += 1
+
+        # Pace every attempt, including failures — a failed extraction still
+        # spent Semantic Scholar quota. Matches ingest_domain_papers, which had
+        # this from the start; its absence here caused the 429s in
+        # data/failed_extractions.log.
+        time.sleep(_FETCH_SLEEP_SECONDS)
 
     return {"ingested": ingested, "skipped": skipped, "failed": failed}
 

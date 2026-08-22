@@ -16,6 +16,19 @@ from pipeline.extractor import PaperExtract
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def _no_real_sleeping(monkeypatch):
+    """Never actually sleep in tests.
+
+    Ingestion paces itself for the Semantic Scholar free tier, and the retry
+    schedule waits tens of seconds. Without this the suite would spend minutes
+    idle. Tests that assert on pacing re-patch time.sleep themselves, which
+    takes precedence over this fixture.
+    """
+    monkeypatch.setattr(batch_mod.time, "sleep", lambda _seconds: None)
+
+
 MOCK_SS_RESPONSE = {
     "data": [
         {
@@ -158,6 +171,112 @@ def test_search_papers_skips_papers_without_arxiv_id():
         results = search_papers("test")
 
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit handling — pacing, backoff budget, schema drift
+# ---------------------------------------------------------------------------
+
+
+def test_search_papers_backoff_survives_the_rate_limit_window():
+    """Cumulative backoff must approach the ~60s Semantic Scholar reset window.
+
+    The original schedule was 2**attempt — waits of 1s then 2s, giving up ~3s
+    after the first 429, far inside the window. Every entry in
+    data/failed_extractions.log is a 429 lost this way.
+    """
+    rate_limited = _make_ss_mock_response({}, status=429)
+    rate_limited.raise_for_status.side_effect = Exception("HTTP 429")
+    waits: list[float] = []
+
+    with patch("pipeline.batch.requests.get", return_value=rate_limited), \
+         patch("pipeline.batch.time.sleep", side_effect=waits.append):
+        with pytest.raises(Exception):
+            search_papers("test")
+
+    assert sum(waits) >= 60, f"total backoff only {sum(waits)}s — inside the reset window"
+
+
+def test_search_papers_honours_retry_after_header():
+    """An explicit Retry-After from the server wins over the default schedule."""
+    rate_limited = _make_ss_mock_response({}, status=429)
+    rate_limited.raise_for_status.side_effect = None
+    rate_limited.headers = {"Retry-After": "12"}
+    success = _make_ss_mock_response({"data": []})
+    waits: list[float] = []
+
+    with patch("pipeline.batch.requests.get", side_effect=[rate_limited, success]), \
+         patch("pipeline.batch.time.sleep", side_effect=waits.append):
+        search_papers("test")
+
+    assert waits == [12]
+
+
+def test_ingest_from_query_paces_requests(monkeypatch, tmp_db):
+    """Every paper fetch is paced — the free tier is 1 req/sec.
+
+    ingest_from_query previously had no sleep at all, unlike its sibling
+    ingest_domain_papers, and burned through the quota.
+    """
+    papers = [
+        {"arxiv_id": "2301.00234", "title": "A", "year": 2023},
+        {"arxiv_id": "2301.00235", "title": "B", "year": 2023},
+    ]
+    monkeypatch.setattr(batch_mod, "search_papers", lambda q, limit: papers)
+    monkeypatch.setattr(batch_mod, "extract_paper",
+                        lambda arxiv_id: _make_paper_extract(arxiv_id))
+    waits: list[float] = []
+    monkeypatch.setattr(batch_mod.time, "sleep", waits.append)
+
+    ingest_from_query("object detection")
+
+    assert len(waits) == len(papers), "expected one pause per paper"
+    assert all(w >= 1 for w in waits), f"pauses too short for a 1 req/sec tier: {waits}"
+
+
+def test_ingest_from_query_paces_even_when_extraction_fails(monkeypatch, tmp_db):
+    """A failed paper still consumed API quota, so it must still be paced."""
+    monkeypatch.setattr(batch_mod, "search_papers",
+                        lambda q, limit: [{"arxiv_id": "2301.00234", "title": "A", "year": 2023}])
+
+    def _boom(arxiv_id):
+        raise RuntimeError("extraction failed")
+
+    monkeypatch.setattr(batch_mod, "extract_paper", _boom)
+    waits: list[float] = []
+    monkeypatch.setattr(batch_mod.time, "sleep", waits.append)
+
+    result = ingest_from_query("object detection")
+
+    assert result["failed"] == 1
+    assert len(waits) == 1
+
+
+def test_ingest_from_query_tolerates_schema_drift(monkeypatch, tmp_db):
+    """Inserting a paper with a new field must not crash on an existing table.
+
+    New PaperExtract fields need alter=True; this is exactly how extraction_tier
+    broke a live database before.
+    """
+    monkeypatch.setattr(batch_mod, "search_papers",
+                        lambda q, limit: [{"arxiv_id": "2301.00235", "title": "B", "year": 2023}])
+    monkeypatch.setattr(batch_mod, "extract_paper",
+                        lambda arxiv_id: _make_paper_extract(arxiv_id))
+    monkeypatch.setattr(batch_mod.time, "sleep", lambda _s: None)
+
+    # Pre-create the table WITHOUT the extraction_tier column, simulating an
+    # older database that predates the field.
+    db = sqlite_utils.Database(tmp_db / "papers.db")
+    db["papers"].insert(
+        {"arxiv_id": "0000.00000", "title": "old", "year": 2020, "domain": "computer_vision"},
+        pk="arxiv_id",
+    )
+    assert "extraction_tier" not in db["papers"].columns_dict
+
+    result = ingest_from_query("object detection")
+
+    assert result == {"ingested": 1, "skipped": 0, "failed": 0}
+    assert "extraction_tier" in sqlite_utils.Database(tmp_db / "papers.db")["papers"].columns_dict
 
 
 # ---------------------------------------------------------------------------

@@ -28,9 +28,6 @@ _BROWSER_HEADERS = {
     )
 }
 
-# Section headers in priority order — the earliest-priority match wins, so the
-# limitations section (most valuable for this project) is preferred when present.
-_SECTION_HEADERS = ("limitation", "future work", "conclusion", "discussion")
 _MAX_SECTION_CHARS = 4000
 # Limitation/conclusion sections live in the last ~30% of a paper; 20 pages
 # gives longer papers enough coverage to reach them.
@@ -171,40 +168,6 @@ def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = _MAX_PDF_PAGES) -> list
                 break
             pages.append(page.get_text("text") or "")
     return pages
-
-
-def _extract_section(text: str) -> str:
-    """Return the most relevant section's text, capped at _MAX_SECTION_CHARS chars.
-
-    First looks for an actual section *heading* (header at the start of a line,
-    optionally numbered like "5. Limitations"), preferring higher-priority headers
-    in _SECTION_HEADERS. If no heading is found, falls back to a plain substring
-    search for the header anywhere in the text. Returns "" when nothing matches.
-    """
-    if not text:
-        return ""
-
-    # Prefer a real section heading. Among all heading matches, pick the one with
-    # the highest-priority header (lowest index), breaking ties by position.
-    best_start: int | None = None
-    best_rank: tuple[int, int] | None = None
-    for match in _SECTION_HEADING_RE.finditer(text):
-        keyword = match.group(1).lower()
-        rank = (_SECTION_HEADERS.index(keyword), match.start())
-        if best_rank is None or rank < best_rank:
-            best_rank = rank
-            best_start = match.start()
-
-    if best_start is not None:
-        return text[best_start : best_start + _MAX_SECTION_CHARS].strip()
-
-    # Fallback: substring search anywhere, still in priority order.
-    lowered = text.lower()
-    for header in _SECTION_HEADERS:
-        idx = lowered.find(header)
-        if idx != -1:
-            return text[idx : idx + _MAX_SECTION_CHARS].strip()
-    return ""
 
 
 def _page_section_text(

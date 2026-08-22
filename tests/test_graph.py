@@ -11,11 +11,6 @@ from graph.populate import (
     create_constraints,
     get_neo4j_driver,
     populate_graph,
-    upsert_dataset,
-    upsert_future_direction,
-    upsert_limitation,
-    upsert_method,
-    upsert_paper,
 )
 
 
@@ -135,18 +130,27 @@ def test_create_constraints_covers_all_node_labels(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# upsert_paper
+# _upsert_paper_counting — the single production write path
+#
+# These were previously written against the upsert_* helper functions, which
+# nothing in production ever called. They are ported here so the code that
+# actually writes the graph is the code under test.
 # ---------------------------------------------------------------------------
 
 
-def test_upsert_paper_merges_on_arxiv_id():
-    """upsert_paper should issue a MERGE on arxiv_id with all properties."""
-    tx = _make_tx()
-    upsert_paper(tx, SAMPLE_PAPER)
+def _calls_containing(tx: MagicMock, needle: str) -> list:
+    """Every tx.run call whose Cypher mentions `needle`."""
+    return [c for c in tx.run.call_args_list if needle in c[0][0]]
 
-    tx.run.assert_called_once()
-    cypher, kwargs = tx.run.call_args[0][0], tx.run.call_args[1]
-    assert "MERGE" in cypher
+
+def test_upsert_paper_counting_merges_paper_on_arxiv_id():
+    """The Paper node is MERGEd on arxiv_id with title, year and domain set."""
+    tx = _make_tx()
+    _upsert_paper_counting(tx, SAMPLE_PAPER)
+
+    paper_calls = [c for c in tx.run.call_args_list if "MERGE (p:Paper" in c[0][0]]
+    assert len(paper_calls) == 1
+    cypher, kwargs = paper_calls[0][0][0], paper_calls[0][1]
     assert "arxiv_id" in cypher
     assert kwargs["arxiv_id"] == "2301.00234"
     assert kwargs["title"] == "Object Detection with Transformers"
@@ -154,44 +158,40 @@ def test_upsert_paper_merges_on_arxiv_id():
     assert kwargs["domain"] == "computer_vision"
 
 
-def test_upsert_paper_is_idempotent():
-    """Calling upsert_paper twice should issue two identical MERGE calls — no duplicate data."""
+def test_upsert_paper_counting_is_idempotent():
+    """Two runs issue the same MERGEs — Neo4j MERGE guarantees no duplicate nodes."""
     tx = _make_tx()
-    upsert_paper(tx, SAMPLE_PAPER)
-    upsert_paper(tx, SAMPLE_PAPER)
-    assert tx.run.call_count == 2
-    # Both calls should use the same arxiv_id — Neo4j MERGE guarantees idempotency
-    for c in tx.run.call_args_list:
+    _upsert_paper_counting(tx, SAMPLE_PAPER)
+    first_pass = tx.run.call_count
+    _upsert_paper_counting(tx, SAMPLE_PAPER)
+
+    assert tx.run.call_count == first_pass * 2
+    for c in _calls_containing(tx, "MERGE (p:Paper"):
         assert c[1]["arxiv_id"] == "2301.00234"
 
 
-# ---------------------------------------------------------------------------
-# upsert_limitation
-# ---------------------------------------------------------------------------
-
-
-def test_upsert_limitation_creates_node_and_relationship():
-    """upsert_limitation should MERGE Limitation and MERGE REPORTS_LIMITATION."""
+def test_upsert_paper_counting_creates_limitations():
+    """Each limitation MERGEs a Limitation node and a REPORTS_LIMITATION relationship."""
     tx = _make_tx()
-    upsert_limitation(tx, "2301.00234", "Slow convergence")
+    _upsert_paper_counting(tx, SAMPLE_PAPER)
 
-    tx.run.assert_called_once()
-    cypher = tx.run.call_args[0][0]
-    assert "Limitation" in cypher
-    assert "REPORTS_LIMITATION" in cypher
-    assert tx.run.call_args[1]["text"] == "Slow convergence"
-    assert tx.run.call_args[1]["arxiv_id"] == "2301.00234"
-    # Defaults to the explicit tier and writes it onto the relationship.
-    assert "r.tier" in cypher
-    assert tx.run.call_args[1]["tier"] == "explicit"
+    calls = _calls_containing(tx, "REPORTS_LIMITATION")
+    assert len(calls) == len(SAMPLE_PAPER["limitations"])
+    assert "Limitation" in calls[0][0][0]
+    assert {c[1]["text"] for c in calls} == set(SAMPLE_PAPER["limitations"])
+    for c in calls:
+        assert c[1]["arxiv_id"] == "2301.00234"
 
 
-def test_upsert_limitation_records_given_tier():
-    """upsert_limitation should store the supplied extraction tier on the relationship."""
+def test_upsert_paper_counting_defaults_to_explicit_tier():
+    """A paper with no extraction_tier records the explicit tier on the relationship."""
     tx = _make_tx()
-    upsert_limitation(tx, "2301.00234", "Inferred limitation", tier="inferred")
+    _upsert_paper_counting(tx, SAMPLE_PAPER)  # SAMPLE_PAPER has no extraction_tier
 
-    assert tx.run.call_args[1]["tier"] == "inferred"
+    calls = _calls_containing(tx, "REPORTS_LIMITATION")
+    for c in calls:
+        assert "r.tier" in c[0][0]
+        assert c[1]["tier"] == "explicit"
 
 
 def test_upsert_paper_counting_sets_limitation_tier():
@@ -201,64 +201,78 @@ def test_upsert_paper_counting_sets_limitation_tier():
 
     _upsert_paper_counting(tx, paper)
 
-    limitation_calls = [
-        c for c in tx.run.call_args_list if "REPORTS_LIMITATION" in c[0][0]
-    ]
+    limitation_calls = _calls_containing(tx, "REPORTS_LIMITATION")
     assert limitation_calls, "expected at least one REPORTS_LIMITATION query"
     for c in limitation_calls:
         assert "r.tier" in c[0][0]
         assert c[1]["tier"] == "conclusion"
 
 
-# ---------------------------------------------------------------------------
-# upsert_future_direction
-# ---------------------------------------------------------------------------
-
-
-def test_upsert_future_direction_creates_node_and_relationship():
-    """upsert_future_direction should MERGE FutureDirection and MERGE SUGGESTS_FUTURE."""
+def test_upsert_paper_counting_creates_future_directions():
+    """Each future direction MERGEs a FutureDirection node and SUGGESTS_FUTURE edge."""
     tx = _make_tx()
-    upsert_future_direction(tx, "2301.00234", "Apply to video understanding")
+    _upsert_paper_counting(tx, SAMPLE_PAPER)
 
-    tx.run.assert_called_once()
-    cypher = tx.run.call_args[0][0]
-    assert "FutureDirection" in cypher
-    assert "SUGGESTS_FUTURE" in cypher
-    assert tx.run.call_args[1]["text"] == "Apply to video understanding"
-
-
-# ---------------------------------------------------------------------------
-# upsert_method
-# ---------------------------------------------------------------------------
+    calls = _calls_containing(tx, "SUGGESTS_FUTURE")
+    assert len(calls) == len(SAMPLE_PAPER["future_directions"])
+    assert "FutureDirection" in calls[0][0][0]
+    assert {c[1]["text"] for c in calls} == set(SAMPLE_PAPER["future_directions"])
 
 
-def test_upsert_method_creates_node_and_relationship():
-    """upsert_method should MERGE Method node and MERGE USES_METHOD relationship."""
+def test_upsert_paper_counting_creates_methods():
+    """Each method MERGEs a Method node and a USES_METHOD relationship."""
     tx = _make_tx()
-    upsert_method(tx, "2301.00234", "DETR")
+    _upsert_paper_counting(tx, SAMPLE_PAPER)
 
-    tx.run.assert_called_once()
-    cypher = tx.run.call_args[0][0]
-    assert "Method" in cypher
-    assert "USES_METHOD" in cypher
-    assert tx.run.call_args[1]["name"] == "DETR"
-
-
-# ---------------------------------------------------------------------------
-# upsert_dataset
-# ---------------------------------------------------------------------------
+    calls = _calls_containing(tx, "USES_METHOD")
+    assert len(calls) == len(SAMPLE_PAPER["methods"])
+    assert "Method" in calls[0][0][0]
+    assert {c[1]["name"] for c in calls} == set(SAMPLE_PAPER["methods"])
 
 
-def test_upsert_dataset_creates_node_and_relationship():
-    """upsert_dataset should MERGE Dataset node and MERGE USES_DATASET relationship."""
+def test_upsert_paper_counting_creates_datasets():
+    """Each dataset MERGEs a Dataset node and a USES_DATASET relationship."""
     tx = _make_tx()
-    upsert_dataset(tx, "2301.00234", "COCO")
+    _upsert_paper_counting(tx, SAMPLE_PAPER)
 
-    tx.run.assert_called_once()
-    cypher = tx.run.call_args[0][0]
-    assert "Dataset" in cypher
-    assert "USES_DATASET" in cypher
-    assert tx.run.call_args[1]["name"] == "COCO"
+    calls = _calls_containing(tx, "USES_DATASET")
+    assert len(calls) == len(SAMPLE_PAPER["datasets"])
+    assert "Dataset" in calls[0][0][0]
+    assert {c[1]["name"] for c in calls} == set(SAMPLE_PAPER["datasets"])
+
+
+def test_upsert_paper_counting_skips_empty_strings():
+    """Empty list entries are skipped rather than creating blank nodes.
+
+    Extraction occasionally emits "" inside a list; a blank Limitation node would
+    be MERGEd corpus-wide and match many things, so it must never be written.
+    """
+    tx = _make_tx()
+    paper = {
+        **SAMPLE_PAPER,
+        "limitations": ["real limitation", ""],
+        "future_directions": ["", ""],
+        "methods": ["DETR", ""],
+        "datasets": [""],
+    }
+
+    _upsert_paper_counting(tx, paper)
+
+    assert len(_calls_containing(tx, "REPORTS_LIMITATION")) == 1
+    assert len(_calls_containing(tx, "SUGGESTS_FUTURE")) == 0
+    assert len(_calls_containing(tx, "USES_METHOD")) == 1
+    assert len(_calls_containing(tx, "USES_DATASET")) == 0
+
+
+def test_upsert_paper_counting_handles_missing_lists():
+    """A paper dict with no list fields at all writes only the Paper node."""
+    tx = _make_tx()
+
+    _upsert_paper_counting(tx, {"arxiv_id": "2301.00234"})
+
+    assert len(_calls_containing(tx, "MERGE (p:Paper")) == 1
+    assert _calls_containing(tx, "REPORTS_LIMITATION") == []
+    assert _calls_containing(tx, "USES_METHOD") == []
 
 
 # ---------------------------------------------------------------------------

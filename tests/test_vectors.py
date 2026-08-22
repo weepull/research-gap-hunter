@@ -81,6 +81,8 @@ def _make_search_hit(text: str, paper_ids: list[str], domain: str, score: float)
 
 def test_get_qdrant_client_uses_env_vars(monkeypatch):
     """get_qdrant_client should read QDRANT_HOST and QDRANT_PORT from environment."""
+    monkeypatch.delenv("QDRANT_URL", raising=False)
+    monkeypatch.delenv("QDRANT_API_KEY", raising=False)
     monkeypatch.setenv("QDRANT_HOST", "myhost")
     monkeypatch.setenv("QDRANT_PORT", "9999")
 
@@ -88,6 +90,47 @@ def test_get_qdrant_client_uses_env_vars(monkeypatch):
         get_qdrant_client()
 
     mock_cls.assert_called_once_with(host="myhost", port=9999)
+
+
+def test_get_qdrant_client_supports_managed_url_and_api_key(monkeypatch):
+    """QDRANT_URL + QDRANT_API_KEY drive a managed (Qdrant Cloud) connection.
+
+    Host/port alone cannot reach Qdrant Cloud, which needs an HTTPS URL and a
+    key — so a deployment would have failed at connect time.
+    """
+    monkeypatch.setenv("QDRANT_URL", "https://abc-123.eu-central.aws.cloud.qdrant.io:6333")
+    monkeypatch.setenv("QDRANT_API_KEY", "secret-key")
+    monkeypatch.setenv("QDRANT_HOST", "ignored-when-url-is-set")
+
+    with patch("vectors.embed.QdrantClient") as mock_cls:
+        get_qdrant_client()
+
+    mock_cls.assert_called_once_with(
+        url="https://abc-123.eu-central.aws.cloud.qdrant.io:6333",
+        api_key="secret-key",
+    )
+
+
+def test_get_qdrant_client_url_without_api_key(monkeypatch):
+    """A URL with no key is valid — e.g. a self-hosted instance behind a proxy."""
+    monkeypatch.setenv("QDRANT_URL", "https://qdrant.internal:6333")
+    monkeypatch.delenv("QDRANT_API_KEY", raising=False)
+
+    with patch("vectors.embed.QdrantClient") as mock_cls:
+        get_qdrant_client()
+
+    mock_cls.assert_called_once_with(url="https://qdrant.internal:6333", api_key=None)
+
+
+def test_get_qdrant_client_defaults_to_localhost(monkeypatch):
+    """With nothing configured, the local Docker default still works."""
+    for var in ("QDRANT_URL", "QDRANT_API_KEY", "QDRANT_HOST", "QDRANT_PORT"):
+        monkeypatch.delenv(var, raising=False)
+
+    with patch("vectors.embed.QdrantClient") as mock_cls:
+        get_qdrant_client()
+
+    mock_cls.assert_called_once_with(host="localhost", port=6333)
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,21 @@ _model_cache: dict = {}
 
 
 def get_qdrant_client() -> QdrantClient:
-    """Return a QdrantClient using QDRANT_HOST and QDRANT_PORT from .env."""
+    """Return a QdrantClient for either a local or a managed Qdrant.
+
+    QDRANT_URL (plus optional QDRANT_API_KEY) takes precedence and is what a
+    managed instance such as Qdrant Cloud requires — an HTTPS URL and a key.
+    Host/port alone cannot reach one, so a deployment configured that way would
+    have failed at connect time.
+
+    Falls back to QDRANT_HOST / QDRANT_PORT for the local Docker setup, which
+    stays the default when nothing is configured.
+    """
+    url = os.getenv("QDRANT_URL", "").strip()
+    if url:
+        api_key = os.getenv("QDRANT_API_KEY", "").strip() or None
+        return QdrantClient(url=url, api_key=api_key)
+
     host = os.getenv("QDRANT_HOST", "localhost")
     port = int(os.getenv("QDRANT_PORT", "6333"))
     return QdrantClient(host=host, port=port)

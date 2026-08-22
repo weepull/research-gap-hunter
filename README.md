@@ -106,8 +106,8 @@ The third dimension is the most novel: cross-domain hypothesis generation. Spect
 | API | FastAPI + Uvicorn | 7 endpoints; Pydantic response models; lifespan model warming; CORS |
 | Frontend | Next.js 16 + TypeScript + Tailwind CSS v4 | 3 pages; dark theme; server + client components; Inter font |
 | Paper source | Semantic Scholar API | arXiv metadata, PDF URLs, open access links |
-| Tests | pytest | 176 tests, 0 failures; all backends mocked at module level |
-| Python version | 3.11 | Required; type hints throughout |
+| Tests | pytest | 255 tests, 0 failures; all backends mocked at module level |
+| Python version | 3.11+ | `requires-python = ">=3.11"`; developed on 3.14; type hints throughout |
 
 ---
 
@@ -172,6 +172,13 @@ QDRANT_HOST=localhost
 QDRANT_PORT=6333
 OLLAMA_MODEL=llama3.1:8b
 OLLAMA_BASE_URL=http://localhost:11434
+
+# Optional — managed deployments
+# QDRANT_URL=https://xxx.cloud.qdrant.io:6333   # takes precedence over HOST/PORT
+# QDRANT_API_KEY=your_qdrant_cloud_key
+# NEO4J_URI=neo4j+s://xxx.databases.neo4j.io    # AuraDB requires neo4j+s://, not bolt://
+# NEO4J_DATABASE=neo4j
+# RATE_LIMIT_ENABLED=true                        # set false to disable API rate limiting
 ```
 
 ### 3. Start services
@@ -269,11 +276,15 @@ research-gap-hunter/
 
 **PyMuPDF over pdfplumber** — PyMuPDF (`fitz`) is 3–5× faster and handles the column-layout PDFs common in CV conferences (CVPR, ECCV, ICCV) without splitting mid-sentence. It also exposes page numbers, which the page-aware extraction strategy depends on: the extractor searches the last 40% of the document first (where limitations and future work live), cutting extraction time and improving yield.
 
-**Neo4j over a relational database** — The core query patterns are graph traversals: "find all limitations reported by papers that use the same method" or "find future directions from papers citing the same dataset." These are `MATCH` paths in Cypher; they are multi-join `GROUP BY` nightmares in SQL. Neo4j also lets the discovery layer evolve — adding citation graphs, co-author networks, or dataset lineage requires new relationship types, not schema migrations.
+**Neo4j over a relational database** — The core query patterns are graph traversals: "find all limitations reported by papers that use the same method" or "find all future directions from papers sharing a dataset." These are `MATCH` paths in Cypher; they are multi-join `GROUP BY` nightmares in SQL. Neo4j also lets the discovery layer evolve — adding citation graphs, co-author networks, or dataset lineage would require new relationship types rather than schema migrations.
+
+> Note: citation traversal is **not implemented**. The schema defines a `CITES` relationship but the graph currently contains zero of them, so the citation-graph argument above is a statement of intent, not of current capability. Whether Neo4j earns its place at this corpus size is an open question — see `PROJECT_HARDENING_PLAN.md`.
 
 **Seed-anchored clustering over HDBSCAN** — HDBSCAN produced one giant cluster with 64 limitations because transitive similarity (A≈B, B≈C → A,B,C merged even when A and C score 0.72). Seed-anchored grouping fixes this by anchoring every membership decision to the seed's similarity, not a transitive chain. It also batches all Specter2 embeddings in a single `model.encode()` call and uses Qdrant's `query_batch_points` for one-round-trip neighbour fetches — 27 clean clusters from 64 limitations at threshold 0.86.
 
-**Separate thresholds for within-domain and cross-domain matching** — Specter2-base similarity scores on this corpus have a median of ~0.82 and a range of 0.68–0.93. Within-domain clustering needs a threshold of 0.86 to sit well above the median and avoid over-merging. Cross-domain matching uses 0.82 because different field vocabularies (CV vs. medical imaging) compress Specter2 scores further — the best CV↔MI pairs peak around 0.84, and 0.82 yields 10 meaningful matches vs. 1 at 0.84.
+**Separate thresholds for within-domain and cross-domain matching** — Specter2-base similarity scores on this corpus have a median of ~0.82 and a range of 0.68–0.93. Within-domain clustering needs a threshold of 0.86 to sit well above the median and avoid over-merging. Cross-domain matching uses 0.82 because different field vocabularies (CV vs. medical imaging) compress Specter2 scores further — the best CV↔MI pairs peak around 0.84.
+
+> **Disputed — do not cite this number.** A null-distribution analysis (2026-08-22) found 0.82 sits *below the median of random cross-domain pairs*: 61.6% of 1,490 randomly paired CV/MI items clear it, and the 95th percentile of pure noise is 0.8792. The "10 meaningful matches" claim above has not survived that test. The threshold is pending an advisor decision — see item A2 in `PROJECT_HARDENING_PLAN.md`.
 
 **Local LLM (Ollama) over API calls** — Zero cost, zero latency variance, no rate limits, and the extracted data stays local. On an M-series Mac, Llama 3.1 8B processes a full paper (8–12K tokens) in ~15 seconds. The 3-tier extraction strategy (explicit→conclusion→inferred, confidence weights 1.0/0.75/0.5) compensates for the weaker instruction-following of a 8B model relative to GPT-4.
 
@@ -323,12 +334,16 @@ Interactive docs at `http://localhost:8000/docs` when the API is running.
 
 ## Roadmap
 
-- **Phase 5 — Scale to 500 papers** using Semantic Scholar bulk API; parallelize ingestion with async workers
-- **Phase 6 — GROBID integration** for structured section extraction (methods, results, limitations) replacing the LLM prompt — faster, cheaper, more consistent
-- **Phase 7 — Additional domains** (NLP, robotics, materials science); domain auto-detection from paper abstract
-- **Phase 8 — Citation graph overlay** in Neo4j; weight gap scores by citing-paper age to surface problems that are being abandoned vs. gaining attention
-- **Phase 9 — Patent corpus** integration; cross-reference academic limitations against granted patents to find commercially-solved but academically-unacknowledged gaps
-- **Phase 10 — Public deployment** on Railway (API) + Vercel (frontend) with read-only demo mode and authenticated ingestion
+> Phase numbering was retired — it implied a linear plan that no longer matches
+> reality. Current priorities and blockers live in `PROJECT_HARDENING_PLAN.md`;
+> the items below are directional, not scheduled.
+
+- **Scale to 500 papers** using Semantic Scholar bulk API; parallelize ingestion with async workers
+- **GROBID integration** for structured section extraction (methods, results, limitations) replacing the LLM prompt — faster, cheaper, more consistent
+- **Additional domains** (NLP, robotics, materials science); domain auto-detection from paper abstract
+- **Citation graph overlay** in Neo4j; weight gap scores by citing-paper age to surface problems that are being abandoned vs. gaining attention
+- **Patent corpus** integration; cross-reference academic limitations against granted patents to find commercially-solved but academically-unacknowledged gaps
+- **Public deployment** on Railway (API) + Vercel (frontend) with read-only demo mode and authenticated ingestion
 
 ---
 

@@ -71,6 +71,15 @@ Next.js + Tailwind
 
 ---
 
+## Frontend Agent Instructions
+
+`frontend/` has its own `AGENTS.md` (surfaced as `frontend/CLAUDE.md`) warning
+that the installed Next.js version has breaking changes versus training data,
+and that the guides in `node_modules/next/dist/docs/` must be read before
+writing frontend code. Read it before touching anything under `frontend/`.
+
+---
+
 ## Folder Structure
 
 ```
@@ -135,7 +144,12 @@ class PaperExtract(BaseModel):
     future_directions: list[str] # what the authors suggest as next steps
     raw_json: str                # full LLM output stored as blob
     ingested_at: str             # ISO timestamp
+    extraction_tier: str = "explicit"  # "explicit" | "conclusion" | "inferred"
 ```
+
+`extraction_tier` records where the limitations text came from and drives
+`_TIER_WEIGHTS` in gap scoring. It was added after this model was first written
+and was missing from this file until 2026-08-23.
 
 ### GapResult
 ```python
@@ -280,7 +294,13 @@ pre-fix code before landing.
 
 ## Extraction Prompt (Ollama)
 
-Always use this exact prompt structure. Do not modify without updating this file:
+Always use this exact prompt structure. Do not modify without updating this file.
+**This section drifted once already** — the two "If … not explicitly stated" lines
+and the whole tier-instruction mechanism below existed in code for a long time
+while this file still showed the older prompt. `pipeline/extractor.py` is the
+source of truth; if they disagree, the code is right and this section is stale.
+
+Base prompt (`_EXTRACTION_PROMPT`):
 
 ```
 You are a scientific paper analyst. Extract structured information from the following paper.
@@ -296,9 +316,27 @@ Return ONLY valid JSON with these exact keys. No explanation, no markdown, no pr
   "future_directions": ["<list of future work suggestions from the authors>"]
 }
 
+If limitations are not explicitly stated, return an empty list [] — do not invent limitations.
+If future_directions are not explicitly stated, return an empty list [] — do not invent future_directions.
+
 Paper text:
 {paper_text}
 ```
+
+Tier guidance (`_TIER_INSTRUCTIONS`, injected by `_build_prompt()` immediately
+before `Paper text:`). The `explicit` tier renders the base prompt unchanged:
+
+- **conclusion** — "This text is from the conclusion section. Extract implied
+  limitations — look for phrases like 'however', 'despite', 'remains
+  challenging', 'future work includes', 'we leave X for future'. Be specific."
+- **inferred** — "Limitations are not explicitly stated. Infer them from what the
+  paper claims to solve and what it does not address. Be conservative — only
+  infer clear limitations, not speculative ones."
+
+> Prompt quality is an **open issue**: half the extracted future directions are
+> contentless boilerplate that corrupts solution-deficit scoring. See item A3 in
+> `PROJECT_HARDENING_PLAN.md` — changing this prompt needs an advisor decision,
+> since re-extraction changes rankings.
 
 ---
 

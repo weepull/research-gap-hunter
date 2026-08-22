@@ -1,5 +1,19 @@
 # Research Gap Hunter — CLAUDE.md
 
+> **READ `PROJECT_HARDENING_PLAN.md` FIRST — before writing code or giving advice.**
+> It is the full 2026-08-22 audit and the single source of truth for known open issues,
+> their severity, and which ones are blocked on an advisor decision. This applies to
+> **every future session and every advisor reviewing the project.**
+>
+> Read it first because several things that look wrong here are already diagnosed there
+> (with measured numbers), and several things that look *fine* are known to be unsound —
+> most importantly, **`_SOLUTION_THRESHOLD = 0.85` and the cross-domain `0.82` both sit
+> below their measured noise floors**, so solution-deficit and cross-domain output are
+> substantially noise-driven right now. Do not propose changes to scoring, thresholds,
+> clustering, or displayed results without checking whether that item already has an entry
+> and a status there. When a decision is made, append it to that file's decision log **and**
+> record the rationale here.
+
 ## What This Project Is
 
 Research Gap Hunter is an AI-powered scientific discovery platform. It does NOT function as a search engine or retrieval tool. Its purpose is to answer "what should be done next?" — not "what has been done?"

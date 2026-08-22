@@ -1,0 +1,537 @@
+# Research Gap Hunter — Project Hardening Plan
+
+**Audit date:** 2026-08-22 · **Commit audited:** `c1f4c1a` · **Tests at audit:** 234 passing
+**Corpus at audit:** 63 papers (46 computer_vision, 17 medical_imaging), 89 limitations, 44 future directions, 27 CV gap clusters
+
+Read-only audit. **No code or data was changed while producing this document.**
+
+> **How to use this file.** Every item has a **Status**. `SAFE TO AUTO-FIX` items are pure
+> cleanup with no effect on scoring, ranking or displayed output — an executor may implement
+> them directly. `NEEDS ADVISOR DECISION` items change what the system reports and must go
+> through the Advisor–Executor Protocol in CLAUDE.md. Append decisions to the log at the bottom.
+
+---
+
+## Executive summary
+
+The pipeline is well-built and genuinely works end to end. The problems are not crashes —
+they are **silent correctness issues that make output look more authoritative than it is**.
+
+Three findings dominate, and all three are the *same family* as the two bugs fixed this
+session (recency baseline, solution-deficit self-matching): a plausible-looking number that
+was never validated against a baseline.
+
+1. **`_SOLUTION_THRESHOLD = 0.85` is below the noise floor** (new finding — not previously
+   known). 20% of *random* same-domain pairs clear it in CV, 45% in MI. Solution-deficit is
+   25% of the composite score.
+2. **Cross-domain `0.82` is far below the noise floor** — 62% of random pairs clear it.
+3. **Half the extracted future directions are contentless boilerplate**, and they are
+   actively zeroing out real gaps.
+
+Together these mean the **solution-deficit term (0.25 weight) and the entire cross-domain
+feature are substantially noise-driven today.** Frequency and recency are sound.
+
+**Hard blocker for a public demo:** Ollama has no managed hosting equivalent, so `/ingest`
+and `/explain` cannot work on Railway as planned. That is an architecture decision, not a
+config fix.
+
+---
+
+## A. Correctness / scoring integrity
+
+### A1 · `_SOLUTION_THRESHOLD = 0.85` is below the noise floor — BLOCKING
+**Status: NEEDS ADVISOR DECISION**
+
+**Current state.** `pipeline/gap_scorer.py:35` treats any future direction scoring ≥ 0.85
+against a cluster centroid as "addressing" that limitation. Measured null distribution over
+all random same-domain (limitation, future-direction) pairs, using the live stored vectors:
+
+| Domain | n pairs | p50 | p90 | p95 | **% of random pairs ≥ 0.85** |
+|---|---:|---:|---:|---:|---:|
+| computer_vision | 2,176 | 0.8193 | 0.8652 | 0.8773 | **20.1%** |
+| medical_imaging | 250 | 0.8442 | 0.8859 | 0.8987 | **44.8%** |
+
+**Why it matters.** One in five random CV pairs — and nearly half of random MI pairs — is
+counted as a *solution*. Every false "addressing" match pushes `solution_deficit_score`
+toward 0, demoting a gap that may be entirely unsolved. This is the same defect class as the
+self-matching bug fixed this session, but it was never measured because 0.85 *looked*
+conservative next to the 0.86 cluster threshold. It is not: those two numbers are measuring
+different populations and are not comparable.
+
+**Options.**
+- **A1-a — raise to the same-domain p95** (~0.877 CV / ~0.899 MI). Principled and consistent
+  with whatever is decided for cross-domain. Will push many gaps toward deficit 1.0, which
+  compounds the saturation problem in A9. Per-domain values mean two constants, not one.
+- **A1-b — single global threshold at the higher of the two** (~0.90). Simpler, safely above
+  both nulls, but over-strict for CV and will likely zero out almost all "addressed" matches.
+- **A1-c — keep 0.85 but require corroboration** (e.g. ≥2 independent papers proposing a
+  matching direction before deficit drops). Attacks the precision problem without re-deriving
+  a threshold; adds a new rule that itself needs justification.
+
+### A2 · Cross-domain threshold `0.82` is below the noise floor — BLOCKING
+**Status: NEEDS ADVISOR DECISION** (analysis already delivered separately; summarised here)
+
+**Current state.** `pipeline/cross_domain.py:176`. Null over all 1,490 random cross-domain
+pairs, both directions: mean 0.8267, **median 0.8294**, p95 **0.8792**, max 0.9272.
+
+- **61.6% of random pairs (918/1,490) clear 0.82.** The threshold sits *below the median of
+  pure noise*.
+- At p95 = 0.8792: **0 of 16** CV→MI matches survive (the default API path); 6 of 83 MI→CV survive.
+- 5 of those 6 survivors come from just 2 source gaps, and the top survivor's target is the
+  single most promiscuous future direction in the corpus (mean similarity 0.8630 to *all*
+  opposite-domain limitations).
+
+**Why it matters.** The cross-domain matcher is the project's headline differentiator and is
+currently surfacing pairs indistinguishable from chance, e.g. `0.8543` "Assumes specific
+growth rates for the partial sums" ↔ "Propose future research directions in the field".
+
+**Options.**
+- **A2-a — adopt p95 (0.8792).** Statistically defensible; CV→MI returns empty. The frontend
+  already renders a clean "No connections found" empty state, so this degrades gracefully.
+- **A2-b — adopt p90 (0.8693)** for a 10%-noise operating point; still eliminates all current
+  CV→MI matches.
+- **A2-c — keep a lower threshold but label output** as "below noise floor / exploratory".
+  Preserves the demo at the cost of presenting noise as a finding.
+
+### A3 · Contentless future directions corrupt solution-deficit scoring — BLOCKING
+**Status: NEEDS ADVISOR DECISION**
+
+This directly answers "does the contentless-future-directions issue affect anything beyond
+cross-domain?" — **yes, measurably.**
+
+**Current state.** Of 44 extracted future directions, **22 (50%) are short and non-specific**
+("Developing new methods that can generalize beyond the suggested benchmark", "improve the
+text-to-mask task with more effort"). 20 of 44 begin with a generic verb; median length is
+10 words. Downstream:
+
+- **26 of 79 (33%) surfaced `proposed_solutions` are contentless.**
+- **4 gaps are scored fully solved (`solution_deficit_score == 0.0`) where every "solution"
+  is boilerplate** — including "Insufficient advanced sensor technologies" and "Limited to
+  two-dimensional systems".
+
+**Why it matters.** A vacuous sentence semantically matches almost anything, so it
+preferentially wins matches and suppresses real gaps. It also feeds the same promiscuity into
+cross-domain. Raising thresholds (A1/A2) does **not** fix this — generic text scores *high*,
+not low, because it is topically bland and close to the corpus centroid.
+
+**Options.**
+- **A3-a — filter at extraction time.** Tighten `_EXTRACTION_PROMPT` to demand concrete,
+  technically specific future directions and drop generic ones. Fixes the root; requires
+  re-extraction of the corpus, which collides with the no-detach problem (B4).
+- **A3-b — filter at scoring time.** Reject future directions failing a specificity test
+  (length, presence of a technical term/acronym) before they count. No re-ingestion; the
+  heuristic is arbitrary and needs its own validation.
+- **A3-c — down-weight by promiscuity.** Compute each future direction's mean similarity to
+  all limitations and discount ones that match everything. Principled and self-calibrating;
+  most complex, and adds a corpus-dependent quantity to the scoring path.
+
+### A4 · Extraction tier weights are unvalidated — IMPORTANT
+**Status: NEEDS ADVISOR DECISION**
+
+`_TIER_WEIGHTS = {"explicit": 1.0, "conclusion": 0.75, "inferred": 0.5}`
+(`pipeline/gap_scorer.py:39`) feeds `frequency_score` directly. The values have no derivation
+— they are plausible round numbers. CLAUDE.md already forbids changing them without updating
+tests, which has preserved them but never justified them. Note the whole corpus currently
+carries `tier="explicit"`, so **the weighting is inert today** and only bites as tiers
+diversify. Options: derive empirically (do conclusion-tier limitations actually predict
+reported gaps less well?); collapse to binary explicit/other; or document as a deliberate
+prior and leave.
+
+### A5 · `_UNRESOLVED_DEFICIT_FLOOR = 0.3` is arbitrary — IMPORTANT
+**Status: NEEDS ADVISOR DECISION**
+
+`pipeline/cross_domain.py:37` decides which gaps are "genuinely unresolved" and therefore
+eligible for cross-domain matching. Undocumented derivation. Interacts with A1/A3: since
+deficit scores are heavily saturated at 0.0 and 1.0, this floor is effectively a binary
+switch, not a tunable dial.
+
+### A6 · `_MAX_FD_CANDIDATES = 20` silently truncates — IMPORTANT
+**Status: NEEDS ADVISOR DECISION**
+
+`pipeline/cross_domain.py:41` caps candidates per gap at 20, but there are 34 CV future
+directions. Anything ranked 21+ is never considered. Harmless today because the cut is by
+descending similarity, but it is a **silent** cap with no logging, and it will bite as the
+corpus grows. Options: raise to cover the collection; make it a function of collection size;
+or keep and log what was dropped.
+
+### A7 · `min_cluster_size` parameter is declared but never used — MINOR
+**Status: SAFE TO AUTO-FIX**
+
+`cluster_limitations(limitations, min_cluster_size=2)` (`pipeline/gap_scorer.py:91`) never
+references `min_cluster_size` in its body. It implies singletons are filtered; they are not —
+13 of 27 clusters are singletons. Actively misleading to a reader.
+**Recommended fix:** delete the parameter and update the callers/test stubs that pass it.
+(Deleting the *parameter* changes no behaviour; actually *implementing* filtering would change
+rankings and would be an advisor decision.)
+
+### A8 · `extract_paper()` hardcodes `domain="computer_vision"` — IMPORTANT
+**Status: NEEDS ADVISOR DECISION** (affects data labelling, hence scoring)
+
+`pipeline/extractor.py:388` tags every paper CV regardless of content. Both current callers
+patch it afterwards (`cross_domain.ingest_domain_papers`, `api/main.py:/ingest`), so it works
+by convention only. Any new call site silently mislabels papers, and domain drives the
+frequency denominator, the domain filters, and cross-domain routing. Options: make `domain` a
+required parameter; infer it during extraction; or keep the default and add a loud docstring
+warning plus a test asserting callers override it.
+
+### A9 · Solution-deficit metric is dimensionally incoherent and saturates — IMPORTANT
+**Status: NEEDS ADVISOR DECISION — already logged in CLAUDE.md as deferred (options 3B/3C)**
+
+Divides a corpus-wide count of future directions by a cluster-local count of papers, so it is
+not a proportion. 17 of 27 clusters sit at exactly 0.0 with only 5 distinct values across the
+corpus. Carried forward here so it is not lost.
+
+---
+
+## B. Data integrity
+
+### B1 · `ingest_from_query()` has no pacing between papers — IMPORTANT
+**Status: SAFE TO AUTO-FIX**
+
+`pipeline/batch.py:129-145` loops over papers with **no `time.sleep`**, while
+`cross_domain.ingest_domain_papers` correctly sleeps `_FETCH_SLEEP_SECONDS = 2`. CLAUDE.md
+mandates the sleep. **This is not hypothetical:** all 6 entries in
+`data/failed_extractions.log` are 429s written by this path (the `batch` prefix identifies
+it), losing 6 papers.
+**Recommended fix:** add the same `time.sleep(2)` per iteration, matching the sibling function.
+
+> Note: the "missing rate limiting" item in the four-session hardening plan was closed by
+> adding *inbound* API limiting. This *outbound* gap was never addressed and is arguably what
+> the original review meant.
+
+### B2 · Semantic Scholar backoff budget is far too short — IMPORTANT
+**Status: SAFE TO AUTO-FIX**
+
+`extractor.fetch_paper_text` and `batch.search_papers` retry 3 times with `2**attempt`
+seconds — waits of 1s then 2s, so they give up **~3 seconds** after the first 429. CLAUDE.md
+states the correct remedy is to wait ~60s for the rate-limit window to reset. The log confirms
+failures despite requests being ~13s apart.
+**Recommended fix:** lengthen the backoff schedule (or honour a `Retry-After` header when
+present) so a rate-limited fetch actually survives the window.
+
+### B3 · `ingest_from_query()` will crash on schema drift — IMPORTANT
+**Status: SAFE TO AUTO-FIX**
+
+`pipeline/batch.py:140` calls `table.insert(row, pk="arxiv_id", replace=False)` **without
+`alter=True`**, while every other write path passes it. CLAUDE.md documents that new
+`PaperExtract` fields require `add_column()` on existing DBs — this is exactly how
+`extraction_tier` broke before.
+**Recommended fix:** add `alter=True` for consistency with the other two insert sites.
+
+### B4 · Re-ingesting a paper accumulates relationships — IMPORTANT
+**Status: NEEDS ADVISOR DECISION** (deleting graph data affects scoring inputs)
+
+`graph/populate.py:_upsert_paper_counting` only ever `MERGE`s and never removes
+relationships; `Limitation` nodes are keyed on exact `text`. Because LLM extraction is
+non-deterministic, re-extracting a paper creates *new* Limitation nodes while the old ones
+stay attached, so the paper reports both wordings. Discovered this session; documented in
+CLAUDE.md but **the code is unchanged**, so the trap is still live. This currently blocks any
+re-extraction remedy, including A3-a.
+
+### B5 · `/health` and the scorer count papers from different stores — MINOR
+**Status: NEEDS ADVISOR DECISION** (changes a displayed number)
+
+`/health` reports `papers` from **SQLite**; `_count_papers_in_domain()` — the frequency
+denominator — counts **Neo4j** Paper nodes. They agree right now (63/63) only because the
+drift was just repaired. A future divergence would leave `/health` reporting "ok" while
+scoring used a different corpus size. Options: report both counts; report the Neo4j count
+since that is what scoring uses; or add an explicit consistency check that fails loudly.
+
+### B6 · Neo4j/SQLite paper drift — RESOLVED 2026-08-22
+Fixed in `c1f4c1a`; root cause and prevention documented in CLAUDE.md. Listed for completeness.
+
+### B7 · `populate_graph()` leaks the driver on exception — MINOR
+**Status: SAFE TO AUTO-FIX**
+`graph/populate.py:134-154` calls `driver.close()` only on the success path.
+**Recommended fix:** wrap in `try/finally`.
+
+---
+
+## C. Test coverage gaps
+
+### C1 · ~17 tests validate dead code — IMPORTANT
+**Status: SAFE TO AUTO-FIX**
+
+Two clusters of tests exercise functions **production never calls**:
+
+| Dead function | Tests | Production actually uses |
+|---|---:|---|
+| `extractor._extract_section` | 9 | `_select_section_from_pages` |
+| `populate.upsert_paper` / `upsert_limitation` / `upsert_future_direction` / `upsert_method` / `upsert_dataset` | 8 | `_upsert_paper_counting` |
+
+**Why it matters.** This is the failure mode caught earlier this session — tests that pass
+regardless of whether the shipped code works — in its most literal form. The suite's headline
+number overstates real coverage. Worse, `_extract_section` searches for headings in a joined
+full-text string, which is **precisely the anti-pattern CLAUDE.md forbids** ("Never search for
+section headings in joined full-text string"), and it sits there fully tested and ready for a
+new contributor to wire back in.
+**Recommended fix:** delete both the dead functions and their tests. Behaviour is unchanged by
+construction — nothing calls them.
+
+### C2 · The real graph-write path is barely tested — IMPORTANT
+**Status: SAFE TO AUTO-FIX**
+
+`_upsert_paper_counting` — which creates every Paper, Limitation, FutureDirection, Method and
+Dataset in production — has **one** direct test (tier tagging), while its unused twin has
+eight. Coverage is inverted.
+**Recommended fix:** port the eight `upsert_*` tests onto `_upsert_paper_counting` as part of
+the C1 deletion, so total coverage rises rather than falls.
+
+### C3 · No test would catch B1/B2/B3 — MINOR
+**Status: SAFE TO AUTO-FIX** (alongside those fixes)
+No test asserts pacing between ingestion iterations, backoff duration, or `alter=True`. Add
+assertions when fixing them, and confirm each fails against current code first.
+
+### C4 · Frontend has no tests — MINOR
+**Status: SAFE TO AUTO-FIX** (or accept)
+No test runner configured in `frontend/`. Acceptable for an MVP; worth stating explicitly
+rather than leaving a reviewer to discover it.
+
+---
+
+## D. Code quality / maintainability
+
+All **SAFE TO AUTO-FIX** — none touch scoring or output.
+
+| # | Issue | Location | Recommended fix |
+|---|---|---|---|
+| D1 | Graph upsert logic duplicated between the five `upsert_*` helpers and `_upsert_paper_counting`; fixing one would not fix the other | `graph/populate.py:41-118` vs `158-252` | Delete the helpers (see C1/C2) |
+| D2 | Two different `_log_failure` functions with **different signatures** — `extractor` takes `(id, reason, raw)`, `batch` takes `(id, reason)` | `extractor.py:343`, `batch.py:39` | Consolidate into one, or rename so the difference is visible at the call site |
+| D3 | `logging.basicConfig(level=INFO)` called at **import time** in two library modules — hijacks root logging for anything importing them, including the API and tests | `extractor.py:102`, `batch.py:29` | Remove; configure logging in the app entrypoint only |
+| D4 | `populate_graph(batch_size=50)` — parameter never used | `graph/populate.py:121` | Delete the parameter |
+| D5 | Cypher `CASE WHEN p.arxiv_id = $arxiv_id THEN 1 ELSE 0 END AS created` is always 1 and the result is discarded | `graph/populate.py:170` | Delete the expression |
+| D6 | `_extract_section` dead code implementing a documented anti-pattern | `extractor.py:176-207` | Delete (see C1) |
+| D7 | `frontend/AGENTS.md` warns that this Next.js version differs from training data, but root `CLAUDE.md` never mentions it | `frontend/AGENTS.md` | Cross-reference it from root CLAUDE.md |
+
+---
+
+## E. Security
+
+### E1 · `/ingest` is unauthenticated — BLOCKING for public deploy
+**Status: NEEDS ADVISOR DECISION** (product decision about who may write)
+
+`api/main.py:/ingest` accepts an arXiv ID from anyone and triggers a Semantic Scholar fetch, a
+PDF download, a 30–60s LLM run, database writes, and a **full re-embed of both Qdrant
+collections**. The new rate limiter caps it at 3/min per IP, which bounds but does not prevent
+abuse: corpus poisoning, quota exhaustion of your Semantic Scholar key, and trivially
+sustained CPU load. Options: require an API key/admin token; disable `/ingest` entirely in a
+read-only demo deployment; or move ingestion to an out-of-band job.
+
+### E2 · Error responses leak internal details — BLOCKING for public deploy
+**Status: SAFE TO AUTO-FIX**
+
+`api/main.py` returns `HTTPException(status_code=500, detail=str(exc))` in both `/ingest` and
+`/explain`. `str(exc)` on a driver or HTTP error routinely contains connection URIs, file
+paths, and library internals — and the frontend surfaces the raw body in its error string
+(`frontend/lib/api.ts:65`).
+**Recommended fix:** log the exception server-side, return a generic message and a correlation
+id to the client.
+
+### E3 · No arXiv ID validation → path injection into outbound URLs — IMPORTANT
+**Status: SAFE TO AUTO-FIX**
+
+`arxiv_id` flows unvalidated from the request body/path into f-string URLs:
+`f"{_ARXIV_PDF_BASE}/{arxiv_id}"` and `f"{_SEMANTIC_SCHOLAR_BASE}/paper/arXiv:{arxiv_id}"`.
+A crafted value containing `../` or a query string can redirect the fetch to other paths on
+those hosts. The host is fixed, so this is not full SSRF, but it is unvalidated user input
+reaching an outbound request.
+**Recommended fix:** validate against the arXiv ID format (`^\d{4}\.\d{4,5}(v\d+)?$` plus the
+older `archive/YYMMNNN` form) and reject otherwise, in the Pydantic model and the path param.
+
+### E4 · CORS is fully open — IMPORTANT
+**Status: SAFE TO AUTO-FIX** (at deploy time)
+`allow_origins=["*"]`, `allow_methods=["*"]`, `allow_headers=["*"]` (`api/main.py:110-115`).
+Fine locally; should be restricted to the Vercel origin before public deploy.
+
+### E5 · Unbounded PDF download into memory — MINOR
+**Status: SAFE TO AUTO-FIX**
+`extractor.fetch_full_text` reads `response.content` with no size cap. A very large PDF
+inflates memory. **Recommended fix:** stream with a max-bytes guard.
+
+### E6 · What is actually clean — no action
+Verified good: every Cypher query and every SQLite query is **parameterised** (no injection
+found); `.env` is gitignored and **not tracked by git**; no credentials or keys appear in
+committed files; the rate limiter correctly ignores spoofable `X-Forwarded-For`.
+
+---
+
+## F. Documentation accuracy
+
+All **SAFE TO AUTO-FIX** except F2.
+
+| # | Claim | Reality |
+|---|---|---|
+| F1 | `README.md:109` — "176 tests, 0 failures" | **234 tests.** Stale since the frontend commit |
+| F2 | `README.md:276` — "0.82 yields 10 meaningful matches vs. 1 at 0.84" | **Refuted by A2.** 62% of *random* pairs clear 0.82; those matches are not meaningful. **NEEDS ADVISOR DECISION** — rewrite together with the A2 threshold decision |
+| F3 | `README.md:272` — Neo4j justified by "papers citing the same dataset" and "adding citation graphs" | **No `CITES` relationships exist** in the graph (verified: 0). The justification cites unimplemented capability |
+| F4 | `CLAUDE.md` "Extraction Prompt — always use this exact prompt structure. Do not modify without updating this file" | The real prompt in `extractor.py:56-74` has **two extra instruction lines** plus per-tier guidance not in CLAUDE.md. The rule was broken without updating the doc |
+| F5 | `CLAUDE.md` `PaperExtract` model | Missing the `extraction_tier` field the code has |
+| F6 | `README.md:326-331` — "Phase 5 / Phase 9 / Phase 10" | CLAUDE.md explicitly removed phase language as stale; README still uses it. The two docs contradict each other |
+| F7 | `README.md:110` — "Python 3.11 Required" | Venv runs **3.14.4**; `pyproject.toml` says `>=3.11`. "Required" overstates it |
+
+---
+
+## G. Deployment readiness (local → Railway / Vercel / AuraDB / Qdrant Cloud)
+
+### G1 · Ollama has no managed equivalent — HARD BLOCKER
+**Status: NEEDS ADVISOR DECISION** (architecture)
+
+`/ingest` (extraction) and `/explain` (hypothesis explanation) both hard-depend on a local
+`llama3.1:8b` at `OLLAMA_BASE_URL`. Railway offers no Ollama service, and an 8B model needs
+GPU or a large always-on instance. **The planned deployment cannot run these two endpoints
+as written.** Options: swap to a hosted inference API for deployment only (changes the "local,
+free" property in the README and the stack table); ship a read-only demo with `/ingest` and
+`/explain` disabled; or self-host Ollama on a GPU box and point the deployed API at it.
+
+### G2 · `get_qdrant_client()` cannot reach Qdrant Cloud — BLOCKER
+**Status: SAFE TO AUTO-FIX**
+`vectors/embed.py:25-29` constructs `QdrantClient(host=..., port=...)` only. Qdrant Cloud
+requires an HTTPS URL **and an API key**, neither of which is plumbed through.
+**Recommended fix:** support `QDRANT_URL` + `QDRANT_API_KEY` env vars, falling back to
+host/port for local use.
+
+### G3 · SQLite on an ephemeral container filesystem — BLOCKER
+**Status: NEEDS ADVISOR DECISION** (data architecture)
+`data/papers.db` is a local file. Railway containers have ephemeral disks, so every redeploy
+would silently reset the corpus — the exact failure that caused the drift repaired in B6, but
+recurring on every deploy. Options: a Railway volume; move paper storage to Postgres; or treat
+SQLite as a rebuildable cache and reconstruct from Neo4j on boot (the reconstruction path used
+in `c1f4c1a` already proves this works).
+
+### G4 · Specter2 loads at startup — IMPORTANT
+**Status: NEEDS ADVISOR DECISION** (affects cost/instance sizing)
+The lifespan handler calls `load_embedding_model()`, downloading/loading ~440MB of weights
+before the app serves traffic. Expect slow cold starts and real memory pressure on a small
+instance; `HF_HUB_OFFLINE` is explicitly discouraged by CLAUDE.md, so the download path stays
+live. Options: bake weights into the image; lazy-load on first use and accept a slow first
+request; or move embedding to a separate service.
+
+### G5 · Rate limiter state is per-process — IMPORTANT
+**Status: SAFE TO AUTO-FIX** (already documented in CLAUDE.md)
+In-memory token buckets do not coordinate across workers, so limits multiply by worker count.
+**Recommended fix:** pin to one worker for the demo, or move buckets to Redis.
+
+### G6 · `NEXT_PUBLIC_API_URL` is inlined at build time — IMPORTANT
+**Status: SAFE TO AUTO-FIX**
+`frontend/lib/api.ts:6` defaults to `http://localhost:8000`. Next.js inlines `NEXT_PUBLIC_*`
+at **build** time, so if it is not set in the Vercel build environment the deployed site will
+call localhost and fail with no server-side error.
+**Recommended fix:** set it in Vercel and fail the build loudly when it is missing.
+
+### G7 · Frontend does not handle 429 — MINOR
+**Status: SAFE TO AUTO-FIX**
+No 429 handling anywhere in the frontend; a rate-limited user sees a raw `API 429: {...}`
+string. `/explain` is capped at 10/min and has a visible "Generate Explanation" button, so
+this is reachable by ordinary clicking. **Recommended fix:** detect 429, read `Retry-After`,
+show a friendly message.
+
+### G8 · Neo4j URI scheme default — MINOR
+**Status: SAFE TO AUTO-FIX**
+Default is `bolt://localhost:7687`; AuraDB requires `neo4j+s://`. Env-only change, but worth
+documenting in the README deploy section so it is not discovered at deploy time.
+
+---
+
+## H. Corpus / scale honesty
+
+### H1 · Nothing anywhere states the corpus size — BLOCKING for public demo
+**Status: NEEDS ADVISOR DECISION** (changes displayed output)
+
+The UI presents `0.6065` in a green "good" badge with three sub-score bars, in the visual
+language of an authoritative metric. Nothing on the page says the ranking is computed over
+**46 CV papers**. A reviewer who assumes a large corpus will read the numbers very
+differently from one who knows the denominator. Options: show corpus size and date on every
+results page; add a persistent "research preview — N papers" banner; or gate the public demo
+behind a larger corpus.
+
+### H2 · Frequency scores are structurally tiny and the colour scale hides it — IMPORTANT
+**Status: NEEDS ADVISOR DECISION**
+`frequency_score = weighted_papers / 46`, so real values run ~0.01–0.06 and the frequency bar
+is always visually empty, while the composite score can still show green because recency and
+deficit dominate. The displayed sub-scores are not on comparable scales, which is misleading
+even though each is individually correct.
+
+### H3 · Rankings are dominated by single-paper clusters — IMPORTANT
+**Status: NEEDS ADVISOR DECISION**
+**13 of 27 clusters are singletons.** The #2 and #3 ranked gaps ("Assumes specific growth
+rates for the partial sums", "Assumes a specific micro-gravity environment") are each backed
+by **one paper**, and neither is a computer-vision research gap in any meaningful sense —
+they are artefacts of one paper's phrasing. Presenting these as "the most urgent open problems
+in the domain" is the single most reputationally risky thing in the project. Options: require
+≥2 supporting papers to surface; show support count prominently next to each gap; or keep
+singletons but label them "single-source".
+
+### H4 · README overclaims scope — IMPORTANT
+**Status: SAFE TO AUTO-FIX** (wording only)
+`README.md:18` — "ranks research gaps … the most urgent, underserved open problems in the
+domain" and "over the entire corpus". At 63 papers, "the domain" is not covered.
+**Recommended fix:** state the corpus size and frame as a working prototype over a curated
+sample.
+
+### H5 · The medical-imaging future-direction pool is 10 items — IMPORTANT
+**Status: NEEDS ADVISOR DECISION**
+Cross-domain CV→MI matches against **10** future directions total. No threshold choice can
+make a 10-item target pool statistically meaningful; this is a corpus problem, not a
+parameter problem, and it bounds what A2 can achieve.
+
+---
+
+## Suggested sequencing
+
+**Stage 0 — free wins, no decisions needed** (do first; nothing here can change rankings)
+B1, B2, B3, B7 (ingestion robustness) · C1, C2, D1–D7 (delete dead code, port its tests) ·
+E2, E3, E5 (error leakage, input validation) · F1, F3, F4, F5, F6, F7 (doc corrections) ·
+A7 (unused parameter).
+*Rationale: shrinks the surface area and makes the coverage number honest before any scoring
+work begins.*
+
+**Stage 1 — the scoring-integrity block** (single advisor session; decide together)
+A1, A2, A3 are one interlocking decision — thresholds and extraction quality trade against
+each other, and fixing thresholds alone will not remove boilerplate matches. A9 (saturation)
+and A5 (deficit floor) should be settled in the same sitting since they consume the same
+numbers. **B4 must be resolved first if A3-a (re-extraction) is chosen**, because
+re-extraction is currently unsafe.
+
+**Stage 2 — honesty before exposure** (hard blocker for public demo)
+H1, H2, H3, H4. None of these require the Stage 1 decisions to land; they are about not
+overstating what the numbers mean. **H3 is the highest-risk item in the audit** — a technical
+reviewer will notice single-paper gaps immediately.
+
+**Stage 3 — deployment**
+G1 first: it is an architecture decision that may reshape everything else. Then G2, G3, G6
+(config/persistence blockers), then E1, E4 (public-exposure security), then G4, G5, G7, G8.
+
+**Stage 4 — deferred**
+A4 (tier weights, inert until tiers diversify), A6, C4, H5 (needs corpus growth, not code).
+
+### Hard blockers for the "public demo" goal
+1. **G1 — Ollama hosting.** `/explain` and `/ingest` cannot run as designed.
+2. **H3 + H1 — single-paper gaps presented without corpus context.** The credibility risk.
+3. **E1 + E2 — unauthenticated write endpoint and leaking errors.**
+4. **G3 — ephemeral SQLite** silently resetting the corpus on redeploy.
+5. **A2/A1 — thresholds below the noise floor.** Shipping a discovery tool whose headline
+   feature surfaces chance pairings is the worst outcome of everything in this document.
+
+### Explicitly *not* blockers
+A4, A6, C3, C4, G4, G7, G8, and every item in section D. These are quality-of-life and can
+follow the demo.
+
+---
+
+## Decision log
+
+> Append one entry per advisor decision, newest last. Format mirrors the advisor-decision
+> entries in CLAUDE.md: what was decided, why, measured impact, and what was deliberately
+> deferred. Once an entry lands here, update the corresponding item's **Status** above and
+> record the rationale in CLAUDE.md so it is not re-litigated next session.
+
+```
+### <ITEM-ID> · <short title> — decided <YYYY-MM-DD> (advisor: <name>)
+
+**Decision:** <option chosen>
+**Rationale:** <why, including numbers that drove it>
+**Measured impact:** <ranking delta / test delta / what was verified live>
+**Deferred:** <anything explicitly not settled by this decision>
+```
+
+_(No decisions recorded yet — audit delivered 2026-08-22.)_

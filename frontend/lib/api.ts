@@ -3,8 +3,33 @@
  * Response shapes mirror the Pydantic models in api/main.py exactly.
  */
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// NEXT_PUBLIC_* values are inlined at BUILD time, not read at runtime. If the
+// build environment has no NEXT_PUBLIC_API_URL, the deployed bundle ships
+// "http://localhost:8000" baked in and every request fails in the browser with
+// no server-side error to notice. Fail the production build instead, so the
+// misconfiguration surfaces during deploy rather than in front of a user.
+const CONFIGURED_API_URL = process.env.NEXT_PUBLIC_API_URL;
+
+if (!CONFIGURED_API_URL && process.env.NODE_ENV === "production") {
+  throw new Error(
+    "NEXT_PUBLIC_API_URL is not set. Set it in the build environment " +
+      "(e.g. Vercel project settings) — it is inlined at build time and " +
+      "cannot be supplied at runtime.",
+  );
+}
+
+const API_BASE = CONFIGURED_API_URL ?? "http://localhost:8000";
+
+/** Thrown when the API rejects a request because of rate limiting. */
+export class RateLimitError extends Error {
+  readonly retryAfterSeconds: number | null;
+
+  constructor(message: string, retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "RateLimitError";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types — mirror api/main.py response models
@@ -61,6 +86,20 @@ async function get<T>(path: string, params?: Record<string, string | number>): P
   }
   const res = await fetch(url.toString());
   if (!res.ok) {
+    if (res.status === 429) {
+      // The API paces expensive endpoints (/ingest 3/min, /explain 10/min,
+      // /gaps and /cross-domain 20/min). Surface this as its own error type so
+      // callers can show a wait message instead of a raw "API 429: {...}".
+      const header = res.headers.get("Retry-After");
+      const parsed = header ? Number.parseInt(header, 10) : Number.NaN;
+      const retryAfter = Number.isFinite(parsed) ? parsed : null;
+      throw new RateLimitError(
+        retryAfter
+          ? `Rate limit reached. Try again in ${retryAfter}s.`
+          : "Rate limit reached. Try again shortly.",
+        retryAfter,
+      );
+    }
     const body = await res.text().catch(() => "");
     throw new Error(`API ${res.status}: ${body.slice(0, 200) || res.statusText}`);
   }

@@ -50,9 +50,20 @@ export default function Nav() {
               saying what the product is for in four words; it is set small,
               tracked open and stacked directly beneath so the pair reads as a
               single designed mark. */}
+          {/* The lockup degrades in two steps. Below `sm` the wordmark and the
+              three nav links cannot share a row — measured at 430px they need
+              511px — so the wordmark becomes screen-reader-only and the
+              logomark carries the brand alone. `sr-only` rather than `hidden`
+              keeps it in the accessibility tree, so the link is never an
+              unlabelled icon. The tagline, being the most expendable line,
+              goes first. */}
           <span className="flex flex-col leading-none">
-            <span className="nav-wordmark text-label">Research Gap Hunter</span>
-            <span className="nav-tagline text-label-3">What to work on next</span>
+            <span className="nav-wordmark sr-only whitespace-nowrap text-label sm:not-sr-only">
+              Research Gap Hunter
+            </span>
+            <span className="nav-tagline hidden text-label-3 sm:block">
+              What to work on next
+            </span>
           </span>
         </Pressable>
 

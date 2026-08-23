@@ -44,7 +44,7 @@ export default function ConnectionCard({
                 from assistive tech, so without them a screen reader runs the
                 domain name straight into the role. */}
             {domainLabel(match.source_domain)}{" "}
-            <span aria-hidden="true" className="text-source-line">
+            <span aria-hidden="true" className="opacity-45">
               &middot;
             </span>{" "}
             unresolved gap
@@ -99,7 +99,7 @@ export default function ConnectionCard({
                 from assistive tech, so without them a screen reader runs the
                 domain name straight into the role. */}
             {domainLabel(match.target_domain)}{" "}
-            <span aria-hidden="true" className="text-target-line">
+            <span aria-hidden="true" className="opacity-45">
               &middot;
             </span>{" "}
             proposed solution

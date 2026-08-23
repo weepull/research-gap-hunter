@@ -524,8 +524,13 @@ body {
    =========================================================================== */
 
 .sheet-scrim {
-  background: var(--scrim);
-  opacity: var(--sheet-progress, 1);
+  /* Alpha, not opacity: the element's own opacity belongs to the enter/exit
+     fade, so drag progress has to modulate the colour instead. */
+  background: color-mix(
+    in srgb,
+    var(--scrim) calc(var(--sheet-progress, 1) * 100%),
+    transparent
+  );
 }
 
 /* Dim to focus, and push the page back a little so the sheet reads as being in

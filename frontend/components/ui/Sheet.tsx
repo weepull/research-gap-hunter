@@ -5,7 +5,7 @@ import {
   useCallback,
   useEffect,
   useRef,
-  useState,
+  useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -72,22 +72,34 @@ export default function Sheet({
   const grabOffset = useRef(0);
   const dragging = useRef(false);
   const restoreFocus = useRef<HTMLElement | null>(null);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => setMounted(true), []);
+  // Portals need a DOM. useSyncExternalStore gives React a server snapshot
+  // (false) and a client snapshot (true) to hydrate against, which is the same
+  // result as flipping state in an effect without the cascading render.
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
 
   // Drag progress drives the scrim and the background's push-back through a
   // CSS custom property. Doing it this way keeps both continuous with the
   // gesture — they respond while the finger moves, not only when it lifts —
   // without threading a motion value across the portal boundary.
-  const publishProgress = useCallback(
-    (value: number) => {
-      const h = heightRef.current || 1;
-      const p = Math.max(0, Math.min(1, 1 - value / h));
-      document.documentElement.style.setProperty("--sheet-progress", p.toFixed(3));
-    },
-    [],
-  );
+  const publishProgress = useCallback((value: number | string) => {
+    const h = heightRef.current || window.innerHeight || 1;
+    // The entrance animates from y:"100%", so the value is a percentage string
+    // until motion resolves it to pixels. Feeding that straight into the
+    // arithmetic produced `--sheet-progress: NaN`, which silently invalidated
+    // every declaration that read it.
+    let px: number;
+    if (typeof value === "number") px = value;
+    else if (typeof value === "string" && value.endsWith("%"))
+      px = (Number.parseFloat(value) / 100) * h;
+    else px = Number.parseFloat(String(value)) || 0;
+
+    const p = Math.max(0, Math.min(1, 1 - px / h));
+    document.documentElement.style.setProperty("--sheet-progress", p.toFixed(3));
+  }, []);
 
   useEffect(() => {
     const unsubscribe = y.on("change", publishProgress);
@@ -147,9 +159,15 @@ export default function Sheet({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
 
-  // Move focus into the sheet once it exists.
+  // Move focus into the sheet once it exists, and record its height so drag
+  // progress has a real denominator from the first frame rather than from the
+  // first pointerdown.
   useEffect(() => {
-    if (open) sheetRef.current?.focus();
+    if (!open) return;
+    const el = sheetRef.current;
+    if (!el) return;
+    heightRef.current = el.getBoundingClientRect().height;
+    el.focus();
   }, [open]);
 
   function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
@@ -212,6 +230,11 @@ export default function Sheet({
             type="button"
             aria-label="Close detail"
             onClick={onClose}
+            // Two independent channels, deliberately kept apart: motion owns
+            // `opacity` for the mount/unmount fade, and CSS owns the background
+            // alpha for drag progress. Driving both through opacity meant the
+            // inline style from the enter animation permanently overrode the
+            // drag channel, so dragging never dimmed anything.
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

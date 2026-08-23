@@ -544,3 +544,10 @@ body {
   /* Scale is travel. The scrim still dims — that is comprehension, not motion. */
   [data-sheet-open] main { transform: none; }
 }
+
+/* The UA's own search-cancel control is suppressed in favour of an explicit
+   clear button that is keyboard reachable and carries a label. */
+.search-field::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}

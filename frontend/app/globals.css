@@ -39,7 +39,9 @@
   --label:   #1d1d1f;  /* 15.8:1 — headings, primary copy */
   --label-2: #494950;  /*  7.9:1 — secondary copy */
   --label-3: #6b6b74;  /*  5.1:1 — smallest colour still safe for meaningful text */
-  --label-4: #8e8e96;  /*  3.4:1 — DECORATIVE ONLY. Never load-bearing text. */
+  --label-4: #82828a;  /*  3.35:1 on canvas — decorative marks only (arrows,
+                          separators). Measured: the previous #8e8e96 was
+                          2.85:1 and failed even the 3:1 non-text bar. */
 
   /* --- Accent ------------------------------------------------------------
      The old #6366f1 is a dark-theme indigo; on white it reads violet and

@@ -55,7 +55,7 @@ export default function GapCard({
           </span>
 
           <div className="min-w-0 flex-1">
-            <h3 className="text-title-3 text-label">{gap.gap_description}</h3>
+            <h2 className="text-title-3 text-label">{gap.gap_description}</h2>
 
             {/* Directly under the title: a reader cannot see the gap without
                 also seeing how much evidence stands behind it. */}
@@ -97,9 +97,9 @@ export default function GapCard({
 
         {gap.proposed_solutions.length > 0 && (
           <div className="mt-5 border-t border-hairline pt-4">
-            <h4 className="text-eyebrow uppercase text-label-3">
+            <h3 className="text-eyebrow uppercase text-label-3">
               Proposed solutions
-            </h4>
+            </h3>
             <ul className="mt-2 space-y-1.5">
               {gap.proposed_solutions.map((solution, i) => (
                 <li key={i} className="flex gap-2 text-callout text-label-2">

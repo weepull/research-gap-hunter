@@ -30,9 +30,13 @@ export default function SearchField({
         placeholder={placeholder}
         autoFocus
         aria-label="Search limitation statements"
+        // Placeholder uses the 4.5:1 label colour, not the decorative one:
+        // placeholder text is text, and it carries the only instruction about
+        // what to type here.
+        //
         // The UA search-cancel button is suppressed in favour of the explicit
         // clear button below, which is reachable by keyboard and has a label.
-        className="search-field w-full rounded-sm border border-hairline bg-surface px-4 py-2.5 pr-24 text-body text-label shadow-[var(--shadow-1)] placeholder:text-label-4"
+        className="search-field w-full rounded-sm border border-hairline bg-surface px-4 py-2.5 pr-24 text-body text-label shadow-[var(--shadow-1)] placeholder:text-label-3"
       />
       <div className="absolute inset-y-0 right-2 flex items-center gap-1">
         {busy && (

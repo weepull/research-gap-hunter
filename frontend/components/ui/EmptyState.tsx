@@ -23,7 +23,7 @@ export default function EmptyState({
   return (
     <div className="rounded-lg border border-dashed border-hairline-strong bg-surface-sunken px-6 py-10 text-center">
       {eyebrow && <Eyebrow className="mb-2">{eyebrow}</Eyebrow>}
-      <h3 className="text-title-3 text-label">{title}</h3>
+      <h2 className="text-title-3 text-label">{title}</h2>
       {children && (
         <div className="mx-auto mt-2 max-w-[52ch] text-callout text-label-2">
           {children}

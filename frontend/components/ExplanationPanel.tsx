@@ -52,9 +52,9 @@ export default function ExplanationPanel({ match }: { match: CrossDomainMatch })
   if (explanation) {
     return (
       <div>
-        <h4 className="text-eyebrow uppercase text-label-3">
+        <h3 className="text-eyebrow uppercase text-label-3">
           Why this connection might matter
-        </h4>
+        </h3>
         <p className="mt-2 text-callout text-label-2">{explanation}</p>
       </div>
     );

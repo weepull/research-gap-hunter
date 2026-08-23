@@ -22,7 +22,7 @@ export default function ErrorState({
       role="alert"
       className="rounded-lg border border-negative-line bg-negative-wash px-6 py-8 text-center"
     >
-      <h3 className="text-title-3 text-negative">{title}</h3>
+      <h2 className="text-title-3 text-negative">{title}</h2>
       <p className="mx-auto mt-2 max-w-[56ch] text-callout text-label-2">{message}</p>
       {onRetry && (
         <div className="mt-5 flex justify-center">

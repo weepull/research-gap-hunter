@@ -32,9 +32,14 @@ export default function ConnectionCard({
       transition={{ ...spring("move"), delay: Math.min(index * 0.04, 0.2) }}
       className="overflow-hidden rounded-lg border border-hairline bg-surface shadow-[var(--shadow-2)]"
     >
+      <h2 className="sr-only">
+        Connection {index + 1}: a {domainLabel(match.source_domain)} gap paired
+        with a {domainLabel(match.target_domain)} proposal, similarity{" "}
+        {match.similarity_score.toFixed(3)}
+      </h2>
       <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr]">
         <div className="border-b border-source-line bg-source-wash p-5 md:border-b-0 md:border-r">
-          <h3 className="text-eyebrow uppercase text-source">
+          <p className="text-eyebrow uppercase text-source">
             {/* Real spaces, not margins: the separator is decorative and hidden
                 from assistive tech, so without them a screen reader runs the
                 domain name straight into the role. */}
@@ -43,7 +48,7 @@ export default function ConnectionCard({
               &middot;
             </span>{" "}
             unresolved gap
-          </h3>
+          </p>
           <p className="mt-2 text-callout text-label">{match.source_gap}</p>
           {match.source_papers.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
@@ -89,7 +94,7 @@ export default function ConnectionCard({
         </div>
 
         <div className="border-t border-target-line bg-target-wash p-5 md:border-t-0 md:border-l">
-          <h3 className="text-eyebrow uppercase text-target">
+          <p className="text-eyebrow uppercase text-target">
             {/* Real spaces, not margins: the separator is decorative and hidden
                 from assistive tech, so without them a screen reader runs the
                 domain name straight into the role. */}
@@ -98,7 +103,7 @@ export default function ConnectionCard({
               &middot;
             </span>{" "}
             proposed solution
-          </h3>
+          </p>
           <p className="mt-2 text-callout text-label">{match.target_solution}</p>
           {match.target_papers.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">

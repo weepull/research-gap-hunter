@@ -1,138 +1,16 @@
 "use client";
 
-import CorpusBanner from "@/components/CorpusBanner";
 import { useState } from "react";
-import {
-  CrossDomainMatch,
-  DOMAINS,
-  domainLabel,
-  FeatureDisabledError,
-  fetchCrossDomainMatches,
-  fetchExplanation,
-} from "@/lib/api";
-
-function PaperChips({ ids, tone }: { ids: string[]; tone: "blue" | "green" }) {
-  const cls =
-    tone === "blue"
-      ? "hover:bg-sky-500/15 hover:text-sky-400"
-      : "hover:bg-emerald-500/15 hover:text-emerald-400";
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {ids.map((pid) => (
-        <a
-          key={pid}
-          href={`https://arxiv.org/abs/${pid}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`rounded bg-card-border/40 px-2 py-0.5 font-mono text-xs text-muted ${cls}`}
-        >
-          {pid}
-        </a>
-      ))}
-    </div>
-  );
-}
-
-function ConnectionCard({ match }: { match: CrossDomainMatch }) {
-  const [explanation, setExplanation] = useState<string | null>(null);
-  const [explaining, setExplaining] = useState(false);
-  const [explainError, setExplainError] = useState<string | null>(null);
-  // Set when the API reports explanations are switched off for this deployment.
-  // Kept separate from explainError so it renders as information, not failure,
-  // and so the button can stop inviting a click that will always be refused.
-  const [explainDisabled, setExplainDisabled] = useState<string | null>(null);
-
-  async function explain() {
-    setExplaining(true);
-    setExplainError(null);
-    try {
-      const res = await fetchExplanation(
-        match.source_gap,
-        match.target_solution,
-        match.source_domain,
-        match.target_domain,
-      );
-      setExplanation(res.explanation);
-    } catch (err) {
-      if (err instanceof FeatureDisabledError) {
-        setExplainDisabled(err.message);
-      } else {
-        setExplainError(err instanceof Error ? err.message : "Explanation failed");
-      }
-    } finally {
-      setExplaining(false);
-    }
-  }
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-card-border bg-card transition-colors hover:border-accent/40">
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr]">
-        {/* Source gap — blue */}
-        <div className="border-b border-sky-500/20 bg-sky-500/5 p-5 md:border-b-0 md:border-r">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-sky-400">
-            {domainLabel(match.source_domain)} · unresolved gap
-          </p>
-          <p className="text-sm leading-relaxed text-foreground">{match.source_gap}</p>
-          <div className="mt-3">
-            <PaperChips ids={match.source_papers} tone="blue" />
-          </div>
-        </div>
-
-        {/* Bridge */}
-        <div className="flex flex-row items-center justify-center gap-2 px-4 py-3 md:flex-col md:py-5">
-          <div className="hidden h-px w-8 bg-gradient-to-r from-sky-500/50 to-accent md:block" />
-          <div className="flex flex-col items-center gap-1">
-            <span className="rounded-full border border-accent/40 bg-accent/15 px-3 py-1 text-sm font-bold tabular-nums text-accent">
-              {match.similarity_score.toFixed(3)}
-            </span>
-            <span className="text-lg text-accent">⇄</span>
-          </div>
-          <div className="hidden h-px w-8 bg-gradient-to-r from-accent to-emerald-500/50 md:block" />
-        </div>
-
-        {/* Target solution — green */}
-        <div className="border-t border-emerald-500/20 bg-emerald-500/5 p-5 md:border-t-0 md:border-l">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-emerald-400">
-            {domainLabel(match.target_domain)} · proposed solution
-          </p>
-          <p className="text-sm leading-relaxed text-foreground">{match.target_solution}</p>
-          <div className="mt-3">
-            <PaperChips ids={match.target_papers} tone="green" />
-          </div>
-        </div>
-      </div>
-
-      {/* Explanation */}
-      <div className="border-t border-card-border px-5 py-3">
-        {explanation ? (
-          <div>
-            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-accent">
-              Why this connection matters
-            </p>
-            <p className="text-sm leading-relaxed text-foreground/85">{explanation}</p>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={explain}
-              disabled={explaining || explainDisabled !== null}
-              title={explainDisabled ?? undefined}
-              className="rounded-md border border-accent/40 bg-accent/10 px-3 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {explaining
-                ? "Generating… (LLM, ~10s)"
-                : explainDisabled
-                  ? "Explanations unavailable"
-                  : "Generate Explanation"}
-            </button>
-            {explainDisabled && <span className="text-sm text-muted">{explainDisabled}</span>}
-            {explainError && <span className="text-sm text-red-400">{explainError}</span>}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+import Container from "@/components/ui/Container";
+import Eyebrow from "@/components/ui/Eyebrow";
+import Skeleton from "@/components/ui/Skeleton";
+import EmptyState from "@/components/ui/EmptyState";
+import ErrorState from "@/components/ui/ErrorState";
+import Pressable from "@/components/ui/Pressable";
+import CorpusBanner from "@/components/CorpusBanner";
+import DomainPicker from "@/components/DomainPicker";
+import ConnectionCard from "@/components/ConnectionCard";
+import { CrossDomainMatch, domainLabel, fetchCrossDomainMatches } from "@/lib/api";
 
 export default function CrossDomainPage() {
   const [source, setSource] = useState("computer_vision");
@@ -141,6 +19,10 @@ export default function CrossDomainPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const sameDomain = source === target;
+
+  // Explicitly user-triggered, so this is an event handler rather than an
+  // effect — nothing here runs on mount.
   async function discover() {
     setLoading(true);
     setError(null);
@@ -155,111 +37,105 @@ export default function CrossDomainPage() {
   }
 
   return (
-    <div>
-      <header className="mb-8">
-        <h1 className="bg-gradient-to-r from-sky-400 via-indigo-400 to-emerald-400 bg-clip-text text-3xl font-bold tracking-tight text-transparent">
-          Cross-Domain Discovery
-        </h1>
-        <p className="mt-1 text-muted">
-          Solutions proposed in one field, matched to open problems in another
+    <Container width="wide" className="section-y">
+      <header>
+        <Eyebrow>Hypotheses</Eyebrow>
+        <h1 className="mt-2 text-title-1 text-label">Cross-domain connections</h1>
+        <p className="mt-2 max-w-[62ch] text-body text-label-2">
+          Solutions proposed in one field, matched against unresolved problems
+          in another. These pairings are candidate hypotheses, not findings —
+          nobody has written them down.
         </p>
       </header>
 
-      <CorpusBanner domain={source} />
-
-      <div className="mb-8 flex flex-wrap items-end gap-4 rounded-xl border border-card-border bg-card p-5">
-        <label className="flex flex-col gap-1.5 text-sm text-muted">
-          Source domain (open problems)
-          <select
-            value={source}
-            onChange={(e) => setSource(e.target.value)}
-            className="rounded-md border border-card-border bg-background px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none"
-          >
-            {DOMAINS.map((d) => (
-              <option key={d.value} value={d.value}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <span className="pb-2 text-xl text-accent">→</span>
-
-        <label className="flex flex-col gap-1.5 text-sm text-muted">
-          Target domain (solutions)
-          <select
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            className="rounded-md border border-card-border bg-background px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none"
-          >
-            {DOMAINS.map((d) => (
-              <option key={d.value} value={d.value}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <button
-          onClick={discover}
-          disabled={loading || source === target}
-          className="rounded-lg bg-accent px-5 py-2 font-medium text-white shadow-lg shadow-accent/20 transition-colors hover:bg-accent/80 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {loading ? "Discovering…" : "Discover Connections"}
-        </button>
-        {source === target && (
-          <span className="pb-2 text-xs text-amber-400">
-            Pick two different domains
+      <div className="mt-6 flex flex-wrap items-end gap-x-6 gap-y-4 rounded-lg border border-hairline bg-surface card-p shadow-[var(--shadow-2)]">
+        <div className="flex flex-col gap-2">
+          <span className="text-caption text-label-3">Open problems from</span>
+          <DomainPicker value={source} onChange={setSource} label="Source domain" />
+        </div>
+        <span aria-hidden="true" className="pb-2 text-label-4">
+          &rarr;
+        </span>
+        <div className="flex flex-col gap-2">
+          <span className="text-caption text-label-3">Solutions from</span>
+          <DomainPicker value={target} onChange={setTarget} label="Target domain" />
+        </div>
+        <div className="flex flex-col gap-2">
+          <span className="sr-only" aria-live="polite">
+            {sameDomain ? "Source and target must be different domains." : ""}
           </span>
+          <Pressable
+            onClick={discover}
+            disabled={loading || sameDomain}
+            className="rounded-sm bg-accent px-5 py-2.5 text-headline text-white shadow-[var(--shadow-2)] hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {loading ? "Searching…" : "Find connections"}
+          </Pressable>
+        </div>
+        {sameDomain && (
+          <p className="text-caption text-caution">
+            Pick two different domains — a field is not cross-referenced with itself.
+          </p>
         )}
       </div>
 
-      {loading && (
-        <div className="space-y-4">
-          {[0, 1].map((i) => (
-            <div key={i} className="h-44 animate-pulse rounded-xl border border-card-border bg-card" />
-          ))}
-        </div>
-      )}
+      <div className="mt-5">
+        <CorpusBanner domain={source} />
+      </div>
 
-      {!loading && error && (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-6 text-center">
-          <p className="font-medium text-red-400">Discovery failed</p>
-          <p className="mt-1 text-sm text-muted">{error}</p>
-        </div>
-      )}
+      <div className="mt-5">
+        {loading && (
+          <div className="space-y-4" aria-busy="true" aria-label="Searching for connections">
+            {[0, 1].map((i) => (
+              <Skeleton key={i} className="h-48 w-full" rounded="rounded-lg" />
+            ))}
+          </div>
+        )}
 
-      {!loading && !error && matches && matches.length === 0 && (
-        <div className="rounded-xl border border-card-border bg-card p-10 text-center">
-          <p className="text-lg font-medium text-foreground">No connections found</p>
-          <p className="mt-1 text-sm text-muted">
-            No cross-domain matches above the similarity threshold for this domain pair.
-          </p>
-        </div>
-      )}
+        {!loading && error && <ErrorState title="Discovery failed" message={error} onRetry={discover} />}
 
-      {!loading && !error && matches && matches.length > 0 && (
-        <div className="space-y-4">
-          <p className="text-xs uppercase tracking-wide text-muted">
-            {matches.length} {matches.length === 1 ? "connection" : "connections"} discovered
-          </p>
-          {matches.map((m, i) => (
-            <ConnectionCard key={`${m.source_gap}-${m.target_solution}-${i}`} match={m} />
-          ))}
-        </div>
-      )}
+        {!loading && !error && matches === null && (
+          <EmptyState eyebrow="Start" title="Pick two fields and look for overlap">
+            The matcher compares unresolved limitations in the source field
+            against future directions proposed in the target field, and reports
+            only pairs that clear the similarity threshold derived from this
+            corpus&rsquo;s own measured noise floor.
+          </EmptyState>
+        )}
 
-      {!loading && !error && matches === null && (
-        <div className="rounded-xl border border-dashed border-card-border p-14 text-center">
-          <p className="text-2xl">🔭</p>
-          <p className="mt-2 text-lg font-medium text-foreground">
-            Ready to discover research hypotheses
-          </p>
-          <p className="mt-1 text-sm text-muted">
-            Pick a source and target domain, then hit Discover Connections.
-          </p>
-        </div>
-      )}
-    </div>
+        {/* An empty result here is correct output, not a failure. Saying so is
+            the difference between an interface that looks broken and one that
+            is being precise. */}
+        {!loading && !error && matches && matches.length === 0 && (
+          <EmptyState
+            eyebrow="No matches above threshold"
+            title="Nothing here clears the noise floor"
+          >
+            No {domainLabel(source)} gap pairs with a {domainLabel(target)}{" "}
+            proposal closely enough to be distinguishable from a random pairing.
+            That is a real answer: the threshold is set at the 95th percentile of
+            similarity between unrelated pairs in this corpus, so anything below
+            it would be noise presented as a discovery.
+          </EmptyState>
+        )}
+
+        {!loading && !error && matches && matches.length > 0 && (
+          <>
+            <p aria-live="polite" className="mb-3 text-caption text-label-3">
+              {matches.length} {matches.length === 1 ? "connection" : "connections"} above threshold
+            </p>
+            <div className="space-y-4">
+              {matches.map((m, i) => (
+                <ConnectionCard
+                  key={`${m.source_gap}-${m.target_solution}-${i}`}
+                  match={m}
+                  index={i}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </Container>
   );
 }

@@ -178,18 +178,6 @@
   --color-hairline:        var(--hairline);
   --color-hairline-strong: var(--hairline-strong);
 
-  /* --- LEGACY ALIASES ----------------------------------------------------
-     /search and /cross-domain still reference the old dark-theme token names
-     and are not restyled until Stage 2. Mapping them onto the light palette
-     keeps those pages legible and functional at the review checkpoint instead
-     of leaving dark-on-dark text on a white page. DELETE THESE once every
-     page has been migrated. */
-  --color-background:  var(--canvas);
-  --color-card:        var(--surface);
-  --color-card-border: var(--hairline);
-  --color-foreground:  var(--label);
-  --color-muted:       var(--label-3);
-
   /* --- Spacing -----------------------------------------------------------
      4px base, in rem so a larger user text setting scales the layout with the
      type (§15 Dynamic Type) instead of cramping it. Non-linear past -5: a

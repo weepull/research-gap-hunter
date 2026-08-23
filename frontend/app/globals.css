@@ -1,39 +1,502 @@
 @import "tailwindcss";
 
+/* prefers-reduced-transparency has no built-in Tailwind variant (motion-reduce
+   and contrast-more do), so it gets one here. Every translucent surface in the
+   app is required to answer all three signals. */
+@custom-variant reduce-transparency (@media (prefers-reduced-transparency: reduce));
+
+/* ===========================================================================
+   DESIGN TOKENS
+   Light-only by deliberate choice. Every value below is picked for a reason
+   recorded beside it; nothing is a framework default left in place.
+   =========================================================================== */
+
 :root {
-  --background: #0a0a0f;
-  --card: #13131a;
-  --border: #1e293b;
-  --accent: #6366f1;
-  --foreground: #e2e8f0;
-  --muted: #94a3b8;
+  /* --- Surfaces ----------------------------------------------------------
+     The canvas is tinted, not white, so a white card reads as *elevated*
+     rather than as the page itself. This is the single decision the whole
+     light system rests on. */
+  --canvas:         #f1f0ee;
+  --canvas-veil:    #faf9f7;   /* hero wash, top of page */
+  --surface:        #ffffff;   /* cards */
+  --surface-sunken: #f8f7f5;   /* nested panels inside a card */
+  --surface-inset:  #e9e7e4;   /* meter tracks, code chips — reads as carved in */
+
+  /* --- Materials (§12) ---------------------------------------------------
+     Thin for chrome, thick for sheets: a bigger surface must read as thicker
+     glass, not the same glass stretched. Saturate boosts colour passing
+     underneath, which is what makes it read as glass and not as fog. */
+  --material-thin:        rgba(255, 255, 255, 0.72);
+  --material-thin-blur:   blur(20px) saturate(180%);
+  --material-thick:       rgba(255, 255, 255, 0.86);
+  --material-thick-blur:  blur(40px) saturate(180%);
+  --material-edge:        rgba(255, 255, 255, 0.70); /* 1px top hairline = light catching the edge */
+  --scrim:                rgba(22, 22, 26, 0.28);
+
+  /* --- Text: Apple's label hierarchy -------------------------------------
+     Near-black, not #000 — pure black on white is harsh at body size and
+     reads as unfinished. Ratios measured against --canvas. */
+  --label:   #1d1d1f;  /* 15.8:1 — headings, primary copy */
+  --label-2: #494950;  /*  7.9:1 — secondary copy */
+  --label-3: #6b6b74;  /*  5.1:1 — smallest colour still safe for meaningful text */
+  --label-4: #8e8e96;  /*  3.4:1 — DECORATIVE ONLY. Never load-bearing text. */
+
+  /* --- Accent ------------------------------------------------------------
+     The old #6366f1 is a dark-theme indigo; on white it reads violet and
+     thin. This blue holds up on white at UI text sizes. */
+  --accent:        #0071e3;            /* 4.6:1 on white — UI text >=14px, graphics */
+  --accent-hover:  #0063c7;
+  --accent-strong: #0055b0;            /* 7.1:1 — small text, links, contrast-more */
+  --accent-wash:   rgba(0, 113, 227, 0.08);
+  --accent-line:   rgba(0, 113, 227, 0.28);
+  --focus-ring:    rgba(0, 113, 227, 0.40);
+
+  /* --- Semantic ----------------------------------------------------------
+     Each role carries a text-safe colour AND a graphic colour: the value that
+     passes contrast as 13px text is too dark to read as a signal at 6px, and
+     vice versa. Never one value doing both jobs. */
+  --positive:       #0f7b4f;  /* 4.9:1 */
+  --positive-graph: #12a164;
+  --positive-wash:  #eaf7f0;
+  --positive-line:  #a9ddc4;
+
+  --caution:        #8a5300;  /* 6.0:1 on white, 5.7:1 on its own wash */
+  --caution-graph:  #e8a317;
+  --caution-wash:   #fff7e8;
+  --caution-line:   #f0ce8a;
+
+  --negative:       #b03028;  /* 5.4:1 */
+  --negative-graph: #d9453a;
+  --negative-wash:  #fdeeec;
+  --negative-line:  #f3b9b3;
+
+  /* Cross-domain: source and target must stay distinguishable from each
+     other AND from the accent, since all three appear in one card. */
+  --source:       #0a5e8c;  /* 6.3:1 */
+  --source-graph: #1189c9;
+  --source-wash:  #eaf4fa;
+  --source-line:  #a8d5ec;
+
+  --target:       #0f7b4f;
+  --target-graph: #12a164;
+  --target-wash:  #eaf7f0;
+  --target-line:  #a9ddc4;
+
+  /* Meter hues — three that stay distinguishable at 6px height, each >=3:1
+     against --surface-inset per WCAG 1.4.11 (non-text contrast). */
+  --meter-frequency: #0071e3;
+  --meter-recency:   #0e7c86;
+  --meter-deficit:   #b5305e;
+
+  /* --- Hairlines ---------------------------------------------------------
+     Alpha, not a solid grey, so a hairline sits correctly on canvas, on
+     white, and on glass without three separate values. */
+  --hairline:        rgba(24, 22, 18, 0.14);
+  --hairline-strong: rgba(24, 22, 18, 0.26);
+
+  /* --- Shadows: two layers each, key + ambient ---------------------------
+     A single blur reads as a sticker. Depth scales with surface size (§12):
+     a sheet casts further than a chip because it is further off the page. */
+  --shadow-1: 0 1px 1px rgba(24, 22, 18, 0.04);
+  --shadow-2: 0 1px 2px rgba(24, 22, 18, 0.05), 0 3px 8px rgba(24, 22, 18, 0.05);
+  --shadow-3: 0 2px 4px rgba(24, 22, 18, 0.06), 0 10px 22px rgba(24, 22, 18, 0.09);
+  --shadow-4: 0 4px 10px rgba(24, 22, 18, 0.08), 0 28px 56px rgba(24, 22, 18, 0.16);
+
+  /* --- Display type ------------------------------------------------------
+     Held here rather than inlined into @theme so the hero's weight, size and
+     tracking can be tuned as one decision. Display type is where a page's
+     confidence is either established or lost. */
+  --display-size: clamp(3.5rem, 8vw, 6rem);
+  --display-leading: 0.96;
+  --display-tracking: -0.038em;
+  --display-weight: 640;
+
+  --title-1-size: clamp(2.25rem, 4vw, 3.25rem);
+  --title-1-weight: 640;
+  --title-1-tracking: -0.026em;
+
+  /* --- Layout rhythm -----------------------------------------------------
+     Section and hero padding are tokens, not per-component utilities, so the
+     page's vertical density is one value to argue about instead of nine. */
+  --section-py: 1.75rem;
+  --hero-pt: 3.5rem;
+  --hero-pb: 2.5rem;
+  --hero-measure: 15ch;
+  --card-p: 1.5rem;
+
+  /* The hero's visual anchor. A full background shorthand so a variant can
+     change its whole character, not just an opacity. */
+  --hero-bg: linear-gradient(180deg, var(--canvas-veil) 0%, var(--canvas) 60%);
 }
 
+/* ===========================================================================
+   TAILWIND THEME
+   Tokens above become utilities here. Tailwind carries layout; these carry
+   the design.
+   =========================================================================== */
+
 @theme inline {
-  --color-background: var(--background);
-  --color-card: var(--card);
-  --color-card-border: var(--border);
-  --color-accent: var(--accent);
-  --color-foreground: var(--foreground);
-  --color-muted: var(--muted);
-  --font-sans: var(--font-inter);
+  --color-canvas:         var(--canvas);
+  --color-canvas-veil:    var(--canvas-veil);
+  --color-surface:        var(--surface);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-inset:  var(--surface-inset);
+
+  --color-label:   var(--label);
+  --color-label-2: var(--label-2);
+  --color-label-3: var(--label-3);
+  --color-label-4: var(--label-4);
+
+  --color-accent:        var(--accent);
+  --color-accent-hover:  var(--accent-hover);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-wash:   var(--accent-wash);
+  --color-accent-line:   var(--accent-line);
+
+  --color-positive:       var(--positive);
+  --color-positive-graph: var(--positive-graph);
+  --color-positive-wash:  var(--positive-wash);
+  --color-positive-line:  var(--positive-line);
+  --color-caution:        var(--caution);
+  --color-caution-graph:  var(--caution-graph);
+  --color-caution-wash:   var(--caution-wash);
+  --color-caution-line:   var(--caution-line);
+  --color-negative:       var(--negative);
+  --color-negative-graph: var(--negative-graph);
+  --color-negative-wash:  var(--negative-wash);
+  --color-negative-line:  var(--negative-line);
+
+  --color-source:       var(--source);
+  --color-source-graph: var(--source-graph);
+  --color-source-wash:  var(--source-wash);
+  --color-source-line:  var(--source-line);
+  --color-target:       var(--target);
+  --color-target-graph: var(--target-graph);
+  --color-target-wash:  var(--target-wash);
+  --color-target-line:  var(--target-line);
+
+  --color-hairline:        var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+
+  /* --- LEGACY ALIASES ----------------------------------------------------
+     /search and /cross-domain still reference the old dark-theme token names
+     and are not restyled until Stage 2. Mapping them onto the light palette
+     keeps those pages legible and functional at the review checkpoint instead
+     of leaving dark-on-dark text on a white page. DELETE THESE once every
+     page has been migrated. */
+  --color-background:  var(--canvas);
+  --color-card:        var(--surface);
+  --color-card-border: var(--hairline);
+  --color-foreground:  var(--label);
+  --color-muted:       var(--label-3);
+
+  /* --- Spacing -----------------------------------------------------------
+     4px base, in rem so a larger user text setting scales the layout with the
+     type (§15 Dynamic Type) instead of cramping it. Non-linear past -5: a
+     section break must read as categorically different from card padding,
+     not as one more increment of the same thing. */
+  --spacing-1: 0.25rem;
+  --spacing-2: 0.5rem;
+  --spacing-3: 0.75rem;
+  --spacing-4: 1rem;    /* control padding */
+  --spacing-5: 1.5rem;  /* card padding */
+  --spacing-6: 2rem;    /* between cards */
+  --spacing-7: 3rem;    /* between page sections */
+  --spacing-8: 4.5rem;  /* landing sections */
+  --spacing-9: 7rem;    /* hero */
+
+  /* --- Radii: concentric -------------------------------------------------
+     A nested surface uses (outer - padding), floored at 6px, so corners stay
+     concentric. Mismatched nesting is the tell that separates a real material
+     from a stack of boxes. */
+  --radius-xs:   6px;   /* chips */
+  --radius-sm:   10px;  /* controls */
+  --radius-md:   14px;  /* inner panels */
+  --radius-lg:   20px;  /* cards */
+  --radius-xl:   28px;  /* sheets, hero surfaces */
+  --radius-full: 999px;
+
+  --shadow-1: var(--shadow-1);
+  --shadow-2: var(--shadow-2);
+  --shadow-3: var(--shadow-3);
+  --shadow-4: var(--shadow-4);
+
+  /* --- Type --------------------------------------------------------------
+     The platform font ships optical sizing, tracking tables and legibility
+     tuning already; a webfont would throw that away for no gain here (§15). */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+               "Segoe UI Variable Text", "Segoe UI", system-ui, Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+               "Liberation Mono", monospace;
+
+  /* Size-specific tracking and leading. Tracking runs monotonically
+     -0.025em -> +0.011em as size falls: large text reads too loose at 0, small
+     text too tight. Leading is tight on display type, opens to 1.55 at body
+     for reading comfort, then tightens again for dense caption UI. A single
+     letter-spacing value across a scale is wrong somewhere by definition. */
+  --text-display: var(--display-size);
+  --text-display--line-height: var(--display-leading);
+  --text-display--letter-spacing: var(--display-tracking);
+  --text-display--font-weight: var(--display-weight);
+
+  --text-title-1: var(--title-1-size);
+  --text-title-1--line-height: 1.08;
+  --text-title-1--letter-spacing: var(--title-1-tracking);
+  --text-title-1--font-weight: var(--title-1-weight);
+
+  --text-title-2: 1.5rem;
+  --text-title-2--line-height: 1.16;
+  --text-title-2--letter-spacing: -0.016em;
+  --text-title-2--font-weight: 600;
+
+  --text-title-3: 1.25rem;
+  --text-title-3--line-height: 1.28;
+  --text-title-3--letter-spacing: -0.011em;
+  --text-title-3--font-weight: 590;
+
+  --text-headline: 1.0625rem;
+  --text-headline--line-height: 1.36;
+  --text-headline--letter-spacing: -0.005em;
+  --text-headline--font-weight: 600;
+
+  --text-body: 1rem;
+  --text-body--line-height: 1.55;
+  --text-body--letter-spacing: 0em;
+  --text-body--font-weight: 400;
+
+  --text-callout: 0.9375rem;
+  --text-callout--line-height: 1.5;
+  --text-callout--letter-spacing: 0.001em;
+  --text-callout--font-weight: 400;
+
+  --text-subhead: 0.875rem;
+  --text-subhead--line-height: 1.45;
+  --text-subhead--letter-spacing: 0.003em;
+  --text-subhead--font-weight: 450;
+
+  --text-footnote: 0.8125rem;
+  --text-footnote--line-height: 1.42;
+  --text-footnote--letter-spacing: 0.006em;
+  --text-footnote--font-weight: 450;
+
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.34;
+  --text-caption--letter-spacing: 0.011em;
+  --text-caption--font-weight: 590;
+
+  --text-eyebrow: 0.6875rem;
+  --text-eyebrow--line-height: 1.3;
+  --text-eyebrow--letter-spacing: 0.06em;
+  --text-eyebrow--font-weight: 620;
+}
+
+/* ===========================================================================
+   BASE
+   =========================================================================== */
+
+html {
+  /* The page paints its own ground explicitly — never inherited. */
+  background: var(--canvas);
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-inter), system-ui, sans-serif;
+  background: var(--canvas);
+  color: var(--label);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.55;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
-/* Thin scrollbars fit the data-dense aesthetic */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* Scores, counts and corpus figures must not reflow as digits change. */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Vertical rhythm, token-driven. */
+.section-y     { padding-block: var(--section-py); }
+.hero-y        { padding-top: var(--hero-pt); padding-bottom: var(--hero-pb); }
+.hero-measure  { max-width: var(--hero-measure); }
+.card-p        { padding: var(--card-p); }
+
+/* ===========================================================================
+   FOCUS
+   Global and unconditional. The previous design used `focus:outline-none` on
+   inputs and gave buttons and links no focus style at all — this replaces
+   both with one visible ring everywhere.
+   =========================================================================== */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus-ring);
+  border-radius: var(--radius-xs);
 }
-::-webkit-scrollbar-track {
-  background: var(--background);
+
+/* Only suppress the ring for pointer input, never for keyboard. */
+:focus:not(:focus-visible) { outline: none; }
+
+/* ===========================================================================
+   MATERIALS
+   Component classes rather than utility soup, because each one has to answer
+   three media queries and that logic must live in exactly one place.
+   =========================================================================== */
+
+.material-thin {
+  background: var(--material-thin);
+  -webkit-backdrop-filter: var(--material-thin-blur);
+  backdrop-filter: var(--material-thin-blur);
+  border-bottom: 1px solid var(--hairline);
+  box-shadow: inset 0 1px 0 var(--material-edge);
 }
+
+.material-thick {
+  background: var(--material-thick);
+  -webkit-backdrop-filter: var(--material-thick-blur);
+  backdrop-filter: var(--material-thick-blur);
+  box-shadow: var(--shadow-4), inset 0 1px 0 var(--material-edge);
+}
+
+/* Scroll edge effect (§12): a soft fade where content passes under floating
+   chrome, instead of a hard 1px rule that is always there whether or not
+   anything is actually underneath it. */
+.scroll-edge {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--canvas) 92%, transparent),
+    transparent
+  );
+  -webkit-mask-image: linear-gradient(to bottom, #000, transparent);
+  mask-image: linear-gradient(to bottom, #000, transparent);
+}
+
+/* ===========================================================================
+   ACCESSIBILITY
+   Three independent signals, answered independently. Reduced motion is not
+   "no feedback" — it is non-vestibular feedback, so opacity and colour
+   changes survive and only travel and overshoot are removed.
+   =========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 120ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Travel is what causes vestibular discomfort; the element still changes
+     state, it just does not move to get there. */
+  .motion-travel { transform: none !important; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .material-thin,
+  .material-thick {
+    background: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .material-thin  { border-bottom: 1px solid var(--hairline-strong); }
+  .material-thick { box-shadow: var(--shadow-4); }
+  .scroll-edge    { display: none; }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --hairline:      rgba(24, 22, 18, 0.32);
+    --label-3:       #55555e;   /* 6.9:1 — lift the weakest text colour */
+    --label-4:       #6b6b74;   /* stops being decorative-only */
+    --accent:        var(--accent-strong);
+    /* Tinted washes lose their edge at high contrast; surfaces go plain and
+       definition comes from borders instead. */
+    --accent-wash:   transparent;
+    --positive-wash: transparent;
+    --caution-wash:  transparent;
+    --negative-wash: transparent;
+    --source-wash:   transparent;
+    --target-wash:   transparent;
+  }
+  .material-thin,
+  .material-thick {
+    background: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 1px solid var(--label-3);
+  }
+  .bordered-at-high-contrast { border: 1px solid var(--label-3); }
+}
+
+/* ===========================================================================
+   SCROLLBARS — quiet, and matched to the light canvas
+   =========================================================================== */
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
+  background: var(--hairline-strong);
+  border: 3px solid var(--canvas);
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--label-4); }
+
+/* ===========================================================================
+   SHIMMER
+   Loading placeholders. A slow travelling highlight rather than a pulsing
+   opacity loop — a whole-element brightness oscillation is more distracting
+   at the edge of vision than a directional sweep. Suppressed entirely under
+   reduced motion (the Skeleton component drops the class).
+   =========================================================================== */
+
+@keyframes shimmer-sweep {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+.shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--surface-inset) 0%,
+    color-mix(in srgb, var(--surface-inset) 55%, #ffffff) 50%,
+    var(--surface-inset) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-sweep 1.8s linear infinite;
+}
+
+/* ===========================================================================
+   NAV
+   An opaque plane, separated from the paper canvas by a rule and a shadow
+   rather than by translucency. See the note in components/Nav.tsx for why this
+   one surface departs from the translucent-chrome default.
+   =========================================================================== */
+
+.nav-bar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline-strong);
+  box-shadow: var(--shadow-2);
+}
+
+.nav-wordmark {
+  font-size: 0.8125rem;
+  font-weight: 640;
+  /* Uppercase at this size needs markedly open tracking; capitals set at body
+     tracking collapse into a single block instead of reading as words. */
+  letter-spacing: 0.085em;
+  text-transform: uppercase;
+}
+
+.nav-tagline {
+  margin-top: 0.28rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.055em;
+}
+
+@media (prefers-contrast: more) {
+  .nav-bar { border-bottom-color: var(--label-3); }
 }

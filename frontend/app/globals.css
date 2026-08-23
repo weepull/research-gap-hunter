@@ -500,3 +500,42 @@ body {
 @media (prefers-contrast: more) {
   .nav-bar { border-bottom-color: var(--label-3); }
 }
+
+/* Visually hidden, still announced. Used wherever a visual affordance carries
+   meaning a screen reader would otherwise miss. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ===========================================================================
+   SHEET
+   The scrim and the background's push-back both read --sheet-progress, which
+   the Sheet writes on every frame of the drag. Tying them to the gesture this
+   way keeps the feedback continuous — the background responds while the finger
+   is still moving, not only once it lifts.
+   =========================================================================== */
+
+.sheet-scrim {
+  background: var(--scrim);
+  opacity: var(--sheet-progress, 1);
+}
+
+/* Dim to focus, and push the page back a little so the sheet reads as being in
+   front of it rather than pasted onto it. */
+[data-sheet-open] main {
+  transform: scale(calc(1 - 0.012 * var(--sheet-progress, 0)));
+  transform-origin: 50% 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Scale is travel. The scrim still dims — that is comprehension, not motion. */
+  [data-sheet-open] main { transform: none; }
+}

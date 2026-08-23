@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 from graph.populate import _upsert_paper_counting, get_neo4j_driver  # noqa: E402
 from pipeline.batch import _get_db, _log_failure, _paper_to_row, get_paper  # noqa: E402
+from pipeline.config import allowed_origins, is_demo_mode  # noqa: E402
 from pipeline.cross_domain import (  # noqa: E402
     CrossDomainMatch,
     explain_match,
@@ -146,9 +147,13 @@ app = FastAPI(
 # the frontend can read the status instead of seeing an opaque network error.
 app.middleware("http")(rate_limit_middleware)
 
+# Open locally so a dev frontend on any port works; restricted to the configured
+# frontend origins in demo mode, where the browser is untrusted. allowed_origins()
+# returns [] if demo mode is on and ALLOWED_ORIGINS is unset — a misconfigured
+# deploy should fail visibly in the browser rather than quietly serving everyone.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -311,6 +316,19 @@ def ingest_paper(body: IngestRequest) -> IngestResponse:
     Extraction runs Semantic Scholar metadata fetch + PDF download + Ollama LLM.
     Expect ~30–60 s per paper. The domain field overrides the extractor default.
     """
+    if is_demo_mode():
+        # 403, not 501: the endpoint is implemented and works — this deployment
+        # is not permitted to use it. Ingestion burns the Semantic Scholar quota,
+        # runs a 30-60s LLM job and rewrites both Qdrant collections, so a public
+        # instance must not expose it. See item E1 in PROJECT_HARDENING_PLAN.md.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Ingestion is disabled in the public demo. "
+                "Run the project locally with DEMO_MODE=false to ingest papers."
+            ),
+        )
+
     arxiv_id = body.arxiv_id.strip()
     domain = body.domain.strip()
 

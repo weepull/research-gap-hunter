@@ -471,6 +471,99 @@ def test_ingest_extraction_failure_returns_500(monkeypatch):
     assert r.status_code == 500
 
 
+# ---------------------------------------------------------------------------
+# DEMO_MODE — /ingest disabled on public deployments (G1 / E1)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_refused_in_demo_mode(client, monkeypatch):
+    """A public demo must not accept ingestion requests."""
+    monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
+    called = []
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: called.append(arxiv_id))
+
+    r = client.post("/ingest", json={"arxiv_id": "2301.00234"})
+
+    assert r.status_code == 403
+    assert called == [], "demo mode still reached the extraction path"
+
+
+def test_ingest_demo_refusal_explains_itself(client, monkeypatch):
+    """The refusal says what happened and how to ingest, not just 'forbidden'.
+
+    A bare 403 reads like a bug or a missing credential; this is a deliberate
+    deployment policy and the message has to say so.
+    """
+    monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: None)
+
+    body = client.post("/ingest", json={"arxiv_id": "2301.00234"}).json()
+
+    assert "disabled in the public demo" in body["detail"]
+    assert "DEMO_MODE=false" in body["detail"]
+
+
+def test_ingest_demo_refusal_precedes_validation(client, monkeypatch):
+    """Demo mode refuses before doing any work, including on a malformed id.
+
+    Ordering matters: a 422 would tell a prober that ingestion is reachable and
+    only the payload was wrong.
+    """
+    monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: None)
+
+    # A valid id is refused; an invalid one is still rejected by the validator,
+    # which runs before the handler — both refuse, neither ingests.
+    assert client.post("/ingest", json={"arxiv_id": "2301.00234"}).status_code == 403
+    assert client.post("/ingest", json={"arxiv_id": "../etc"}).status_code == 422
+
+
+def test_ingest_works_when_not_in_demo_mode(monkeypatch):
+    """Local development is unaffected — the endpoint stays fully functional."""
+    monkeypatch.setattr("api.main.is_demo_mode", lambda: False)
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: _make_paper_extract())
+    monkeypatch.setattr("api.main._paper_to_row", lambda p: {"arxiv_id": p.arxiv_id})
+    monkeypatch.setattr("api.main._get_db", lambda: MagicMock())
+    monkeypatch.setattr("api.main._upsert_paper_counting", MagicMock())
+    monkeypatch.setattr("api.main.embed_limitations", MagicMock())
+    monkeypatch.setattr("api.main.embed_future_directions", MagicMock())
+
+    from api.main import app
+
+    with TestClient(app) as c:
+        r = c.post("/ingest", json={"arxiv_id": "2301.00234"})
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+
+def test_explain_still_available_in_demo_mode(client, monkeypatch):
+    """Only /ingest is gated — /explain is the demo's whole point."""
+    monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
+    monkeypatch.setattr("api.main.explain_match", lambda match: "because X relates to Y")
+
+    r = client.get("/explain", params={"source_gap": "a", "target_solution": "b"})
+
+    assert r.status_code == 200
+    assert r.json()["explanation"] == "because X relates to Y"
+
+
+def test_read_endpoints_unaffected_by_demo_mode(client, monkeypatch):
+    """Demo mode must not disable the read paths the demo exists to show."""
+    monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
+    monkeypatch.setattr("api.main.score_gaps", lambda domain, top_n: [])
+    monkeypatch.setattr(
+        "api.main.find_cross_domain_matches",
+        lambda source_domain, target_domain, top_n: [],
+    )
+
+    assert client.get("/gaps").status_code == 200
+    assert client.get("/cross-domain").status_code == 200
+
+
 def test_ingest_error_does_not_leak_internals(monkeypatch):
     """A 500 must not echo the raw exception text back to the caller.
 

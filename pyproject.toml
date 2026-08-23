@@ -9,6 +9,9 @@ requires-python = ">=3.11"
 dependencies = [
     "requests",
     "ollama",
+    # Hosted explanation backend, used only when DEMO_MODE=true (no local Ollama
+    # on a public deployment). Imported lazily, so local dev never needs a key.
+    "anthropic",
     "pydantic",
     "sqlite-utils",
     "python-dotenv",

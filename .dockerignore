@@ -1,0 +1,27 @@
+# Keep the build context small and secrets out of the image.
+.env
+.git
+.gitignore
+.venv
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.DS_Store
+
+# The frontend deploys to Vercel, not into this image.
+frontend/
+
+# Local runtime state. papers.db in particular must come from the mounted
+# volume, never baked into the image — a stale copy in the image would be
+# invisible and wrong.
+data/papers.db
+data/failed_extractions.log
+qdrant_storage/
+
+# Docs are not needed at runtime.
+DEPLOYMENT.md
+PROJECT_HARDENING_PLAN.md
+CLAUDE.md

@@ -20,6 +20,21 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 load_dotenv()
 
+# This module is the application entrypoint, and per the convention recorded in
+# pipeline/extractor.py it is the one place allowed to configure the root logger.
+# Nothing did, which meant every logger under pipeline/, graph/ and vectors/ was
+# emitting into a root logger with no handler — uvicorn only configures its own
+# "uvicorn.*" loggers. In practice that made the startup self-heal silent: the
+# WARNING that says a persistent volume did not work never reached the deploy
+# logs, and that warning is the entire point of having the safety net.
+#
+# force=False so an operator who has already configured logging (a container
+# runtime, a test harness) keeps their setup.
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").strip().upper(), logging.INFO),
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

@@ -619,3 +619,114 @@ A6, A8, B5, C4, G5, H5 (needs corpus growth, not code).
 collections listed). `npx tsc --noEmit` clean. No live-stack scoring run was performed
 this session because nothing touching scoring was modified — gap rankings are unchanged by
 construction.
+
+---
+
+## Session summary — 2026-08-23 (scoring integrity + corpus growth)
+
+**Branch:** `hardening/scoring-integrity-a1-a2` · **not pushed** · base `a6718c1`
+**Tests: 255 → 263** · **Corpus: 63 → 127 papers**
+
+### Phase 1 — A1/A2 implemented, A3/A5/A9 deferred (commit `ef7991d`)
+
+Both thresholds moved to the 95th percentile of their measured null distribution.
+All 8 new tests were confirmed to fail against the old values first.
+
+| | Was | Now |
+|---|---|---|
+| `_SOLUTION_THRESHOLDS["computer_vision"]` | 0.85 | 0.8773 |
+| `_SOLUTION_THRESHOLDS["medical_imaging"]` | 0.85 | 0.8987 |
+| cross-domain `similarity_threshold` | 0.82 | 0.8792 |
+
+**One result differed from what the decision anticipated.** CV→MI returned **1**
+match (0.8829), not zero: raising the A1 threshold left more gaps unresolved, so
+more of them entered cross-domain matching and one cleared the floor. The A1 and
+A2 changes interact — worth remembering when reasoning about either alone. Empty
+handling was verified independently: an unknown domain returns a clean `[]` with
+HTTP 200 from both `/cross-domain` and `/gaps`.
+
+A3, A5 and A9 were documented as deliberate deferrals in CLAUDE.md rather than
+fixed, so a future session does not mistake them for oversights.
+
+### Phase 2 — corpus grown from 63 to 127 papers
+
+**Composition: 46 computer_vision, 81 medical_imaging** (was 46/17). Years:
+2023 → 44, 2024 → 48, 2025 → 28, 2026 → 1, plus 6 older.
+Neo4j: 127 Paper, 166 Limitation, 94 FutureDirection, 353 Method, 197 Dataset.
+Qdrant: 168 limitation vectors, 94 future-direction vectors. **Store drift: zero
+in both directions.**
+
+**The medical-imaging future-direction pool went from 10 to 60** — the specific
+bottleneck behind empty cross-domain output.
+
+Sourcing, per the no-recalled-IDs rule: arXiv's export API rate-limited hard
+after an initial burst, so candidates came from the project's own Semantic
+Scholar search (8 topic queries → 131 unique arXiv IDs). **Every candidate was
+then verified individually against `arxiv.org/abs/<id>`** — confirming the id
+resolves, that its live `citation_title` matches what search returned (≥60% token
+overlap, to catch an id pointing at a different paper), and that the title is
+topically medical imaging. 113 passed; 16 rejected as off-topic, 2 as duplicates.
+The 2023+ subset (65) was queued, since older papers frequently have no
+limitations section. 64 ingested, 1 lost to a Semantic Scholar 429 that outlasted
+even the new 60s retry budget (`2305.00678`).
+
+Ingestion ran at ~26s/paper through `ingest_domain_papers`, honouring the B1/B2
+pacing and backoff. Those fixes proved themselves in production: the run
+recovered from several 429s that would previously have dropped the papers.
+
+### Threshold drift — diagnostic only, no action taken
+
+Same read-only method, re-run against the enlarged corpus:
+
+| Threshold | Shipped | New p95 | Drift | Null n | Verdict |
+|---|---|---|---|---|---|
+| A1 computer_vision | 0.8773 | 0.8773 | +0.0000 | 2,176 | **HOLDS** |
+| A1 medical_imaging | 0.8987 | 0.8916 | **−0.0071** | 6,240 (was 250) | **MINOR DRIFT** |
+| A2 pooled cross-domain | 0.8792 | 0.8789 | −0.0003 | 7,376 (was 1,490) | **HOLDS** |
+
+Two things worth the advisor's attention:
+
+1. **The MI floor moved because the original estimate was thin, not because the
+   data changed character.** It was derived from **250** pairs (25 limitations ×
+   10 future directions); it now rests on **6,240**. The shipped 0.8987 is
+   therefore slightly *conservative* — it admits 3.0% of random pairs where the
+   target is 5%. That errs safe (under-counting solutions, so gaps look more open
+   than they are) and needs no urgent change, but 0.8916 is the better-supported
+   value. **Adjusting it is a new advisor decision, not implemented.**
+2. **A2 barely moved despite the null growing 5×.** 0.8792 → 0.8789 across 7,376
+   pairs is strong evidence the cross-domain floor is a real property of the
+   embedding space in this corpus rather than an artefact of the small sample.
+
+### Live effect of the larger corpus
+
+**CV→MI went from 1 match to 21** (range 0.8821–0.9039), MI→CV from 6 to 13
+(0.8794–0.9181) — all still above the unchanged noise floor. Growing the
+future-direction pool, not loosening the threshold, is what produced them, and
+the pairings are substantively related rather than boilerplate, e.g. "Previous
+methods require labels of protected attributes" ↔ "Apply proposed method to
+semi-supervised learning (pseudo labels)". This is the clearest evidence so far
+that the cross-domain feature works when the corpus can support it.
+
+Medical-imaging gaps rose from 10 to 24. **Singleton clusters remain the dominant
+shape — 13/27 CV and 17/24 MI — so H3 is unchanged and still the top demo
+blocker.**
+
+### Still open — advisor decisions
+
+1. **H1–H4 corpus honesty** — now the highest priority. H3 (single-paper gaps
+   presented as ranked research gaps) is untouched and the corpus growth did not
+   dilute it.
+2. **A3 contentless future directions** — still blocked by **B4** (re-ingestion
+   duplicates limitations rather than replacing them). Worth re-measuring: the
+   boilerplate ratio on the new 94-item pool has not been recharacterised.
+3. **MI threshold refinement** — adopt 0.8916, or leave the conservative 0.8987.
+4. **G1 Ollama hosting**, then G3/G4; **E1/E4** public-exposure security.
+5. **A4, A6, A8, B5, C4, G5, H5** — lower priority. Note **A8** now matters more:
+   `extract_paper()` hardcodes `domain="computer_vision"` and the medical-imaging
+   papers are correct only because `ingest_domain_papers` patches it afterwards.
+
+### Not done, deliberately
+
+No threshold was adjusted in response to the drift finding — that is the
+advisor's call. Nothing was pushed. No data deleted. No other
+NEEDS-ADVISOR-DECISION item was touched.

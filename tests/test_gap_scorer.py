@@ -389,6 +389,67 @@ def _make_fd_hit(
     )
 
 
+def test_solution_thresholds_sit_at_the_measured_noise_floors():
+    """Thresholds are the per-domain 95th percentile of random same-domain pairs.
+
+    Advisor decision A1 (2026-08-23). The previous single 0.85 was below both
+    floors: 20.1% of random CV (limitation, future-direction) pairs cleared it
+    and 44.8% of random MI pairs did, so a fifth to nearly half of "addressed"
+    verdicts were chance.
+    """
+    assert gs._SOLUTION_THRESHOLDS["computer_vision"] == 0.8773
+    assert gs._SOLUTION_THRESHOLDS["medical_imaging"] == 0.8987
+    # Every configured floor must be above the old value, or the fix is a no-op.
+    assert all(v > 0.85 for v in gs._SOLUTION_THRESHOLDS.values())
+
+
+def test_solution_threshold_lookup_is_per_domain():
+    """Each domain gets its own floor rather than one global constant."""
+    assert gs._solution_threshold("computer_vision") == 0.8773
+    assert gs._solution_threshold("medical_imaging") == 0.8987
+    assert gs._solution_threshold("computer_vision") != gs._solution_threshold(
+        "medical_imaging"
+    )
+
+
+def test_solution_threshold_unknown_domain_is_conservative():
+    """An unmeasured domain gets the strictest known floor, not the loosest.
+
+    Guessing low would silently count noise as solutions in a domain whose null
+    was never measured; guessing high only under-counts, which is recoverable.
+    """
+    unknown = gs._solution_threshold("robotics")
+    assert unknown == max(gs._SOLUTION_THRESHOLDS.values())
+    assert unknown >= 0.8987
+
+
+def test_find_addressing_solutions_uses_the_domain_threshold(monkeypatch):
+    """A hit between the old 0.85 and the CV floor no longer counts as a solution."""
+    hits = [
+        _make_fd_hit("just below the CV floor", 0.87, paper_ids=["p9"]),
+        _make_fd_hit("clearly above it", 0.95, paper_ids=["p9"]),
+    ]
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    solutions = gs._find_addressing_solutions("a gap", domain="computer_vision")
+
+    assert solutions == ["clearly above it"]
+
+
+def test_find_addressing_solutions_medical_floor_is_stricter(monkeypatch):
+    """0.89 counts in CV but not in medical imaging, whose null runs higher."""
+    hits = [_make_fd_hit("mid-band hit", 0.89, paper_ids=["p9"])]
+
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+    assert gs._find_addressing_solutions("g", domain="computer_vision") == ["mid-band hit"]
+
+    client = _make_qdrant_query_mock(hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+    assert gs._find_addressing_solutions("g", domain="medical_imaging") == []
+
+
 def test_find_addressing_solutions_applies_domain_filter(monkeypatch):
     """The Qdrant query must carry a server-side domain filter.
 

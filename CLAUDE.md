@@ -249,6 +249,61 @@ Do not reintroduce a hardcoded year. `tests/test_gap_scorer.py` guards both
 failure modes (frozen constant, and wall-clock baseline); the guards were
 verified to fail against each regression before being committed.
 
+### Similarity thresholds — decided 2026-08-23 (advisor: Fable 5)
+
+Both similarity thresholds were re-derived from **measured null distributions** —
+the score that random, unrelated pairs reach by chance, computed over the live
+corpus using the stored Specter2 vectors. Below a null's 95th percentile a
+"match" is statistically indistinguishable from a random pairing.
+
+| Constant | Was | Now | Null p95 | % of random pairs the OLD value admitted |
+|---|---|---|---|---|
+| `_SOLUTION_THRESHOLDS["computer_vision"]` | 0.85 | **0.8773** | 0.8773 (n=2,176) | 20.1% |
+| `_SOLUTION_THRESHOLDS["medical_imaging"]` | 0.85 | **0.8987** | 0.8987 (n=250) | 44.8% |
+| `find_cross_domain_matches(similarity_threshold=)` | 0.82 | **0.8792** | 0.8792 (n=1,490) | 61.6% |
+
+Two things this corrects:
+
+- **0.85 was never comparable to the 0.86 cluster threshold.** They measure
+  different populations (limitation↔future-direction vs limitation↔limitation),
+  so 0.85 only *looked* conservative.
+- **The old cross-domain rationale was backwards.** It argued that vocabulary
+  divergence compresses cross-domain scores, so the threshold should sit *below*
+  the within-domain one. Compression raises the noise floor as well as the
+  signal, so a compressed space needs a **higher** bar. 0.82 sat below the median
+  of pure noise (0.8294).
+
+An **empty cross-domain result is correct output, not a bug** — it means no pair
+in the data clears the noise floor. `/cross-domain` and `/gaps` both return a
+clean `[]` with HTTP 200, and the frontend renders "No connections found".
+
+**These values are corpus-dependent.** Re-derive the nulls after any significant
+ingestion; the read-only analysis is described in PROJECT_HARDENING_PLAN.md
+items A1/A2. Do not hand-tune them.
+
+### Deliberately deferred, 2026-08-23 — do not treat as oversights
+
+Three known scoring limitations were reviewed at the same time and consciously
+left in place. They are documented so a future session does not "discover" them
+and fix them unilaterally:
+
+- **A3 — half the extracted future directions are contentless boilerplate.**
+  22 of 44 are short and non-specific; 4 gaps score fully solved on nothing but
+  boilerplate. The real fix is a tighter extraction prompt, which requires
+  re-extracting the corpus — and that is **blocked by B4**, since re-ingesting a
+  paper that already has graph relationships duplicates its limitations rather
+  than replacing them. Raising thresholds does not help here: generic text scores
+  *high*, not low, because it sits near the corpus centroid.
+- **A9 — the solution-deficit metric is dimensionally incoherent and saturates.**
+  It divides a corpus-wide count of future directions by a cluster-local count of
+  papers, so it is not a proportion. A quality refinement, not an integrity risk:
+  the term still orders gaps sensibly, it just has poor resolution.
+- **A5 — `_UNRESOLVED_DEFICIT_FLOOR = 0.3` is an undocumented constant.** With
+  deficits heavily saturated at 0.0 and 1.0 it acts as a binary switch rather
+  than a tunable dial, so re-deriving it would change little until A9 is settled.
+
+---
+
 ### Solution-deficit scoring — decided 2026-08-21 (advisor: Fable 5)
 
 Three defects from the Fable 5 review, all re-verified against the live stack

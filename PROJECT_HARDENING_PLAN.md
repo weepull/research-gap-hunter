@@ -40,7 +40,7 @@ config fix.
 ## A. Correctness / scoring integrity
 
 ### A1 · `_SOLUTION_THRESHOLD = 0.85` is below the noise floor — BLOCKING
-**Status: NEEDS ADVISOR DECISION**
+**Status: DONE 2026-08-23** — advisor chose **A1-a** (per-domain p95). Implemented as `_SOLUTION_THRESHOLDS` = {computer_vision: 0.8773, medical_imaging: 0.8987} with a conservative fallback (strictest known floor) for unmeasured domains.
 
 **Current state.** `pipeline/gap_scorer.py:35` treats any future direction scoring ≥ 0.85
 against a cluster centroid as "addressing" that limitation. Measured null distribution over
@@ -69,7 +69,7 @@ different populations and are not comparable.
   a threshold; adds a new rule that itself needs justification.
 
 ### A2 · Cross-domain threshold `0.82` is below the noise floor — BLOCKING
-**Status: NEEDS ADVISOR DECISION** (analysis already delivered separately; summarised here)
+**Status: DONE 2026-08-23** — advisor chose **A2-a** (pooled p95 = 0.8792). Empty cross-domain output accepted as correct behaviour; verified `/cross-domain` and `/gaps` return a clean `[]` with HTTP 200.
 
 **Current state.** `pipeline/cross_domain.py:176`. Null over all 1,490 random cross-domain
 pairs, both directions: mean 0.8267, **median 0.8294**, p95 **0.8792**, max 0.9272.
@@ -94,7 +94,7 @@ growth rates for the partial sums" ↔ "Propose future research directions in th
   Preserves the demo at the cost of presenting noise as a finding.
 
 ### A3 · Contentless future directions corrupt solution-deficit scoring — BLOCKING
-**Status: NEEDS ADVISOR DECISION**
+**Status: DEFERRED 2026-08-23 (advisor decision).** Not an oversight. The real fix (A3-a) needs re-extraction, which is **blocked by B4** — re-ingesting a paper that already has graph relationships duplicates its limitations. Raising thresholds does not substitute: generic text scores *high*, not low.
 
 This directly answers "does the contentless-future-directions issue affect anything beyond
 cross-domain?" — **yes, measurably.**
@@ -138,7 +138,7 @@ reported gaps less well?); collapse to binary explicit/other; or document as a d
 prior and leave.
 
 ### A5 · `_UNRESOLVED_DEFICIT_FLOOR = 0.3` is arbitrary — IMPORTANT
-**Status: NEEDS ADVISOR DECISION**
+**Status: DEFERRED 2026-08-23 (advisor decision).** A quality refinement, not an integrity risk. With deficits saturated at 0.0/1.0 this floor acts as a binary switch, so re-deriving it changes little until A9 is settled.
 
 `pipeline/cross_domain.py:37` decides which gaps are "genuinely unresolved" and therefore
 eligible for cross-domain matching. Undocumented derivation. Interacts with A1/A3: since
@@ -175,7 +175,7 @@ required parameter; infer it during extraction; or keep the default and add a lo
 warning plus a test asserting callers override it.
 
 ### A9 · Solution-deficit metric is dimensionally incoherent and saturates — IMPORTANT
-**Status: NEEDS ADVISOR DECISION — already logged in CLAUDE.md as deferred (options 3B/3C)**
+**Status: DEFERRED 2026-08-23 (advisor decision).** A quality refinement, not an integrity risk — the term still orders gaps sensibly, it just has poor resolution.
 
 Divides a corpus-wide count of future directions by a cluster-local count of papers, so it is
 not a proportion. 17 of 27 clusters sit at exactly 0.0 with only 5 distinct values across the

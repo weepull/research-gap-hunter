@@ -58,7 +58,10 @@ no preamble."""
 class CrossDomainMatch(BaseModel):
     source_gap: str              # unresolved limitation in source domain
     target_solution: str         # future_direction from target domain
-    similarity_score: float      # cosine similarity; cross-domain default 0.82 (lower than clustering 0.86 — cross-domain vocab divergence compresses scores)
+    # Cosine similarity. The default cross-domain threshold is 0.8792, the 95th
+    # percentile of randomly-paired cross-domain similarity — i.e. the score a
+    # meaningless pairing reaches by chance. See find_cross_domain_matches.
+    similarity_score: float
     source_papers: list[str]
     target_papers: list[str]
     source_domain: str
@@ -148,12 +151,22 @@ def find_cross_domain_matches(
     source_domain: str = "computer_vision",
     target_domain: str = "medical_imaging",
     top_n: int = 10,
-    # Cross-domain threshold is intentionally lower than the within-domain cluster
-    # threshold (0.86): different field vocabularies (CV "tracking" vs MI
-    # "registration") naturally compress Specter2 scores, so the best achievable
-    # cross-domain pairs peak at ~0.83-0.84 even when semantically equivalent.
-    # 0.82 is the right operating point here; 0.84 only passes within-domain pairs.
-    similarity_threshold: float = 0.82,
+    # 95th percentile of the *null distribution*: the similarity that random,
+    # unrelated cross-domain pairs reach by chance. Measured over all 1,490
+    # possible (limitation, future-direction) pairs in both directions using the
+    # stored Specter2 vectors — mean 0.8267, median 0.8294, p95 0.8792, max 0.9272.
+    # A match at or above this has at most a 5% chance of being noise.
+    #
+    # Advisor decision A2, 2026-08-23, replacing 0.82. That value was not merely
+    # loose, it sat *below the median of pure noise*: 61.6% of random pairs
+    # cleared it. The earlier rationale — that cross-domain vocabulary divergence
+    # compresses scores, so the threshold should sit below the within-domain one —
+    # had the logic backwards. Compression raises the noise floor as well as the
+    # signal, so a compressed space needs a *higher* bar, not a lower one.
+    #
+    # Corpus-dependent: re-derive after significant ingestion. See
+    # PROJECT_HARDENING_PLAN.md item A2.
+    similarity_threshold: float = 0.8792,
 ) -> list[CrossDomainMatch]:
     """Match unresolved source-domain gaps to target-domain future directions.
 
@@ -161,6 +174,12 @@ def find_cross_domain_matches(
     searches the Qdrant 'future_directions' collection filtered to the target
     domain. Pairs scoring at or above similarity_threshold become
     CrossDomainMatch objects, sorted by similarity_score descending, top_n kept.
+
+    **An empty list is a valid, expected result.** On a corpus where no pair
+    clears the noise floor, returning nothing is the honest answer — it means
+    there is no defensible cross-domain hypothesis in the data, not that
+    something failed. Callers must render the empty case rather than treat it as
+    an error; the frontend already shows a "No connections found" state.
     """
     gaps = get_unresolved_gaps(source_domain)
     if not gaps:

@@ -208,14 +208,86 @@ def test_get_unresolved_gaps_passes_domain_and_top_n(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_cross_domain_threshold_sits_at_the_measured_noise_floor():
+    """Default threshold is the pooled 95th percentile of random cross-domain pairs.
+
+    Advisor decision A2 (2026-08-23). The previous 0.82 sat *below the median* of
+    pure noise — 61.6% of 1,490 randomly paired CV/MI items cleared it.
+    """
+    import inspect
+
+    default = inspect.signature(
+        cd.find_cross_domain_matches
+    ).parameters["similarity_threshold"].default
+
+    assert default == 0.8792
+    assert default > 0.8294, "must sit above the measured null median"
+
+
+def test_cross_domain_rejects_pairs_below_the_noise_floor(monkeypatch):
+    """A 0.85 pair — comfortably above the old 0.82 — is now correctly refused."""
+    gap = GapResult(
+        gap_description="a CV gap",
+        score=0.5,
+        frequency_score=0.5,
+        recency_score=0.5,
+        solution_deficit_score=0.9,
+        supporting_papers=["cv1"],
+        proposed_solutions=[],
+    )
+    monkeypatch.setattr(cd, "get_unresolved_gaps", lambda domain, top_n=20: [gap])
+    monkeypatch.setattr(cd, "load_embedding_model", lambda: _make_model_mock())
+    monkeypatch.setattr(cd, "_embed_texts", lambda model, texts: [[0.01] * 768])
+    client = MagicMock()
+    client.query_points.return_value = types.SimpleNamespace(
+        points=[
+            _make_fd_hit("noise-floor pair", 0.85, ["mi1"]),
+            _make_fd_hit("genuinely similar pair", 0.92, ["mi2"]),
+        ]
+    )
+    monkeypatch.setattr(cd, "get_qdrant_client", lambda: client)
+
+    matches = cd.find_cross_domain_matches()
+
+    assert [m.target_solution for m in matches] == ["genuinely similar pair"]
+
+
+def test_cross_domain_empty_result_is_valid_output(monkeypatch):
+    """Zero matches is honest output, not an error.
+
+    On the current corpus every CV→MI pair scores below the noise floor, so the
+    default API path legitimately returns an empty list. It must not raise.
+    """
+    gap = GapResult(
+        gap_description="a CV gap",
+        score=0.5,
+        frequency_score=0.5,
+        recency_score=0.5,
+        solution_deficit_score=0.9,
+        supporting_papers=["cv1"],
+        proposed_solutions=[],
+    )
+    monkeypatch.setattr(cd, "get_unresolved_gaps", lambda domain, top_n=20: [gap])
+    monkeypatch.setattr(cd, "load_embedding_model", lambda: _make_model_mock())
+    monkeypatch.setattr(cd, "_embed_texts", lambda model, texts: [[0.01] * 768])
+    client = MagicMock()
+    client.query_points.return_value = types.SimpleNamespace(
+        points=[_make_fd_hit("all below the floor", 0.86, ["mi1"])]
+    )
+    monkeypatch.setattr(cd, "get_qdrant_client", lambda: client)
+
+    assert cd.find_cross_domain_matches() == []
+
+
 def test_find_cross_domain_matches_applies_domain_filter_and_threshold(monkeypatch):
     """Qdrant is queried with a target-domain filter; hits below threshold dropped."""
     gap = _make_gap(papers=("cv1", "cv2"))
     monkeypatch.setattr(cd, "get_unresolved_gaps", lambda domain: [gap])
     hits = [
-        _make_fd_hit("uncertainty quantification for segmentation", 0.85, ["mi1", "mi2"]),
-        # 0.79 fails the 0.82 cross-domain threshold.
-        _make_fd_hit("too weak a match", 0.79),
+        _make_fd_hit("uncertainty quantification for segmentation", 0.92, ["mi1", "mi2"]),
+        # 0.85 now fails: it is below the 0.8792 noise floor, so it is
+        # indistinguishable from a random pairing. It passed under the old 0.82.
+        _make_fd_hit("too weak a match", 0.85),
     ]
     client = MagicMock()
     client.query_points.return_value = types.SimpleNamespace(points=hits)
@@ -230,13 +302,13 @@ def test_find_cross_domain_matches_applies_domain_filter_and_threshold(monkeypat
     condition = kwargs["query_filter"].must[0]
     assert condition.key == "domain"
     assert condition.match.value == "medical_imaging"
-    # Only the >= 0.82 cross-domain threshold hit survives, fully populated.
+    # Only the hit clearing the 0.8792 noise floor survives, fully populated.
     assert len(matches) == 1
     match = matches[0]
     assert isinstance(match, CrossDomainMatch)
     assert match.source_gap == gap.gap_description
     assert match.target_solution == "uncertainty quantification for segmentation"
-    assert match.similarity_score == 0.85
+    assert match.similarity_score == 0.92
     assert match.source_papers == ["cv1", "cv2"]
     assert match.target_papers == ["mi1", "mi2"]
     assert match.source_domain == "computer_vision"
@@ -249,17 +321,17 @@ def test_find_cross_domain_matches_sorted_and_top_n(monkeypatch):
     monkeypatch.setattr(cd, "get_unresolved_gaps", lambda domain: gaps)
     client = MagicMock()
     client.query_points.side_effect = [
-        types.SimpleNamespace(points=[_make_fd_hit("weaker solution", 0.86)]),
+        types.SimpleNamespace(points=[_make_fd_hit("weaker solution", 0.89)]),
         types.SimpleNamespace(points=[_make_fd_hit("stronger solution", 0.95)]),
     ]
     monkeypatch.setattr(cd, "get_qdrant_client", lambda: client)
     monkeypatch.setattr(cd, "load_embedding_model", lambda: _make_model_mock())
 
     matches = find_cross_domain_matches()
-    assert [m.similarity_score for m in matches] == [0.95, 0.86]
+    assert [m.similarity_score for m in matches] == [0.95, 0.89]
 
     client.query_points.side_effect = [
-        types.SimpleNamespace(points=[_make_fd_hit("weaker solution", 0.86)]),
+        types.SimpleNamespace(points=[_make_fd_hit("weaker solution", 0.89)]),
         types.SimpleNamespace(points=[_make_fd_hit("stronger solution", 0.95)]),
     ]
     top = find_cross_domain_matches(top_n=1)

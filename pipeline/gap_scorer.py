@@ -31,8 +31,38 @@ logger = logging.getLogger(__name__)
 # Specter2-base pairwise similarities on this corpus are compressed (median ~0.82),
 # so the threshold sits well above the median to keep clusters tight.
 _CLUSTER_THRESHOLD = 0.86
-# Similarity threshold for deciding a FutureDirection "addresses" a Limitation.
-_SOLUTION_THRESHOLD = 0.85
+# Similarity thresholds for deciding a FutureDirection "addresses" a Limitation.
+#
+# Per-domain 95th percentile of the *null distribution* — the similarity that
+# random, unrelated same-domain (limitation, future-direction) pairs reach by
+# chance, measured over every such pair in the corpus using the stored Specter2
+# vectors. At these values a match has at most a 5% chance of being noise.
+#
+# Advisor decision A1, 2026-08-23. The previous single 0.85 was below both
+# floors: 20.1% of random CV pairs and 44.8% of random MI pairs cleared it, so a
+# large share of "this gap is addressed" verdicts were chance. 0.85 looked
+# conservative beside the 0.86 cluster threshold, but the two measure different
+# populations and are not comparable.
+#
+# Corpus-dependent: re-derive after significant ingestion. See
+# PROJECT_HARDENING_PLAN.md item A1.
+_SOLUTION_THRESHOLDS = {
+    "computer_vision": 0.8773,  # n=2,176 random pairs
+    "medical_imaging": 0.8987,  # n=250 random pairs
+}
+
+
+def _solution_threshold(domain: str) -> float:
+    """The addressing threshold for a domain.
+
+    An unmeasured domain falls back to the strictest known floor. Guessing low
+    would silently admit noise in a domain whose null was never measured;
+    guessing high only under-counts solutions, which shows up as gaps looking
+    more open than they are — visible, and recoverable.
+    """
+    return _SOLUTION_THRESHOLDS.get(domain, max(_SOLUTION_THRESHOLDS.values()))
+
+
 # Upper bound on how many future-direction hits we inspect per cluster.
 _MAX_FD_RESULTS = 100
 # How much each paper's report counts toward frequency, by extraction tier.
@@ -243,8 +273,8 @@ def compute_solution_deficit_score(
 
     solution_deficit = 1 - (future_directions_addressing / papers_reporting), where
     an addressing future direction is any FutureDirection that scores at or above
-    _SOLUTION_THRESHOLD (0.85) against the cluster's centroid text, is in the same
-    domain, and does not come from a paper that reports this limitation itself
+    the domain's noise floor (_solution_threshold) against the cluster's centroid
+    text, is in the same domain, and does not come from a paper that reports it
     (see _find_addressing_solutions). Clamped to [0.0, 1.0]. A cluster nobody has
     proposed solutions for scores near 1.0.
     """
@@ -387,7 +417,9 @@ def _find_addressing_solutions(
 
     A future direction counts only if all three hold:
 
-    1. It scores >= _SOLUTION_THRESHOLD (0.85) against the centroid embedding.
+    1. It scores >= the domain's noise floor (_solution_threshold: 0.8773 for CV,
+       0.8987 for medical imaging) against the centroid embedding. Below that a
+       match is statistically indistinguishable from a random pairing.
     2. It belongs to `domain`. Without this filter a medical-imaging suggestion
        could mark a CV gap as solved. Note that pipeline/cross_domain.py treats
        exactly that pairing as a *discovery* — so counting it here as a solution
@@ -418,10 +450,11 @@ def _find_addressing_solutions(
         limit=_MAX_FD_RESULTS,
     )
 
+    threshold = _solution_threshold(domain)
     excluded = exclude_paper_ids or set()
     solutions: list[str] = []
     for hit in results.points:
-        if hit.score < _SOLUTION_THRESHOLD:
+        if hit.score < threshold:
             continue
         # A future direction can be attached to several papers; if any of them
         # reports this limitation, it is self-referential and does not count.

@@ -447,7 +447,23 @@ never opened for writing.
 writes to. As established in B6, repairing SQLite cannot move the frequency denominator.
 
 ### G4 · Specter2 loads at startup — IMPORTANT
-**Status: NEEDS ADVISOR DECISION** (affects cost/instance sizing)
+**Status: STILL NEEDS ADVISOR DECISION** (affects cost/instance sizing)
+
+> **Flag, 2026-08-24 — read this before assuming G4 is settled.** The
+> `Dockerfile` added in commit `57611a5` bakes the Specter2 weights into the
+> image, which is *one of the three options listed below*. That was a build
+> artifact decision taken while preparing deployment, **not** an advisor
+> decision on this item, and it is deliberately recorded here rather than left
+> for someone to discover in the Dockerfile.
+>
+> What it does settle: cold boot is a disk read rather than a 440MB download.
+> What it does **not** settle: the memory footprint at runtime (still ~440MB
+> resident before the app serves traffic) or the instance size that implies —
+> which is the part this item is actually about. The image cost is ~421MB of
+> its 2.85GB.
+>
+> Reversing it is one `RUN` instruction: delete the pre-cache block and the
+> weights download at first boot instead. Nothing else depends on it.
 The lifespan handler calls `load_embedding_model()`, downloading/loading ~440MB of weights
 before the app serves traffic. Expect slow cold starts and real memory pressure on a small
 instance; `HF_HUB_OFFLINE` is explicitly discouraged by CLAUDE.md, so the download path stays
@@ -768,7 +784,7 @@ blocker.**
    duplicates limitations rather than replacing them). Worth re-measuring: the
    boilerplate ratio on the new 94-item pool has not been recharacterised.
 3. **MI threshold refinement** — adopt 0.8916, or leave the conservative 0.8987.
-4. **G1 Ollama hosting**, then G3/G4; **E1/E4** public-exposure security.
+4. **G1 Ollama hosting** (done), then ~~G3~~ (done 2026-08-24, `4b37611`) / **G4**; **E1/E4** public-exposure security.
 5. **A4, A6, A8, B5, C4, G5, H5** — lower priority. Note **A8** now matters more:
    `extract_paper()` hardcodes `domain="computer_vision"` and the medical-imaging
    papers are correct only because `ingest_domain_papers` patches it afterwards.
@@ -832,6 +848,60 @@ touched.
 ### Still open
 
 Unchanged from the previous summary: **A3** (blocked by **B4**), the optional MI
-threshold refinement to 0.8916, **G1** Ollama hosting then G3/G4, **E1/E4**
+threshold refinement to 0.8916, ~~**G3**~~ (done 2026-08-24), **G4**, **E1/E4**
 public-exposure security, and **A4, A6, A8, B5, C4, G5, H5**. **H5** (medical-imaging
 future-direction pool) is materially improved — 10 → 60 — but remains formally open.
+
+---
+
+## Session summary — 2026-08-24 (G3, deployment preparation)
+
+**Branch:** `main` · **not pushed** · base `8b1363c`
+**Tests: 297 → 322** · commits `4b37611`, `4a49715`, `57611a5`, `cd5e2e9`
+
+### G3 — resolved
+
+Implemented as two layers per the advisor decision. Full detail is in the G3
+entry above; the short version is `PAPERS_DB_PATH` for a mounted volume, plus
+`pipeline/selfheal.py` rebuilding any rows SQLite is missing from graph
+relationships on startup. Additive only, never fatal, loud when it fires.
+
+Verified live rather than only in unit tests: the no-op path reported 127/127;
+deleting 5 rows from a **copy** of `papers.db` rebuilt all 5 with identical
+title, year, domain and limitation sets; and a simulated fresh volume rebuilt
+all 127 rows with `/health` reporting them. The real database was never written
+to in any of these.
+
+### Deployment preparation — done, nothing deployed
+
+`Dockerfile`, `.dockerignore`, `railway.json`, `frontend/vercel.json`,
+`.env.example`, `frontend/.env.example`, `DEPLOYMENT.md`,
+`scripts/prune_hf_cache.py`.
+
+No accounts were created, no credentials obtained, nothing deployed. Every step
+requiring a real credential is written up in `DEPLOYMENT.md` for the owner.
+
+Three things worth knowing:
+
+- **A latent logging bug was fixed.** `pipeline/extractor.py` states that a
+  library module must not call `basicConfig` and that "the app entrypoint owns
+  that" — but no entrypoint ever did. Every logger under `pipeline/`, `graph/`
+  and `vectors/` was emitting into a handler-less root logger while uvicorn
+  configured only its own. The startup self-heal was therefore completely
+  silent, including the WARNING that is its entire reason for existing. Found by
+  reading a running server's log, not the code.
+- **Image size: 3.7GB → 2.85GB.** CPU-only torch (the default PyPI wheel pulls
+  the whole CUDA runtime onto a GPU-less container) and pruning the duplicate
+  model revision the HuggingFace pre-cache fetches. The prune must share a layer
+  with the download; doing it in a following instruction left the image at
+  exactly 3.7GB.
+- **G4 is *not* resolved** despite the Dockerfile baking in weights. See the flag
+  on that item.
+
+### Deliberately not done
+
+`A4`, `A6`, `A8`, `B5` and `H5` were all offered as optional cleanup but every
+one of them is marked **NEEDS ADVISOR DECISION**, which was explicitly out of
+scope for this session. `C4` (frontend tests) is not advisor-gated but is
+already recorded here as new infrastructure rather than a bounded fix. Nothing
+was improvised.

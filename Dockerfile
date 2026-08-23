@@ -44,19 +44,28 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
     && pip install -r /tmp/requirements.txt \
     && python -c "import torch; print('torch', torch.__version__, 'cuda:', torch.cuda.is_available())"
 
-# Bake the Specter2 weights into the image (~440MB).
+# Bake the Specter2 weights into the image, then prune what is not used.
 #
 # This is the G4 trade-off, taken deliberately: without it every cold start
 # downloads the weights before the app can serve traffic, which on a small
-# instance means a slow, failure-prone boot on every redeploy. It makes the
-# image large and the build slow; boot becomes a disk read.
+# instance means a slow, failure-prone boot on every redeploy. Boot becomes a
+# disk read instead.
+#
+# Download and prune MUST stay in one RUN. Docker layers are additive, so
+# pruning in a later instruction leaves the bytes in the earlier layer and the
+# image does not shrink at all — measured at 3.7GB either way before the two
+# were merged. See scripts/prune_hf_cache.py for what is dropped and why.
 #
 # HF_HUB_OFFLINE is deliberately NOT set — CLAUDE.md warns it breaks fresh
 # installs, and the runtime should still be able to fall back to a download.
+COPY scripts/prune_hf_cache.py /tmp/prune_hf_cache.py
 RUN python -c "\
 from sentence_transformers import SentenceTransformer; \
 SentenceTransformer('allenai/specter2_base', cache_folder='/opt/hf-cache')" \
-    || echo 'WARNING: could not pre-cache Specter2; it will download at first boot'
+      || echo 'WARNING: could not pre-cache Specter2; it will download at first boot'; \
+    python /tmp/prune_hf_cache.py /opt/hf-cache; \
+    rm -f /tmp/prune_hf_cache.py; \
+    du -sh /opt/hf-cache
 
 COPY . .
 

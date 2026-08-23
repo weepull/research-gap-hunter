@@ -162,6 +162,17 @@ You want `points_count` to be **168** (the total across both domains), and the
 3. The first build is slow (torch plus ~440MB of model weights baked into the
    image). Ten to twenty minutes is normal.
 
+The image is **~2.85GB**. That is measured, not estimated — it was built and run
+locally against the live databases before this document was written. Two things
+keep it from being much larger: torch is installed from PyTorch's CPU index
+rather than PyPI (the default wheel drags in the whole CUDA runtime, several GB
+of it, on a container that has no GPU), and the duplicate model revision the
+HuggingFace pre-cache pulls is pruned in the same layer that creates it
+(`scripts/prune_hf_cache.py`, 440MB reclaimed).
+
+If Railway rejects the image for size, the lever to pull is the baked-in
+weights: drop that RUN and accept a slow first boot while Specter2 downloads.
+
 ### Add the volume — do not skip this
 
 This is the single most important step, and skipping it causes silent data loss.
@@ -251,6 +262,10 @@ curl https://<your-railway-domain>/health
 ```
 
 Expect `{"status":"ok","papers":127,"limitations":168,"future_directions":94}`.
+
+This exact response was verified locally from the built container running against
+the live Neo4j and Qdrant, with an empty volume — the self-heal rebuilt all 127
+rows on boot and `/health` reported them.
 
 ```bash
 curl "https://<your-railway-domain>/corpus?domain=computer_vision"

@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...but the template must be in the repo — it documents the shape of the file
+# and contains no values. Without this negation the create-next-app .env* rule
+# silently swallows it.
+!.env.example
 
 # vercel
 .vercel

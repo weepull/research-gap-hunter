@@ -435,7 +435,7 @@ documenting in the README deploy section so it is not discovered at deploy time.
 ## H. Corpus / scale honesty
 
 ### H1 · Nothing anywhere states the corpus size — BLOCKING for public demo
-**Status: NEEDS ADVISOR DECISION** (changes displayed output)
+**Status: DONE 2026-08-23** — commit `8f1c8fe` (new `/corpus` endpoint) + `c11d17c` (CorpusBanner on all three results pages). Banner states domain paper count, limitation/future-direction counts and last-updated date; `papers` is the Neo4j count that divides frequency_score, pinned by a test.
 
 The UI presents `0.6065` in a green "good" badge with three sub-score bars, in the visual
 language of an authoritative metric. Nothing on the page says the ranking is computed over
@@ -445,14 +445,14 @@ results page; add a persistent "research preview — N papers" banner; or gate t
 behind a larger corpus.
 
 ### H2 · Frequency scores are structurally tiny and the colour scale hides it — IMPORTANT
-**Status: NEEDS ADVISOR DECISION**
+**Status: DONE 2026-08-23** — commit `c11d17c`. Frequency bar is now scaled to the largest frequency on screen and relabelled "Frequency (relative)", with the true score shown to 3 decimals. It no longer reads as empty/broken beside recency and deficit.
 `frequency_score = weighted_papers / 46`, so real values run ~0.01–0.06 and the frequency bar
 is always visually empty, while the composite score can still show green because recency and
 deficit dominate. The displayed sub-scores are not on comparable scales, which is misleading
 even though each is individually correct.
 
 ### H3 · Rankings are dominated by single-paper clusters — IMPORTANT
-**Status: NEEDS ADVISOR DECISION**
+**Status: DONE 2026-08-23** — commit `c11d17c`. Every gap carries a SupportBadge directly under its title; single-paper gaps get an amber ⚠ variant and an explanatory tooltip. Nothing is filtered — showing the evidence is the fix. Note the underlying shape is unchanged: 13/27 CV and 17/24 MI gaps are still single-source, they are now just impossible to miss.
 **13 of 27 clusters are singletons.** The #2 and #3 ranked gaps ("Assumes specific growth
 rates for the partial sums", "Assumes a specific micro-gravity environment") are each backed
 by **one paper**, and neither is a computer-vision research gap in any meaningful sense —
@@ -462,7 +462,7 @@ in the domain" is the single most reputationally risky thing in the project. Opt
 singletons but label them "single-source".
 
 ### H4 · README overclaims scope — IMPORTANT
-**Status: OPEN — explicitly withheld by the operator (2026-08-23)** despite being marked safe here, as part of the H1–H5 corpus-honesty block. Treat as advisor-owned.
+**Status: DONE 2026-08-23** — commit `c11d17c`. README states the real 127-paper sample, frames the project as a working prototype rather than a survey, and warns that many gaps are single-source. Supersedes the earlier "withheld by operator" note.
 `README.md:18` — "ranks research gaps … the most urgent, underserved open problems in the
 domain" and "over the entire corpus". At 63 papers, "the domain" is not covered.
 **Recommended fix:** state the corpus size and frame as a working prototype over a curated
@@ -730,3 +730,60 @@ blocker.**
 No threshold was adjusted in response to the drift finding — that is the
 advisor's call. Nothing was pushed. No data deleted. No other
 NEEDS-ADVISOR-DECISION item was touched.
+
+---
+
+## Session summary — 2026-08-23 (corpus honesty, H1–H4)
+
+**Branch:** `hardening/corpus-honesty-h1-h4` · **not pushed** · base `f26acc6`
+**Tests: 263 → 267** · commits `8f1c8fe` (API), `c11d17c` (frontend + README)
+
+All four items implemented per the advisor decision. Nothing else was touched.
+
+**H1** — new `GET /corpus?domain=` returns paper / limitation / future-direction
+counts and a last-updated timestamp; `CorpusBanner` renders it on the gaps,
+search and cross-domain pages. `papers` deliberately comes from
+`_count_papers_in_domain` (the Neo4j count that divides `frequency_score`) rather
+than the SQLite total `/health` reports, so the number beside a score is the one
+the score was computed against. A test pins that source.
+
+**H2** — the frequency bar is scaled to the largest frequency on screen and
+relabelled "Frequency (relative)"; the numeric readout shows the true score at 3
+decimals. On an absolute scale real values (0.01–0.06) rendered as an empty bar
+beside recency and deficit at 1.0, which read as broken rather than as low.
+
+**H3** — `SupportBadge` sits directly under every gap title, amber with a ⚠ for
+single-paper gaps. Nothing is filtered.
+
+**H4** — README scope note added; "most urgent, underserved open problems in the
+domain" and "the entire corpus" are gone.
+
+### Verification
+
+`/corpus` live: CV 46 papers / 64 limitations / 34 future directions (updated
+Aug 22), MI 81 / 104 / 60 (updated Aug 23). `npx tsc --noEmit` clean; production
+build compiles; the new strings and the `/corpus` call are present in the built
+bundle (3 chunks — one per page using the banner).
+
+No browser tooling was available this session, so instead of a screenshot the
+rendering was confirmed by driving live API data through the component logic. Top
+four CV gaps render "⚠ Supported by 1 paper"; the top MI gap renders "Supported
+by 3 papers"; frequency bars differentiate (0.022 full-width vs 0.009 at ~45%).
+
+### What this does and does not fix
+
+It fixes the *presentation* problem: a reader can no longer see a top-ranked gap
+without also seeing that one paper backs it and that the corpus is 46 papers.
+
+It does not change the underlying distribution. **13/27 CV and 17/24 MI gaps are
+still single-source**, and single-paper gaps still occupy the top CV ranks because
+recency and solution-deficit both saturate at 1.0 for them. Whether ranking should
+account for support count is a scoring question (adjacent to A9) and was not
+touched.
+
+### Still open
+
+Unchanged from the previous summary: **A3** (blocked by **B4**), the optional MI
+threshold refinement to 0.8916, **G1** Ollama hosting then G3/G4, **E1/E4**
+public-exposure security, and **A4, A6, A8, B5, C4, G5, H5**. **H5** (medical-imaging
+future-direction pool) is materially improved — 10 → 60 — but remains formally open.

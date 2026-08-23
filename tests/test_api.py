@@ -540,9 +540,35 @@ def test_ingest_works_when_not_in_demo_mode(monkeypatch):
     assert r.json()["status"] == "ok"
 
 
-def test_explain_still_available_in_demo_mode(client, monkeypatch):
-    """Only /ingest is gated — /explain is the demo's whole point."""
+def test_explain_refused_in_demo_mode(client, monkeypatch):
+    """Explanations call an LLM per request, so a public demo refuses them."""
     monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
+    called = []
+    monkeypatch.setattr("api.main.explain_match", lambda match: called.append(match))
+
+    r = client.get("/explain", params={"source_gap": "a", "target_solution": "b"})
+
+    assert r.status_code == 403
+    assert called == [], "demo mode still reached the LLM call"
+
+
+def test_explain_demo_refusal_explains_itself(client, monkeypatch):
+    """The message states the reason and the way to get a live explanation."""
+    monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
+    monkeypatch.setattr("api.main.explain_match", lambda match: "should not run")
+
+    detail = client.get(
+        "/explain", params={"source_gap": "a", "target_solution": "b"}
+    ).json()["detail"]
+
+    assert "disabled in the public demo" in detail
+    assert "API costs" in detail
+    assert "DEMO_MODE=false" in detail
+
+
+def test_explain_works_when_not_in_demo_mode(client, monkeypatch):
+    """Local development keeps live explanations."""
+    monkeypatch.setattr("api.main.is_demo_mode", lambda: False)
     monkeypatch.setattr("api.main.explain_match", lambda match: "because X relates to Y")
 
     r = client.get("/explain", params={"source_gap": "a", "target_solution": "b"})

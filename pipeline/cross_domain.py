@@ -20,7 +20,6 @@ from graph.populate import (
     get_neo4j_driver,
 )
 from pipeline.batch import _get_db, _log_failure, _paper_to_row
-from pipeline.config import is_demo_mode
 from pipeline.extractor import extract_paper
 from pipeline.gap_scorer import GapResult, score_gaps
 from vectors.embed import (
@@ -40,12 +39,6 @@ _UNRESOLVED_DEFICIT_FLOOR = 0.3
 _FETCH_SLEEP_SECONDS = 2
 # How many future-direction candidates to pull per gap before thresholding.
 _MAX_FD_CANDIDATES = 20
-
-# Hosted explanation model, used only in demo mode where no local Ollama exists.
-_HOSTED_MODEL = "claude-opus-5"
-# Generous enough for thinking plus a 2-3 sentence answer; the model thinks by
-# default, and max_tokens caps thinking and response text together.
-_HOSTED_MAX_TOKENS = 2048
 
 _EXPLAIN_PROMPT = """\
 You are a scientific research strategist evaluating a cross-domain research hypothesis.
@@ -235,12 +228,10 @@ def find_cross_domain_matches(
 def explain_match(match: CrossDomainMatch) -> str:
     """Generate a 2-3 sentence explanation of why a cross-domain match is interesting.
 
-    Routes on deployment mode. Locally the prompt goes to Ollama, keeping the
-    "local, free, no API key" property the project is built around. In demo mode
-    there is no Ollama to reach — a hosted deployment cannot run llama3.1:8b —
-    so the same prompt goes to the Claude API instead.
-
-    The prompt is identical on both paths, so the two backends are comparable.
+    Always calls the local Ollama. There is deliberately no hosted-LLM path: a
+    public deployment refuses /explain outright (see api/main.py) rather than
+    paying per-request API costs for anonymous callers, so this function is only
+    ever reached when Ollama is available.
     """
     prompt = _EXPLAIN_PROMPT.format(
         source_domain=match.source_domain.replace("_", " "),
@@ -248,49 +239,7 @@ def explain_match(match: CrossDomainMatch) -> str:
         source_gap=match.source_gap,
         target_solution=match.target_solution,
     )
-    if is_demo_mode():
-        return _call_hosted_llm_text(prompt)
     return _call_ollama_text(prompt)
-
-
-def _call_hosted_llm_text(prompt: str) -> str:
-    """Send a free-text prompt to the Claude API and return the response text.
-
-    Used only in demo mode. Lazily imported so the module still loads locally
-    where `anthropic` may not be installed and no API key exists — mirroring how
-    `ollama` is imported in the local path.
-    """
-    import anthropic  # lazy: demo-mode-only dependency
-
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
-
-    response = client.beta.messages.create(
-        model=_HOSTED_MODEL,
-        max_tokens=_HOSTED_MAX_TOKENS,
-        # This is a two-to-three sentence explanation, not a reasoning task, so
-        # low effort keeps latency and cost down. Thinking stays on (the default
-        # on this model) — disabling it is the more expensive lever and carries
-        # its own failure modes.
-        output_config={"effort": "low"},
-        # Safety classifiers can decline a request; without this a refusal just
-        # stops. "default" routes by refusal category rather than pinning a model
-        # that would later need migrating.
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    # Check stop_reason before reading content: on a refusal `content` is empty
-    # (declined before output) or partial, so indexing it blindly would raise.
-    if response.stop_reason == "refusal":
-        raise RuntimeError(
-            "The explanation model declined this request. "
-            "This can happen on benign text; try a different match."
-        )
-
-    return "".join(
-        block.text for block in response.content if block.type == "text"
-    ).strip()
 
 
 def _call_ollama_text(prompt: str) -> str:

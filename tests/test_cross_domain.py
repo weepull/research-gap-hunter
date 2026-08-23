@@ -386,7 +386,7 @@ def test_find_cross_domain_matches_no_hits_above_threshold(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# explain_match backend routing — Ollama locally, hosted LLM in demo mode
+# explain_match — always local Ollama, never a hosted API
 # ---------------------------------------------------------------------------
 
 
@@ -402,104 +402,23 @@ def _make_match() -> CrossDomainMatch:
     )
 
 
-def _make_anthropic_stub(text="hosted explanation", stop_reason="end_turn"):
-    """Stub anthropic.Anthropic() whose create() returns one text block."""
-    module = MagicMock()
-    response = types.SimpleNamespace(
-        stop_reason=stop_reason,
-        content=[types.SimpleNamespace(type="text", text=text)],
-    )
-    module.Anthropic.return_value.beta.messages.create.return_value = response
-    return module
-
-
-def test_explain_uses_ollama_when_not_in_demo_mode(monkeypatch):
-    """Local development keeps the free, local path — no hosted call, no API key."""
-    monkeypatch.setattr(cd, "is_demo_mode", lambda: False)
+def test_explain_always_uses_ollama(monkeypatch):
+    """There is one backend. A public deployment refuses /explain at the API
+    layer instead of routing to a paid API, so this never needs to branch."""
     monkeypatch.setattr(cd, "_call_ollama_text", lambda prompt: "local explanation")
-    monkeypatch.setattr(
-        cd, "_call_hosted_llm_text", lambda p: pytest.fail("must not call hosted LLM")
-    )
 
     assert explain_match(_make_match()) == "local explanation"
 
 
-def test_explain_uses_hosted_llm_in_demo_mode(monkeypatch):
-    """A public deployment has no Ollama to reach, so it must use the hosted API."""
-    monkeypatch.setattr(cd, "is_demo_mode", lambda: True)
-    monkeypatch.setattr(
-        cd, "_call_ollama_text", lambda p: pytest.fail("must not call Ollama in demo mode")
-    )
-    monkeypatch.setattr(cd, "_call_hosted_llm_text", lambda prompt: "hosted explanation")
+def test_no_hosted_llm_path_exists():
+    """Guard against re-introducing a paid-API branch.
 
-    assert explain_match(_make_match()) == "hosted explanation"
-
-
-def test_explain_sends_the_same_prompt_on_both_paths(monkeypatch):
-    """Identical prompt either way, so the two backends stay comparable."""
-    seen = {}
-    monkeypatch.setattr(cd, "is_demo_mode", lambda: False)
-    monkeypatch.setattr(cd, "_call_ollama_text", lambda p: seen.setdefault("local", p))
-    explain_match(_make_match())
-
-    monkeypatch.setattr(cd, "is_demo_mode", lambda: True)
-    monkeypatch.setattr(cd, "_call_hosted_llm_text", lambda p: seen.setdefault("hosted", p))
-    explain_match(_make_match())
-
-    assert seen["local"] == seen["hosted"]
-    assert "calibration fails under distribution shift" in seen["local"]
-
-
-def test_hosted_llm_call_shape(monkeypatch):
-    """The hosted call uses the configured model and returns its text."""
-    module = _make_anthropic_stub("why this transfers")
-    monkeypatch.setitem(sys.modules, "anthropic", module)
-
-    result = cd._call_hosted_llm_text("a prompt")
-
-    assert result == "why this transfers"
-    kwargs = module.Anthropic.return_value.beta.messages.create.call_args.kwargs
-    assert kwargs["model"] == cd._HOSTED_MODEL
-    assert kwargs["messages"] == [{"role": "user", "content": "a prompt"}]
-    # Short explanation, not a reasoning task — low effort keeps latency down.
-    assert kwargs["output_config"] == {"effort": "low"}
-    # Without a fallback a safety refusal just stops; "default" routes by category.
-    assert kwargs["fallbacks"] == "default"
-    assert "server-side-fallback-2026-07-01" in kwargs["betas"]
-
-
-def test_hosted_llm_raises_on_refusal(monkeypatch):
-    """A refusal must raise, not return an empty string.
-
-    On a refusal `content` is empty or partial, so returning "" would surface an
-    apparently-successful blank explanation in the UI.
+    The hosted path was removed deliberately (cost of anonymous callers), not
+    left dormant — a re-added helper would be dead paid-API code until something
+    called it, and easy to miss in review.
     """
-    module = _make_anthropic_stub(text="", stop_reason="refusal")
-    module.Anthropic.return_value.beta.messages.create.return_value = (
-        types.SimpleNamespace(stop_reason="refusal", content=[])
-    )
-    monkeypatch.setitem(sys.modules, "anthropic", module)
-
-    with pytest.raises(RuntimeError, match="declined"):
-        cd._call_hosted_llm_text("a prompt")
-
-
-def test_hosted_llm_joins_multiple_text_blocks(monkeypatch):
-    """Only text blocks are returned; thinking blocks are skipped, not rendered."""
-    module = MagicMock()
-    module.Anthropic.return_value.beta.messages.create.return_value = (
-        types.SimpleNamespace(
-            stop_reason="end_turn",
-            content=[
-                types.SimpleNamespace(type="thinking", thinking="internal"),
-                types.SimpleNamespace(type="text", text="first. "),
-                types.SimpleNamespace(type="text", text="second."),
-            ],
-        )
-    )
-    monkeypatch.setitem(sys.modules, "anthropic", module)
-
-    assert cd._call_hosted_llm_text("p") == "first. second."
+    assert not hasattr(cd, "_call_hosted_llm_text")
+    assert "anthropic" not in cd.__dict__
 
 
 def test_explain_match_prompt_contains_gap_and_solution(monkeypatch):

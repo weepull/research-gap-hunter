@@ -378,6 +378,20 @@ def explain_connection(
 
     Calls llama3.1:8b — expect a few seconds of latency per request.
     """
+    if is_demo_mode():
+        # Same pattern as /ingest: the endpoint works, this deployment is not
+        # permitted to run it. Explanations call an LLM per request, so exposing
+        # them to anonymous callers is an open-ended cost. There is deliberately
+        # no hosted-LLM fallback — see explain_match in pipeline/cross_domain.py.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Live explanations are disabled in the public demo to avoid API "
+                "costs. Run this project locally with DEMO_MODE=false to generate "
+                "live explanations — see the README for setup."
+            ),
+        )
+
     match = CrossDomainMatch(
         source_gap=source_gap,
         target_solution=target_solution,

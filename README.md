@@ -15,7 +15,9 @@
 
 Academic literature is growing at a rate no researcher can track. A computer vision researcher today must sift through thousands of papers per year just to understand which problems remain unsolved — and that work is manual, biased toward papers the researcher already knows about, and blind to solutions that already exist in adjacent fields.
 
-Research Gap Hunter inverts this. It ingests papers from arXiv, extracts structured limitation statements using a local LLM (Llama 3.1 8B via Ollama), and builds a graph + vector index over the entire corpus. A scoring engine then ranks research gaps by three independent signals: how frequently a limitation appears across papers, how recently it has been reported, and how few future-work suggestions from those same papers address it. The result is a ranked list of the most urgent, underserved open problems in the domain.
+Research Gap Hunter inverts this. It ingests papers from arXiv, extracts structured limitation statements using a local LLM (Llama 3.1 8B via Ollama), and builds a graph + vector index over the ingested corpus. A scoring engine then ranks research gaps by three independent signals: how frequently a limitation appears across papers, how recently it has been reported, and how few future-work suggestions from those same papers address it. The result is a ranked list of candidate open problems, each shown with the number of papers supporting it.
+
+> **Scope — read this before interpreting any output.** This is a working research prototype over a **curated sample of 127 papers** (46 computer vision, 81 medical imaging), not a survey of either field. At this size many gaps are backed by a single paper, so the UI labels every gap with its supporting-paper count and every results page states the corpus size and date it was computed over. Treat the rankings as a demonstration of the method, not as findings about the state of computer vision.
 
 The third dimension is the most novel: cross-domain hypothesis generation. Specter2 embeddings are used to match unresolved limitations in computer vision against proposed solutions in medical imaging. When a CV paper reports "our method fails under domain shift" and a medical imaging paper proposes "domain-adaptive registration via learned deformation fields," Research Gap Hunter surfaces that connection and uses Ollama to generate a natural-language explanation of why the transfer is scientifically plausible. Researchers get concrete, cited hypotheses — not keyword lists.
 
@@ -119,7 +121,7 @@ The third dimension is the most novel: cross-domain hypothesis generation. Spect
 `[screenshot: gap-explorer.png]`
 
 ### Semantic Search
-> _500 ms debounced vector search over all extracted limitation statements. Results include cosine similarity score and clickable arXiv links._
+> _500 ms debounced vector search over the extracted limitation statements in the ingested corpus. Results include cosine similarity score and clickable arXiv links._
 
 `[screenshot: semantic-search.png]`
 

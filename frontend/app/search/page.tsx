@@ -1,5 +1,6 @@
 "use client";
 
+import CorpusBanner from "@/components/CorpusBanner";
 import { useEffect, useRef, useState } from "react";
 import { DOMAINS, LimitationResult, searchLimitations } from "@/lib/api";
 
@@ -79,6 +80,8 @@ export default function SearchPage() {
           Vector search over every extracted limitation statement
         </p>
       </header>
+
+      <CorpusBanner domain={domain} />
 
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <input

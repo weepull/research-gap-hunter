@@ -62,6 +62,14 @@ export interface CrossDomainMatch {
   target_domain: string;
 }
 
+export interface CorpusInfo {
+  domain: string;
+  papers: number;
+  limitations: number;
+  future_directions: number;
+  last_updated: string | null;
+}
+
 export interface HealthResponse {
   status: string;
   papers: number;
@@ -116,6 +124,10 @@ export function fetchHealth(): Promise<HealthResponse> {
 
 export function fetchGaps(domain: string, topN: number): Promise<GapResult[]> {
   return get<GapResult[]>("/gaps", { domain, top_n: topN });
+}
+
+export function fetchCorpus(domain: string): Promise<CorpusInfo> {
+  return get<CorpusInfo>("/corpus", { domain });
 }
 
 export function searchLimitations(

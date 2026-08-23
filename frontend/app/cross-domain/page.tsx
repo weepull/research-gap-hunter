@@ -1,5 +1,6 @@
 "use client";
 
+import CorpusBanner from "@/components/CorpusBanner";
 import { useState } from "react";
 import {
   CrossDomainMatch,
@@ -148,6 +149,8 @@ export default function CrossDomainPage() {
           Solutions proposed in one field, matched to open problems in another
         </p>
       </header>
+
+      <CorpusBanner domain={source} />
 
       <div className="mb-8 flex flex-wrap items-end gap-4 rounded-xl border border-card-border bg-card p-5">
         <label className="flex flex-col gap-1.5 text-sm text-muted">

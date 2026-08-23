@@ -155,6 +155,91 @@ def test_health_missing_collection_returns_zero(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# /corpus — H1 corpus transparency
+# ---------------------------------------------------------------------------
+
+
+def _patch_corpus_backends(monkeypatch, papers=46, lim=64, fd=34, last="2026-08-23T01:00:00+00:00"):
+    monkeypatch.setattr("api.main._count_papers_in_domain", lambda domain: papers)
+    qdrant = MagicMock()
+    qdrant.count.side_effect = lambda collection_name, **kw: types.SimpleNamespace(
+        count=lim if collection_name == "limitations" else fd
+    )
+    monkeypatch.setattr("api.main.get_qdrant_client", lambda: qdrant)
+    db = MagicMock()
+    db.table_names.return_value = ["papers"]
+    db.execute.return_value.fetchone.return_value = (last,)
+    monkeypatch.setattr("api.main._get_db", lambda: db)
+    return qdrant
+
+
+def test_corpus_reports_domain_size_and_freshness(client, monkeypatch):
+    """/corpus states what the scores were computed over."""
+    _patch_corpus_backends(monkeypatch)
+
+    r = client.get("/corpus?domain=computer_vision")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {
+        "domain": "computer_vision",
+        "papers": 46,
+        "limitations": 64,
+        "future_directions": 34,
+        "last_updated": "2026-08-23T01:00:00+00:00",
+    }
+
+
+def test_corpus_paper_count_matches_the_scoring_denominator(client, monkeypatch):
+    """`papers` must come from the same source frequency_score divides by.
+
+    Reporting the SQLite total instead would show a number the scores were not
+    actually computed against — the whole point of the banner is that it is the
+    real denominator.
+    """
+    _patch_corpus_backends(monkeypatch)
+    seen = []
+    monkeypatch.setattr(
+        "api.main._count_papers_in_domain", lambda domain: seen.append(domain) or 99
+    )
+
+    r = client.get("/corpus?domain=medical_imaging")
+
+    assert r.json()["papers"] == 99
+    assert seen == ["medical_imaging"]
+
+
+def test_corpus_counts_are_domain_filtered(client, monkeypatch):
+    """Limitation/future-direction counts are per-domain, not corpus-wide."""
+    qdrant = _patch_corpus_backends(monkeypatch)
+
+    client.get("/corpus?domain=medical_imaging")
+
+    for call in qdrant.count.call_args_list:
+        condition = call.kwargs["count_filter"].must[0]
+        assert condition.key == "domain"
+        assert condition.match.value == "medical_imaging"
+
+
+def test_corpus_survives_missing_collections(client, monkeypatch):
+    """A missing Qdrant collection reports zero rather than failing the page."""
+    monkeypatch.setattr("api.main._count_papers_in_domain", lambda domain: 5)
+    qdrant = MagicMock()
+    qdrant.count.side_effect = RuntimeError("collection not found")
+    monkeypatch.setattr("api.main.get_qdrant_client", lambda: qdrant)
+    db = MagicMock()
+    db.table_names.return_value = []
+    monkeypatch.setattr("api.main._get_db", lambda: db)
+
+    r = client.get("/corpus")
+
+    assert r.status_code == 200
+    assert r.json()["limitations"] == 0
+    assert r.json()["future_directions"] == 0
+    assert r.json()["last_updated"] is None
+
+
 def test_gaps_returns_gap_list(client, monkeypatch):
     """GET /gaps returns a list of GapResult objects serialised as JSON."""
     gaps = [_make_gap("slow convergence", 0.72), _make_gap("poor generalisation", 0.61)]

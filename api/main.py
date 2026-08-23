@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 load_dotenv()
 
@@ -32,7 +33,11 @@ from pipeline.cross_domain import (  # noqa: E402
     find_cross_domain_matches,
 )
 from pipeline.extractor import extract_paper, is_valid_arxiv_id  # noqa: E402
-from pipeline.gap_scorer import GapResult, score_gaps  # noqa: E402
+from pipeline.gap_scorer import (  # noqa: E402
+    GapResult,
+    _count_papers_in_domain,
+    score_gaps,
+)
 from vectors.embed import (  # noqa: E402
     embed_future_directions,
     embed_limitations,
@@ -82,6 +87,21 @@ class IngestResponse(BaseModel):
     arxiv_id: str
     limitations_found: int
     tier: str
+
+
+class CorpusInfo(BaseModel):
+    """What the numbers on a results page were actually computed over.
+
+    `papers` is deliberately the Neo4j Paper count for the domain — the same
+    value that divides frequency_score — so the figure shown to a reader is the
+    one the scores were derived from, not a near-miss from another store.
+    """
+
+    domain: str
+    papers: int
+    limitations: int
+    future_directions: int
+    last_updated: str | None
 
 
 class ErrorResponse(BaseModel):
@@ -198,6 +218,47 @@ def health() -> HealthResponse:
         papers=papers,
         limitations=lim_count,
         future_directions=fd_count,
+    )
+
+
+@app.get("/corpus", response_model=CorpusInfo)
+def corpus_info(domain: str = Query(default="computer_vision")) -> CorpusInfo:
+    """Corpus size and freshness for a domain, so results can state their basis.
+
+    Every results page shows this. A ranked gap list means something very
+    different over 46 papers than over 4,600, and a reader cannot judge the
+    output without knowing which it is.
+    """
+    papers = _count_papers_in_domain(domain)
+
+    client = get_qdrant_client()
+    domain_filter = Filter(
+        must=[FieldCondition(key="domain", match=MatchValue(value=domain))]
+    )
+
+    def _count(collection: str) -> int:
+        try:
+            return client.count(
+                collection_name=collection, count_filter=domain_filter, exact=True
+            ).count
+        except Exception:  # noqa: BLE001 — a missing collection is not an error here
+            return 0
+
+    last_updated = None
+    db = _get_db()
+    if "papers" in db.table_names():
+        row = db.execute(
+            "SELECT max(ingested_at) FROM papers WHERE domain = ?", [domain]
+        ).fetchone()
+        if row:
+            last_updated = row[0]
+
+    return CorpusInfo(
+        domain=domain,
+        papers=papers,
+        limitations=_count("limitations"),
+        future_directions=_count("future_directions"),
+        last_updated=last_updated,
     )
 
 

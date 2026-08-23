@@ -308,7 +308,7 @@ rather than leaving a reviewer to discover it.
 ## E. Security
 
 ### E1 · `/ingest` is unauthenticated — BLOCKING for public deploy
-**Status: NEEDS ADVISOR DECISION** (product decision about who may write)
+**Status: DONE 2026-08-23** — commit `9b17a45`. `/ingest` returns 403 in demo mode with a message stating the policy and how to ingest locally. Not an auth layer: authenticated ingestion remains planned, and is listed as such in the README roadmap.
 
 `api/main.py:/ingest` accepts an arXiv ID from anyone and triggers a Semantic Scholar fetch, a
 PDF download, a 30–60s LLM run, database writes, and a **full re-embed of both Qdrant
@@ -339,7 +339,7 @@ reaching an outbound request.
 older `archive/YYMMNNN` form) and reject otherwise, in the Pydantic model and the path param.
 
 ### E4 · CORS is fully open — IMPORTANT
-**Status: OPEN — explicitly withheld by the operator (2026-08-23)** despite being marked safe here, alongside E1. Treat as advisor-owned.
+**Status: DONE 2026-08-23** — commit `9b17a45`. CORS open locally, restricted to `ALLOWED_ORIGINS` in demo mode, and fails **closed** (no origins) if demo mode is on but `ALLOWED_ORIGINS` is unset. Supersedes the earlier "withheld by operator" note.
 `allow_origins=["*"]`, `allow_methods=["*"]`, `allow_headers=["*"]` (`api/main.py:110-115`).
 Fine locally; should be restricted to the Vercel origin before public deploy.
 
@@ -374,7 +374,7 @@ committed files; the rate limiter correctly ignores spoofable `X-Forwarded-For`.
 ## G. Deployment readiness (local → Railway / Vercel / AuraDB / Qdrant Cloud)
 
 ### G1 · Ollama has no managed equivalent — HARD BLOCKER
-**Status: NEEDS ADVISOR DECISION** (architecture)
+**Status: DONE 2026-08-23** — commit `578c782`. `explain_match()` routes on `DEMO_MODE`: Ollama locally, the Claude API (`claude-opus-5`) on a public deployment, with an identical prompt on both paths. `/ingest`'s Ollama dependency is moot because demo mode refuses it outright (E1). The hosted path is covered by mocked tests only — no `ANTHROPIC_API_KEY` was available to exercise it live.
 
 `/ingest` (extraction) and `/explain` (hypothesis explanation) both hard-depend on a local
 `llama3.1:8b` at `OLLAMA_BASE_URL`. Railway offers no Ollama service, and an 8B model needs

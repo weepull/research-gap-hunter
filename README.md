@@ -181,7 +181,19 @@ OLLAMA_BASE_URL=http://localhost:11434
 # NEO4J_URI=neo4j+s://xxx.databases.neo4j.io    # AuraDB requires neo4j+s://, not bolt://
 # NEO4J_DATABASE=neo4j
 # RATE_LIMIT_ENABLED=true                        # set false to disable API rate limiting
+
+# Optional — public demo mode. Leave unset for local development.
+# DEMO_MODE=true                                 # disables /ingest (403); hosted LLM for /explain
+# ALLOWED_ORIGINS=https://your-frontend.vercel.app   # required when DEMO_MODE=true; CORS fails closed without it
+# ANTHROPIC_API_KEY=your_key_here                # required only when DEMO_MODE=true
 ```
+
+**Demo mode.** `DEMO_MODE=true` marks a deployment as publicly reachable and
+changes three things: `/ingest` returns 403, CORS is restricted to
+`ALLOWED_ORIGINS` (and refuses everything if that is unset), and `/explain` is
+served by a hosted LLM instead of local Ollama — a hosted instance cannot run
+llama3.1:8b. Leave it unset locally and nothing changes: `/ingest` works, CORS is
+open, and explanations come from Ollama with no API key required.
 
 ### 3. Start services
 
@@ -336,16 +348,35 @@ Interactive docs at `http://localhost:8000/docs` when the API is running.
 
 ## Roadmap
 
+> **Everything in this section is planned, not built.** None of it is live today.
 > Phase numbering was retired — it implied a linear plan that no longer matches
 > reality. Current priorities and blockers live in `PROJECT_HARDENING_PLAN.md`;
-> the items below are directional, not scheduled.
+> the items below are directional, not scheduled, and carry no delivery date.
 
-- **Scale to 500 papers** using Semantic Scholar bulk API; parallelize ingestion with async workers
+### Shipped (for contrast)
+
+- **Demo mode** — `DEMO_MODE=true` disables `/ingest` (403), restricts CORS to
+  `ALLOWED_ORIGINS`, and serves `/explain` from a hosted LLM instead of local
+  Ollama. Per-endpoint rate limiting is active in both modes.
+
+### Planned — corpus and extraction
+
+- **Scale to 500 papers** using the Semantic Scholar bulk API; parallelize ingestion with async workers
 - **GROBID integration** for structured section extraction (methods, results, limitations) replacing the LLM prompt — faster, cheaper, more consistent
 - **Additional domains** (NLP, robotics, materials science); domain auto-detection from paper abstract
-- **Citation graph overlay** in Neo4j; weight gap scores by citing-paper age to surface problems that are being abandoned vs. gaining attention
+- **Citation graph overlay** in Neo4j; weight gap scores by citing-paper age to surface problems being abandoned vs. gaining attention. The schema defines a `CITES` relationship but the graph currently contains **zero** of them
 - **Patent corpus** integration; cross-reference academic limitations against granted patents to find commercially-solved but academically-unacknowledged gaps
-- **Public deployment** on Railway (API) + Vercel (frontend) with read-only demo mode and authenticated ingestion
+
+### Planned — deployment and access
+
+- **Public deployment** on Railway (API) + Vercel (frontend), running in demo mode
+- **Authenticated ingestion** so trusted users can add papers to a deployed instance — today `/ingest` is simply disabled in demo mode, with no auth layer of any kind
+- **Usage-based pricing via Razorpay** for high-volume programmatic access.
+  **Not implemented — there is no billing code, no payment integration, no
+  metering, and no paid tier in this repository.** It is a direction under
+  consideration, recorded here so the intent is on the record rather than
+  implied. The project is MIT-licensed and free to self-host; any future paid
+  tier would apply only to a hosted instance.
 
 ---
 

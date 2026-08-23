@@ -20,6 +20,21 @@ if (!CONFIGURED_API_URL && process.env.NODE_ENV === "production") {
 
 const API_BASE = CONFIGURED_API_URL ?? "http://localhost:8000";
 
+/**
+ * Thrown when the API refuses a feature that is switched off for this
+ * deployment (the public demo disables ingestion and live explanations).
+ *
+ * Distinct from a generic error because it is an expected state, not a failure:
+ * callers should render the server's explanation as information rather than as
+ * something that went wrong.
+ */
+export class FeatureDisabledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FeatureDisabledError";
+  }
+}
+
 /** Thrown when the API rejects a request because of rate limiting. */
 export class RateLimitError extends Error {
   readonly retryAfterSeconds: number | null;
@@ -109,6 +124,19 @@ async function get<T>(path: string, params?: Record<string, string | number>): P
       );
     }
     const body = await res.text().catch(() => "");
+    if (res.status === 403) {
+      // The API sends a human-readable reason in `detail`; surface that rather
+      // than a raw "API 403: {"detail":...}" blob.
+      let detail = "";
+      try {
+        detail = (JSON.parse(body) as { detail?: string }).detail ?? "";
+      } catch {
+        detail = "";
+      }
+      throw new FeatureDisabledError(
+        detail || "This feature is disabled in the public demo.",
+      );
+    }
     throw new Error(`API ${res.status}: ${body.slice(0, 200) || res.statusText}`);
   }
   return res.json() as Promise<T>;

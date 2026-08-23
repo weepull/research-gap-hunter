@@ -6,6 +6,7 @@ import {
   CrossDomainMatch,
   DOMAINS,
   domainLabel,
+  FeatureDisabledError,
   fetchCrossDomainMatches,
   fetchExplanation,
 } from "@/lib/api";
@@ -36,6 +37,10 @@ function ConnectionCard({ match }: { match: CrossDomainMatch }) {
   const [explanation, setExplanation] = useState<string | null>(null);
   const [explaining, setExplaining] = useState(false);
   const [explainError, setExplainError] = useState<string | null>(null);
+  // Set when the API reports explanations are switched off for this deployment.
+  // Kept separate from explainError so it renders as information, not failure,
+  // and so the button can stop inviting a click that will always be refused.
+  const [explainDisabled, setExplainDisabled] = useState<string | null>(null);
 
   async function explain() {
     setExplaining(true);
@@ -49,7 +54,11 @@ function ConnectionCard({ match }: { match: CrossDomainMatch }) {
       );
       setExplanation(res.explanation);
     } catch (err) {
-      setExplainError(err instanceof Error ? err.message : "Explanation failed");
+      if (err instanceof FeatureDisabledError) {
+        setExplainDisabled(err.message);
+      } else {
+        setExplainError(err instanceof Error ? err.message : "Explanation failed");
+      }
     } finally {
       setExplaining(false);
     }
@@ -103,14 +112,20 @@ function ConnectionCard({ match }: { match: CrossDomainMatch }) {
             <p className="text-sm leading-relaxed text-foreground/85">{explanation}</p>
           </div>
         ) : (
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={explain}
-              disabled={explaining}
-              className="rounded-md border border-accent/40 bg-accent/10 px-3 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-accent/20 disabled:cursor-wait disabled:opacity-60"
+              disabled={explaining || explainDisabled !== null}
+              title={explainDisabled ?? undefined}
+              className="rounded-md border border-accent/40 bg-accent/10 px-3 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {explaining ? "Generating… (LLM, ~10s)" : "Generate Explanation"}
+              {explaining
+                ? "Generating… (LLM, ~10s)"
+                : explainDisabled
+                  ? "Explanations unavailable"
+                  : "Generate Explanation"}
             </button>
+            {explainDisabled && <span className="text-sm text-muted">{explainDisabled}</span>}
             {explainError && <span className="text-sm text-red-400">{explainError}</span>}
           </div>
         )}

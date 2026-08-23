@@ -92,7 +92,9 @@ research-gap-hunter/
 │   └── papers.db              ← SQLite database
 ├── pipeline/
 │   ├── extractor.py           ← extract_paper(arxiv_id) → PaperExtract
-│   ├── batch.py               ← batch ingestion runner
+│   ├── batch.py               ← batch ingestion runner + SQLite layer
+│   ├── config.py              ← DEMO_MODE / CORS flags
+│   ├── selfheal.py            ← startup Neo4j → SQLite reconciliation (G3)
 │   ├── gap_scorer.py          ← score_gaps() → ranked GapResult list
 │   └── cross_domain.py        ← find_cross_domain_matches()
 ├── graph/
@@ -123,6 +125,10 @@ QDRANT_HOST=localhost
 QDRANT_PORT=6333
 OLLAMA_MODEL=llama3.1:8b
 OLLAMA_BASE_URL=http://localhost:11434
+
+# Deployment-only. See .env.example and DEPLOYMENT.md for the full set.
+PAPERS_DB_PATH=data/papers.db     # point at a mounted volume in production
+SELFHEAL_ON_STARTUP=true          # kill switch for the G3 safety net
 ```
 
 ---
@@ -615,10 +621,22 @@ Trade-off accepted: Neo4j never stored `objectives`, `evaluation_metrics`, or
 than looking like a failed extraction. Anyone wanting those fields populated must
 re-extract, which requires solving the detach problem above first.
 
-**Prevention:** `data/papers.db` is gitignored and disposable while Neo4j persists
-independently, so this can recur any time the DB is rebuilt. After any papers.db
-reset, check `MATCH (p:Paper) RETURN count(p)` against
-`SELECT count(*) FROM papers` before trusting the corpus.
+**Prevention — now automated (G3, 2026-08-24, commit `4b37611`).** `data/papers.db`
+is gitignored and disposable while Neo4j persists independently, so this can recur
+any time the DB is rebuilt — and on an ephemeral container filesystem it would
+recur on *every* redeploy. Two layers now address it:
+
+- `PAPERS_DB_PATH` points the store at a persistent volume in deployment.
+- `pipeline/selfheal.py` runs from the API lifespan, compares Neo4j Paper nodes to
+  SQLite rows, and rebuilds any missing rows by the same reconstruction path used
+  above — from graph relationships, no LLM, no network, deterministic. It is
+  additive only: existing rows are never overwritten and SQLite-only rows are
+  never deleted. A rebuild logs at WARNING, because it means the volume failed.
+
+The manual check is still the right thing to run after any papers.db reset:
+`MATCH (p:Paper) RETURN count(p)` against `SELECT count(*) FROM papers`. The
+self-heal makes the app recover on its own; it does not make the drift
+uninteresting.
 
 ### Semantic Scholar API
 - Free tier = 1 req/sec — always time.sleep(2) between individual paper fetches, time.sleep(5) between batch queries

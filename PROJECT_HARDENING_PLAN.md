@@ -391,12 +391,60 @@ requires an HTTPS URL **and an API key**, neither of which is plumbed through.
 host/port for local use.
 
 ### G3 · SQLite on an ephemeral container filesystem — BLOCKER
-**Status: NEEDS ADVISOR DECISION** (data architecture)
-`data/papers.db` is a local file. Railway containers have ephemeral disks, so every redeploy
-would silently reset the corpus — the exact failure that caused the drift repaired in B6, but
-recurring on every deploy. Options: a Railway volume; move paper storage to Postgres; or treat
-SQLite as a rebuildable cache and reconstruct from Neo4j on boot (the reconstruction path used
-in `c1f4c1a` already proves this works).
+**Status: DONE 2026-08-24** — commit `4b37611` (advisor decision: implement both layers)
+
+`data/papers.db` was a repo-relative file. Railway container disks are ephemeral, so every
+redeploy would silently reset the corpus — the exact failure that caused the drift repaired in
+B6, recurring on every deploy.
+
+The advisor chose **both** offered remedies rather than either alone, on the reasoning that a
+volume is the correct fix but its failure mode is silent, and a rebuild-on-boot is a correct
+safety net but a poor primary because it loses fields the graph never stored.
+
+**Layer 1 — persistence.** `PAPERS_DB_PATH` overrides the SQLite location, so the file can live
+on a mounted volume. Resolved once at import (after `load_dotenv()`) so tests that patch
+`pipeline.batch._DB_PATH` are unaffected; a blank value falls back to the default rather than
+resolving to path `""`. `_get_db()` creates the parent directory, so a freshly mounted empty
+volume needs no provisioning step.
+
+**Layer 2 — startup self-heal.** `pipeline/selfheal.py`. The API lifespan compares Neo4j Paper
+nodes to SQLite rows and rebuilds any rows SQLite is missing, using the reconstruction path
+proven in `c1f4c1a`: read `title`/`year`/`domain` from the Paper node and
+limitations/future-directions/methods/datasets from its relationships. **No LLM call, no network
+call, deterministic.**
+
+Why reconstruction and not re-ingestion — this is the same constraint recorded for B6 and it has
+not gone away: `graph/populate.py:_upsert_paper_counting()` only ever MERGEs and never removes
+relationships, and `Limitation` nodes are keyed on exact `text`. Ollama extraction is
+non-deterministic, so re-extracting a paper that already has limitations attaches *new*
+Limitation nodes while the old ones stay, leaving that paper reporting both wordings and
+inflating the corpus with near-duplicates that then corrupt clustering.
+
+Deliberate properties:
+
+- **Additive only.** Existing rows are never overwritten — an extracted row is richer than
+  anything the graph can rebuild. Rows SQLite has that the graph does not are counted and
+  reported (`sqlite_only`) but never deleted.
+- **Loud when it fires.** A rebuild logs at WARNING naming the volume as the likely culprit.
+  Reaching that branch means layer 1 did not work, which is worth investigating even though the
+  app recovers. The no-op path logs at INFO.
+- **Never fatal.** A failure is caught and logged; the API still serves traffic. A broken safety
+  net is better than an API that will not boot.
+- **Kill switch.** `SELFHEAL_ON_STARTUP=false` disables it without a code change.
+- **Known lossy fields.** Neo4j never stored `objectives`, `evaluation_metrics` or `raw_json`, so
+  those come back empty. `raw_json` records `{"source": "reconstructed_from_neo4j", ...}` so a
+  rebuilt row is visibly reconstructed rather than looking like a failed extraction.
+
+**Verification.** 25 new tests (297 → 322) pin both directions — a real mismatch repaired with
+correct field mapping, `json.dumps`'d list fields, tier recovered from the `REPORTS_LIMITATION`
+relationship and provenance recorded; and matching stores producing byte-identical rows with no
+writes. Live against the real stack the no-op path reported 127/127. The repair path was
+exercised by deleting 5 rows from a **copy** of `papers.db` and reconciling: all 5 were rebuilt
+with identical `title`, `year`, `domain` and identical limitation sets. The real database was
+never opened for writing.
+
+**Scoring impact: none.** `_count_papers_in_domain()` counts Neo4j Paper nodes, which this never
+writes to. As established in B6, repairing SQLite cannot move the frequency denominator.
 
 ### G4 · Specter2 loads at startup — IMPORTANT
 **Status: NEEDS ADVISOR DECISION** (affects cost/instance sizing)

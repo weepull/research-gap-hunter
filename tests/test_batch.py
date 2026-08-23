@@ -447,3 +447,56 @@ def test_get_paper_deserializes_all_list_fields(monkeypatch, tmp_db):
     for field in ("objectives", "methods", "datasets", "evaluation_metrics",
                   "limitations", "future_directions"):
         assert isinstance(result[field], list), f"{field} should be a list"
+
+
+# ---------------------------------------------------------------------------
+# Configurable database path (G3 — persistence on a mounted volume)
+# ---------------------------------------------------------------------------
+
+
+def test_db_path_defaults_to_data_papers_db(monkeypatch):
+    """Without PAPERS_DB_PATH the location is unchanged from before G3."""
+    import importlib
+
+    monkeypatch.delenv("PAPERS_DB_PATH", raising=False)
+    reloaded = importlib.reload(batch_mod)
+    try:
+        assert reloaded._DB_PATH == Path("data/papers.db")
+    finally:
+        monkeypatch.delenv("PAPERS_DB_PATH", raising=False)
+        importlib.reload(batch_mod)
+
+
+def test_db_path_honours_papers_db_path_env(monkeypatch, tmp_path):
+    """A deployment can point the store at a mounted volume.
+
+    This is the first of the two G3 layers: on an ephemeral container filesystem
+    the default path silently resets the corpus on every redeploy.
+    """
+    import importlib
+
+    target = tmp_path / "volume" / "papers.db"
+    monkeypatch.setenv("PAPERS_DB_PATH", str(target))
+    reloaded = importlib.reload(batch_mod)
+    try:
+        assert reloaded._DB_PATH == target
+        # The parent directory is created on open, so a freshly mounted empty
+        # volume needs no provisioning step.
+        reloaded._get_db()
+        assert target.parent.is_dir()
+    finally:
+        monkeypatch.delenv("PAPERS_DB_PATH", raising=False)
+        importlib.reload(batch_mod)
+
+
+def test_blank_papers_db_path_falls_back_to_default(monkeypatch):
+    """An empty env var is a missing one, not a request to use path ''."""
+    import importlib
+
+    monkeypatch.setenv("PAPERS_DB_PATH", "   ")
+    reloaded = importlib.reload(batch_mod)
+    try:
+        assert reloaded._DB_PATH == Path("data/papers.db")
+    finally:
+        monkeypatch.delenv("PAPERS_DB_PATH", raising=False)
+        importlib.reload(batch_mod)

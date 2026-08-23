@@ -19,7 +19,15 @@ from pipeline.extractor import (
 load_dotenv()
 
 _SEMANTIC_SCHOLAR_BASE = "https://api.semanticscholar.org/graph/v1"
-_DB_PATH = Path("data/papers.db")
+# The SQLite path is configurable so a deployment can point it at a mounted
+# volume. On Railway the container filesystem is ephemeral, so leaving this at
+# the repo-relative default there would silently reset the corpus on every
+# redeploy — see G3 in PROJECT_HARDENING_PLAN.md.
+#
+# Resolved once at import, after load_dotenv() above, so tests that patch this
+# constant keep working exactly as before.
+_DEFAULT_DB_PATH = Path("data/papers.db")
+_DB_PATH = Path(os.getenv("PAPERS_DB_PATH", "").strip() or _DEFAULT_DB_PATH)
 _LOG_PATH = Path("data/failed_extractions.log")
 # Seconds between individual paper fetches (Semantic Scholar free tier: 1 req/sec).
 # Mirrors cross_domain._FETCH_SLEEP_SECONDS.
@@ -38,7 +46,12 @@ logger = logging.getLogger(__name__)
 
 
 def _get_db() -> sqlite_utils.Database:
-    """Open (or create) the SQLite database at data/papers.db."""
+    """Open (or create) the SQLite database at the configured path.
+
+    Defaults to data/papers.db; PAPERS_DB_PATH overrides it. The parent
+    directory is created if missing, so pointing this at a freshly mounted
+    volume works without a provisioning step.
+    """
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite_utils.Database(_DB_PATH)
 

@@ -34,6 +34,10 @@ from pipeline.cross_domain import (  # noqa: E402
     find_cross_domain_matches,
 )
 from pipeline.extractor import extract_paper, is_valid_arxiv_id  # noqa: E402
+from pipeline.selfheal import (  # noqa: E402
+    reconcile_sqlite_from_graph,
+    selfheal_enabled,
+)
 from pipeline.gap_scorer import (  # noqa: E402
     GapResult,
     _count_papers_in_domain,
@@ -126,6 +130,27 @@ async def lifespan(app: FastAPI):
     app.state.qdrant = get_qdrant_client()
     app.state.neo4j = get_neo4j_driver()
     logger.info("All backend services connected.")
+
+    # Second layer of the G3 fix. The first layer is PAPERS_DB_PATH pointing at
+    # a persistent volume; this catches the case where that did not work, by
+    # rebuilding any paper rows SQLite is missing straight from the graph.
+    #
+    # Deliberately non-fatal: a failure here means /paper/{id} may 404 for some
+    # papers, which is worse than it was but far better than an API that will
+    # not start at all.
+    app.state.selfheal = None
+    if selfheal_enabled():
+        try:
+            app.state.selfheal = reconcile_sqlite_from_graph(app.state.neo4j)
+        except Exception:  # noqa: BLE001 — never block startup on the safety net
+            logger.exception(
+                "Startup paper-store reconciliation failed. The API will serve "
+                "traffic, but /paper/{arxiv_id} may 404 for papers that only "
+                "exist in Neo4j."
+            )
+    else:
+        logger.info("Startup paper-store reconciliation disabled by SELFHEAL_ON_STARTUP.")
+
     yield
     logger.info("Shutting down…")
     app.state.neo4j.close()

@@ -374,7 +374,7 @@ committed files; the rate limiter correctly ignores spoofable `X-Forwarded-For`.
 ## G. Deployment readiness (local → Railway / Vercel / AuraDB / Qdrant Cloud)
 
 ### G1 · Ollama has no managed equivalent — HARD BLOCKER
-**Status: DONE 2026-08-23** — commit `578c782`. `explain_match()` routes on `DEMO_MODE`: Ollama locally, the Claude API (`claude-opus-5`) on a public deployment, with an identical prompt on both paths. `/ingest`'s Ollama dependency is moot because demo mode refuses it outright (E1). The hosted path is covered by mocked tests only — no `ANTHROPIC_API_KEY` was available to exercise it live.
+**Status: DONE 2026-08-23 (revised)** — commits `578c782` then `REVISION`. Resolved by *removing* the dependency rather than replacing it: `DEMO_MODE=true` refuses both `/ingest` and `/explain` with a 403, so a public deployment never needs Ollama. An interim hosted-LLM path (claude-opus-5) was implemented and then deleted at the advisor's direction — a per-request paid API call for anonymous callers is an open-ended cost. `explain_match()` now has a single backend (Ollama) and a test asserts no hosted branch is re-added.
 
 `/ingest` (extraction) and `/explain` (hypothesis explanation) both hard-depend on a local
 `llama3.1:8b` at `OLLAMA_BASE_URL`. Railway offers no Ollama service, and an 8B model needs

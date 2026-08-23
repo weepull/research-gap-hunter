@@ -183,17 +183,19 @@ OLLAMA_BASE_URL=http://localhost:11434
 # RATE_LIMIT_ENABLED=true                        # set false to disable API rate limiting
 
 # Optional — public demo mode. Leave unset for local development.
-# DEMO_MODE=true                                 # disables /ingest (403); hosted LLM for /explain
+# DEMO_MODE=true                                 # disables /ingest and /explain (403)
 # ALLOWED_ORIGINS=https://your-frontend.vercel.app   # required when DEMO_MODE=true; CORS fails closed without it
-# ANTHROPIC_API_KEY=your_key_here                # required only when DEMO_MODE=true
 ```
 
 **Demo mode.** `DEMO_MODE=true` marks a deployment as publicly reachable and
-changes three things: `/ingest` returns 403, CORS is restricted to
-`ALLOWED_ORIGINS` (and refuses everything if that is unset), and `/explain` is
-served by a hosted LLM instead of local Ollama — a hosted instance cannot run
-llama3.1:8b. Leave it unset locally and nothing changes: `/ingest` works, CORS is
-open, and explanations come from Ollama with no API key required.
+changes three things: `/ingest` returns 403, `/explain` returns 403, and CORS is
+restricted to `ALLOWED_ORIGINS` (refusing everything if that is unset). Both
+endpoints are refused for the same reason — each costs real money per anonymous
+request, ingestion through the Semantic Scholar quota and a 30-60s LLM job,
+explanations through an LLM call. There is deliberately **no hosted-LLM
+fallback**: the demo shows the pre-computed discovery output, not live
+generation. Leave `DEMO_MODE` unset locally and nothing changes — ingestion and
+explanations both work against Ollama, no API key required anywhere.
 
 ### 3. Start services
 
@@ -355,9 +357,9 @@ Interactive docs at `http://localhost:8000/docs` when the API is running.
 
 ### Shipped (for contrast)
 
-- **Demo mode** — `DEMO_MODE=true` disables `/ingest` (403), restricts CORS to
-  `ALLOWED_ORIGINS`, and serves `/explain` from a hosted LLM instead of local
-  Ollama. Per-endpoint rate limiting is active in both modes.
+- **Demo mode** — `DEMO_MODE=true` disables `/ingest` and `/explain` (403, with
+  a message explaining why) and restricts CORS to `ALLOWED_ORIGINS`. Per-endpoint
+  rate limiting is active in both modes. The project calls no paid API.
 
 ### Planned — corpus and extraction
 

@@ -6,7 +6,12 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    PayloadSchemaType,
+    PointStruct,
+    VectorParams,
+)
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 load_dotenv()
@@ -81,19 +86,74 @@ def load_embedding_model():
     return _model_cache["model"]
 
 
+# Payload fields that queries filter on and therefore need an index. Every
+# filtered query in the project narrows by `domain` — vectors/search.py,
+# pipeline/gap_scorer.py, pipeline/cross_domain.py and the /corpus counts in
+# api/main.py all do it.
+_INDEXED_PAYLOAD_FIELDS = ("domain",)
+
+
+def ensure_payload_indexes(
+    client: QdrantClient, collection_name: str = _COLLECTION_LIMITATIONS
+) -> list[str]:
+    """Create the payload indexes filtered queries require. Idempotent.
+
+    A local Qdrant will happily filter on an unindexed payload field. Qdrant
+    Cloud refuses:
+
+        400 Bad request: Index required but not found for "domain" of one of
+        the following types: [keyword]
+
+    So a corpus loaded into a managed cluster without this looks perfectly
+    healthy — right point counts, right dimensions, GREEN status — and then
+    every filtered query fails, which is /search, /gaps, /cross-domain and the
+    /corpus counts. That is to say: everything except /health.
+
+    Returns the fields it actually created an index for on this call; a field
+    that was already indexed is not listed.
+
+    Existing indexes are detected by reading the collection's payload schema
+    rather than by catching an error from a repeat create. Qdrant answers a
+    duplicate create_payload_index with 200, not a conflict, so an
+    exception-based check would report every run as having created everything.
+    """
+    existing = set(client.get_collection(collection_name).payload_schema)
+    created = []
+    for field in _INDEXED_PAYLOAD_FIELDS:
+        if field in existing:
+            logger.debug(
+                "Payload index on '%s.%s' already present", collection_name, field
+            )
+            continue
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name=field,
+            field_schema=PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
+        created.append(field)
+        logger.info("Created payload index on '%s.%s'", collection_name, field)
+    return created
+
+
 def ensure_collection(client: QdrantClient, collection_name: str = _COLLECTION_LIMITATIONS) -> None:
-    """Create a Qdrant collection if it does not already exist.
+    """Create a Qdrant collection and its payload indexes if missing.
 
     Idempotent — safe to call multiple times. Vector size: 768, distance: Cosine.
+
+    The index step runs even when the collection already exists, so a cluster
+    populated before indexes were created here gets repaired on the next load
+    rather than needing a manual fix.
     """
     existing = {c.name for c in client.get_collections().collections}
-    if collection_name in existing:
-        return
-    client.create_collection(
-        collection_name=collection_name,
-        vectors_config=VectorParams(size=_VECTOR_SIZE, distance=Distance.COSINE),
-    )
-    logger.info("Created Qdrant collection '%s'", collection_name)
+    if collection_name not in existing:
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(size=_VECTOR_SIZE, distance=Distance.COSINE),
+        )
+        logger.info("Created Qdrant collection '%s'", collection_name)
+
+    ensure_payload_indexes(client, collection_name)
 
 
 def _embed_texts(model, texts: list[str]) -> list[list[float]]:

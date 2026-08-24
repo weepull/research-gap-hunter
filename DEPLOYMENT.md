@@ -207,7 +207,39 @@ curl -H "api-key: <your-key>" "<your-qdrant-url>/collections/limitations" | head
 ```
 
 You want `points_count` to be **168** (the total across both domains), and the
-`future_directions` collection to be **94**.
+`future_directions` collection to be **94**. This load has been performed and
+verified against the live cluster:
+
+| Collection | Points | Dim | Distance | Domain split |
+|---|---|---|---|---|
+| `limitations` | 168 | 768 | Cosine | 64 CV / 104 MI |
+| `future_directions` | 94 | 768 | Cosine | 34 CV / 60 MI |
+
+Those match `REPORTS_LIMITATION` (168) and `SUGGESTS_FUTURE` (94) in the graph
+exactly.
+
+> **Point counts are not enough — check the payload index.** A managed Qdrant
+> refuses to filter on an unindexed payload field:
+>
+> ```
+> 400 Bad request: Index required but not found for "domain"
+>     of one of the following types: [keyword]
+> ```
+>
+> A local Qdrant allows it, so a cluster can look perfectly healthy — right
+> counts, right dimensions, GREEN status — while **every filtered query fails**.
+> That is `/search`, `/gaps`, `/cross-domain` and the `/corpus` counts: in other
+> words, everything except `/health`. This was hit on the live cluster.
+>
+> `ensure_collection()` now creates the index, and does so for existing
+> collections too, so any load run from this repo fixes it. To confirm:
+>
+> ```bash
+> curl -H "api-key: <your-key>" "<your-qdrant-url>/collections/limitations" \
+>   | python3 -c "import json,sys; print('indexed:', list(json.load(sys.stdin)['result']['payload_schema']))"
+> ```
+>
+> You want `indexed: ['domain']` on **both** collections.
 
 ---
 

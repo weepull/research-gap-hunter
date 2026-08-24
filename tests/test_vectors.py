@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pytest
+from qdrant_client.models import PayloadSchemaType
 
 import vectors.embed as embed_mod
 import vectors.search as search_mod
@@ -17,6 +18,7 @@ from vectors.embed import (
     embed_future_directions,
     embed_limitations,
     ensure_collection,
+    ensure_payload_indexes,
     get_qdrant_client,
     load_embedding_model,
 )
@@ -500,3 +502,88 @@ def test_find_similar_future_directions_with_domain_filter(monkeypatch):
 
     _, kwargs = client.query_points.call_args
     assert isinstance(kwargs["query_filter"], Filter)
+
+
+# ---------------------------------------------------------------------------
+# Payload indexes
+#
+# A local Qdrant filters on unindexed payload fields quite happily. Qdrant Cloud
+# refuses with 400 "Index required but not found for \"domain\"". That makes this
+# the difference between a managed cluster that works and one that looks
+# perfectly healthy — right point counts, right dimensions, GREEN status — while
+# every filtered query fails, which is /search, /gaps, /cross-domain and the
+# /corpus counts. Caught on the live cluster, not in review.
+# ---------------------------------------------------------------------------
+
+
+def _client_with_schema(indexed_fields, existing_collections=None):
+    client = _make_qdrant_mock(existing_collections)
+    client.get_collection.return_value = MagicMock(payload_schema=dict.fromkeys(indexed_fields))
+    return client
+
+
+def test_ensure_payload_indexes_creates_missing_domain_index():
+    client = _client_with_schema([])
+
+    created = ensure_payload_indexes(client, "limitations")
+
+    assert created == ["domain"]
+    client.create_payload_index.assert_called_once()
+    kwargs = client.create_payload_index.call_args.kwargs
+    assert kwargs["collection_name"] == "limitations"
+    assert kwargs["field_name"] == "domain"
+    # Must be a keyword index — that is the type Qdrant demands for MatchValue.
+    assert kwargs["field_schema"] == PayloadSchemaType.KEYWORD
+
+
+def test_ensure_payload_indexes_is_idempotent():
+    """A field that is already indexed must not be re-created or reported.
+
+    Qdrant answers a duplicate create_payload_index with 200 rather than a
+    conflict, so this has to be decided from the collection's payload schema.
+    An exception-based check would report every run as having created
+    everything.
+    """
+    client = _client_with_schema(["domain"])
+
+    created = ensure_payload_indexes(client, "limitations")
+
+    assert created == []
+    client.create_payload_index.assert_not_called()
+
+
+def test_ensure_collection_indexes_a_newly_created_collection():
+    client = _client_with_schema([], existing_collections=[])
+
+    ensure_collection(client, "limitations")
+
+    client.create_collection.assert_called_once()
+    client.create_payload_index.assert_called_once()
+
+
+def test_ensure_collection_indexes_an_existing_collection_too():
+    """Repairs a cluster populated before indexes were created here.
+
+    Without this, a corpus already loaded into a managed cluster stays broken
+    until someone notices and fixes it by hand.
+    """
+    client = _client_with_schema([], existing_collections=["limitations"])
+
+    ensure_collection(client, "limitations")
+
+    client.create_collection.assert_not_called()
+    client.create_payload_index.assert_called_once()
+
+
+def test_indexed_payload_fields_covers_every_filtered_field():
+    """The indexed set must cover what the code actually filters on.
+
+    Every filtered query in the project narrows by `domain`
+    (vectors/search.py, pipeline/gap_scorer.py, pipeline/cross_domain.py and
+    the /corpus counts in api/main.py). If a new filter field is introduced
+    without an index, managed Qdrant rejects it at runtime — this test is the
+    reminder to add it here.
+    """
+    from vectors.embed import _INDEXED_PAYLOAD_FIELDS
+
+    assert "domain" in _INDEXED_PAYLOAD_FIELDS

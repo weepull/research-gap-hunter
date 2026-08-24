@@ -171,7 +171,18 @@ HuggingFace pre-cache pulls is pruned in the same layer that creates it
 (`scripts/prune_hf_cache.py`, 440MB reclaimed).
 
 If Railway rejects the image for size, the lever to pull is the baked-in
-weights: drop that RUN and accept a slow first boot while Specter2 downloads.
+weights — but **three things have to come out together**, because they depend on
+each other:
+
+1. the `RUN` that pre-caches the model (`vectors.embed.load_embedding_model()`),
+2. the `RUN` immediately after it that asserts the model loads with
+   `HF_HUB_OFFLINE=1` — this one FAILS THE BUILD if the weights are absent, so
+   removing only step 1 gives you a failed build, not a smaller image,
+3. `ENV HF_HUB_OFFLINE=1` further down — leave it and the runtime is forbidden
+   from downloading the weights it no longer has, so the app cannot start at all.
+
+Removing all three trades ~421MB of image for a cold start that downloads the
+weights before serving traffic. Removing any subset is broken.
 
 The image sets `HF_HUB_OFFLINE=1`, because it contains the weights and the build
 fails if they cannot be loaded offline. Measured on this image with the network
@@ -372,9 +383,12 @@ bug introduced by deploying.
 - **Single worker, on purpose.** The rate limiter keeps per-process in-memory
   token buckets, so N workers would multiply every limit by N. Scaling out needs
   a shared store such as Redis (G5).
-- **Cold starts are slow.** Specter2 is baked into the image, so boot is a disk
-  read rather than a download — but it is still ~440MB into memory before the
-  app serves traffic (G4).
+- **Cold start is fast; the memory footprint is the real cost.** Specter2 is
+  baked into the image and `HF_HUB_OFFLINE=1` keeps startup off the network, so
+  boot is a disk read — measured at **4 seconds from container start to a
+  healthy response**. What has not changed is that ~440MB of weights is resident
+  before the app serves traffic, which is what bounds how small an instance can
+  be. That memory question is G4 and is still open.
 - **AuraDB Free pauses after 3 days idle.** The first request after a pause will
   fail or hang while it resumes.
 - **`/ingest` and `/explain` are refused in demo mode.** To grow the corpus, run

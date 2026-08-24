@@ -565,6 +565,8 @@ reviewer will notice single-paper gaps immediately.
 G1 first: it is an architecture decision that may reshape everything else. Then G2, G3, G6
 (config/persistence blockers), then E1, E4 (public-exposure security), then G4, G5, G7, G8.
 
+*Status as of 2026-08-24: G1, G2, G3, G6 are done. G4, G5, G7, G8 and E1/E4 remain.*
+
 **Stage 4 — deferred**
 A4 (tier weights, inert until tiers diversify), A6, C4, H5 (needs corpus growth, not code).
 
@@ -572,7 +574,7 @@ A4 (tier weights, inert until tiers diversify), A6, C4, H5 (needs corpus growth,
 1. **G1 — Ollama hosting.** `/explain` and `/ingest` cannot run as designed.
 2. **H3 + H1 — single-paper gaps presented without corpus context.** The credibility risk.
 3. **E1 + E2 — unauthenticated write endpoint and leaking errors.**
-4. **G3 — ephemeral SQLite** silently resetting the corpus on redeploy.
+4. ~~**G3 — ephemeral SQLite** silently resetting the corpus on redeploy.~~ **Resolved 2026-08-24** (`4b37611`) — persistent volume plus startup self-heal.
 5. **A2/A1 — thresholds below the noise floor.** Shipping a discovery tool whose headline
    feature surfaces chance pairings is the worst outcome of everything in this document.
 

@@ -43,6 +43,23 @@ def get_qdrant_client() -> QdrantClient:
     return QdrantClient(host=host, port=port)
 
 
+def hf_cache_dir() -> str:
+    """The HuggingFace hub directory the model is loaded from.
+
+    Defaults to the usual per-user location, so local behaviour is unchanged.
+    HF_CACHE_DIR overrides it, which is what lets a container image bake the
+    weights somewhere the app will actually look.
+
+    This used to be hardcoded to ~/.cache/huggingface/hub, and that silently
+    defeated the point of pre-caching weights into a container image: the image
+    baked them into /opt/hf-cache, the app looked in /root/.cache, found
+    nothing, and downloaded 440MB again on every cold start. Anything that bakes
+    weights must set this to the same directory it baked into.
+    """
+    configured = os.getenv("HF_CACHE_DIR", "").strip()
+    return configured or os.path.expanduser("~/.cache/huggingface/hub")
+
+
 def load_embedding_model():
     """Load allenai/specter2_base via sentence-transformers, cached for the process lifetime.
 
@@ -53,7 +70,8 @@ def load_embedding_model():
         from sentence_transformers import SentenceTransformer
         logger.info("Loading embedding model %s", _MODEL_NAME)
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        cache_dir = hf_cache_dir()
+        logger.info("HuggingFace cache directory: %s", cache_dir)
         _model_cache["model"] = SentenceTransformer(
             _MODEL_NAME,
             model_kwargs={"cache_dir": cache_dir},

@@ -647,7 +647,15 @@ uninteresting.
 
 ### HuggingFace / Specter2
 - Model re-downloads on every process unless cache_dir is explicitly set in model_kwargs, processor_kwargs, config_kwargs
-- Do not set HF_HUB_OFFLINE=1 — breaks fresh installs on new machines
+- Do not set HF_HUB_OFFLINE=1 in your shell or .env — breaks fresh installs on new machines.
+  The deployment `Dockerfile` is the one exception: it bakes the weights in and fails the
+  build if they cannot be loaded offline, so a built image provably has them. Measured
+  there with the network unreachable: 3s and 0 network log lines with the flag, 141s and
+  66 lines of DNS-retry without it.
+- The HF cache directory is `HF_CACHE_DIR` (see `vectors/embed.hf_cache_dir()`), defaulting
+  to ~/.cache/huggingface/hub. Anything that pre-caches weights must set it to the same
+  directory it wrote to — the Dockerfile bakes via the app's own `load_embedding_model()`
+  precisely so the two cannot diverge
 - Deprecation warnings from sentence-transformers are harmless — do not attempt to fix them
 - "No modules.json found" warning is harmless — Specter2 base does not have a modules.json
 

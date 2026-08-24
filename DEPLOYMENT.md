@@ -173,6 +173,12 @@ HuggingFace pre-cache pulls is pruned in the same layer that creates it
 If Railway rejects the image for size, the lever to pull is the baked-in
 weights: drop that RUN and accept a slow first boot while Specter2 downloads.
 
+The image sets `HF_HUB_OFFLINE=1`, because it contains the weights and the build
+fails if they cannot be loaded offline. Measured on this image with the network
+unreachable: **4s to first healthy response and zero network calls**, against a
+container that previously hung for over half an hour retrying DNS. You do not
+need to set anything for this; it is baked in.
+
 ### Add the volume — do not skip this
 
 This is the single most important step, and skipping it causes silent data loss.

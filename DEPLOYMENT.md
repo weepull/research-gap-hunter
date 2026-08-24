@@ -1,7 +1,9 @@
 # Deployment
 
-How to take Research Gap Hunter live on Railway (backend) + Vercel (frontend) +
+How to take Research Gap Hunter live on Render (backend) + Vercel (frontend) +
 Neo4j AuraDB (graph) + Qdrant Cloud (vectors).
+
+All four have a genuinely free tier and none requires a credit card.
 
 **Nothing here has been deployed.** No accounts were created and no credentials
 were obtained on your behalf — every step below that needs a real credential is
@@ -17,19 +19,26 @@ public URL before the frontend can be built.
 
 | Piece | Where | Free tier | Notes |
 |---|---|---|---|
-| FastAPI backend | Railway | Trial credit, then ~$5/mo | Needs a **volume**; see §4 |
+| FastAPI backend | Render | Yes, permanent, no card | Spins down when idle; **no disk**; 512MB RAM |
 | Next.js frontend | Vercel | Yes, Hobby | Personal projects only on Hobby |
 | Neo4j graph | Neo4j AuraDB | Yes, AuraDB Free | **Pauses after 3 days idle, deleted after 30** |
 | Qdrant vectors | Qdrant Cloud | Yes, 1GB cluster | Enough for this corpus by a wide margin |
 
-Two limits worth knowing before you start:
+Four limits worth knowing before you start. None of them blocks a demo, but all
+four will surprise you if you meet them cold:
 
+- **Render free services spin down after 15 minutes of inactivity.** The next
+  request wakes the container, and that takes roughly **30–60 seconds**. The
+  first visitor after a quiet period waits; everyone after them does not.
+- **Render free has no persistent disk, and this deployment does not ask for
+  one.** SQLite is rebuilt from Neo4j on every boot by the startup self-heal.
+  That is by design here — see §4.
+- **Render free gives 512MB of RAM, and this app measured 476MB at peak.** It
+  fits, with about 36MB to spare. See the memory note in §4 before you assume
+  headroom.
 - **AuraDB Free auto-pauses after 3 days of inactivity** and is **deleted after
   30 days** of inactivity. A demo nobody visits for a month is gone. If this
   needs to stay up, budget for AuraDB Professional or plan to re-seed.
-- **Railway's free trial is credit-based, not perpetual.** The backend is a
-  long-running container with ~1.5GB of image; expect to move to the paid Hobby
-  plan.
 
 The deployed app runs in **demo mode**: `/ingest` and `/explain` return 403.
 That is deliberate and load-bearing — both need a local `llama3.1:8b`, which has
@@ -45,12 +54,12 @@ cross-domain matching, the corpus banner, and every paper detail.
 ## 1. Accounts you need to create
 
 Create these first. All four have a free tier; none needs a card up front except
-Railway past the trial.
+Render.
 
 1. **GitHub** — you have this; the repo is already at `weepull/research-gap-hunter`.
 2. **Neo4j Aura** — <https://console.neo4j.io>
 3. **Qdrant Cloud** — <https://cloud.qdrant.io>
-4. **Railway** — <https://railway.app> (sign in with GitHub)
+4. **Render** — <https://render.com> (sign in with GitHub; no card required)
 5. **Vercel** — <https://vercel.com> (sign in with GitHub)
 
 ---
@@ -113,7 +122,8 @@ You want **127**. Also check `MATCH (l:Limitation) RETURN count(l)`.
 ### Create the cluster
 
 1. <https://cloud.qdrant.io> → **Create Cluster** → **Free tier**.
-2. Pick the region nearest your Railway region.
+2. Pick the region nearest your Render region (the blueprint defaults to
+   `oregon`; change it in `render.yaml` if you pick differently).
 3. When it is running, open **API Keys** → **Create API Key**. **Copy it now —
    it is shown once.**
 4. From the cluster overview copy the **endpoint URL**. It looks like
@@ -150,17 +160,27 @@ You want `points_count` to be **168** (the total across both domains), and the
 
 ---
 
-## 4. Railway — the backend
+## 4. Render — the backend
 
 ### Create the service
 
-1. <https://railway.app> → **New Project** → **Deploy from GitHub repo** →
-   pick `weepull/research-gap-hunter`.
-2. Railway detects `railway.json` and builds with the `Dockerfile`. **Leave the
-   root directory as the repo root** — the Dockerfile deliberately excludes
+1. <https://render.com> → **New** → **Blueprint**, and point it at
+   `weepull/research-gap-hunter`.
+2. Render reads `render.yaml` from the repo root, which declares a single Docker
+   web service on the free plan with a `/health` health check. **Leave the root
+   directory as the repo root** — the Dockerfile deliberately excludes
    `frontend/`.
-3. The first build is slow (torch plus ~440MB of model weights baked into the
-   image). Ten to twenty minutes is normal.
+3. Render prompts for every variable marked `sync: false` in the blueprint: the
+   Neo4j and Qdrant credentials, and `ALLOWED_ORIGINS`. Nothing secret is stored
+   in the repo.
+
+If you would rather not use a blueprint: **New** → **Web Service** → connect the
+repo → set **Runtime: Docker**, **Plan: Free**, **Health Check Path: `/health`**,
+then add the variables from the list below by hand. The blueprint just does this
+for you.
+
+The first build is slow — torch plus ~440MB of model weights baked into the
+image. Ten to twenty minutes is normal.
 
 The image is **~2.85GB**. That is measured, not estimated — it was built and run
 locally against the live databases before this document was written. Two things
@@ -170,137 +190,144 @@ of it, on a container that has no GPU), and the duplicate model revision the
 HuggingFace pre-cache pulls is pruned in the same layer that creates it
 (`scripts/prune_hf_cache.py`, 440MB reclaimed).
 
-If Railway rejects the image for size, the lever to pull is the baked-in
-weights — but **three things have to come out together**, because they depend on
-each other:
+### There is no disk, and that is the design
 
-1. the `RUN` that pre-caches the model (`vectors.embed.load_embedding_model()`),
-2. the `RUN` immediately after it that asserts the model loads with
-   `HF_HUB_OFFLINE=1` — this one FAILS THE BUILD if the weights are absent, so
-   removing only step 1 gives you a failed build, not a smaller image,
-3. `ENV HF_HUB_OFFLINE=1` further down — leave it and the runtime is forbidden
-   from downloading the weights it no longer has, so the app cannot start at all.
+**Do not add a `disk:` block to `render.yaml`.** Render disks are a paid feature;
+adding one to a free service makes the blueprint fail to apply.
 
-Removing all three trades ~421MB of image for a cold start that downloads the
-weights before serving traffic. Removing any subset is broken.
+Without a disk, `/data/papers.db` is container-local and resets whenever the
+container restarts — which on a free service means every time it wakes from
+being idle. That is fine, because Neo4j is already the source of truth for
+scoring, and the startup self-heal rebuilds SQLite from the graph on every boot:
+no LLM call, no network call, deterministic.
 
-The image sets `HF_HUB_OFFLINE=1`, because it contains the weights and the build
-fails if they cannot be loaded offline. Measured on this image with the network
-unreachable: **4s to first healthy response and zero network calls**, against a
-container that previously hung for over half an hour retrying DNS. You do not
-need to set anything for this; it is baked in.
+So **on Render the self-heal is the primary persistence mechanism, not a safety
+net**, and this line in your logs is routine rather than alarming:
 
-### Add the volume — do not skip this
+```
+WARNING  pipeline.selfheal: Paper store drift detected: Neo4j has 127 papers,
+SQLite has 0. Rebuilding 127 missing row(s) from graph relationships.
+```
 
-This is the single most important step, and skipping it causes silent data loss.
+It says "check that the volume is mounted" because that is the actionable case
+on a platform that *has* volumes. Here there is no volume by choice, so read it
+as "the container restarted". Measured locally: rebuilding all 127 rows takes
+about **200ms**.
 
-1. In the service → **Variables/Settings** → **Volumes** → **New Volume**.
-2. Mount path: **`/data`**
-3. Size: 1GB is plenty.
+The one thing this costs you: `objectives`, `evaluation_metrics` and `raw_json`
+are not stored in Neo4j and cannot be reconstructed, so those come back empty on
+every rebuilt row. Nothing in the UI displays them today.
 
-Railway container filesystems are ephemeral. Without this volume, `papers.db` is
-recreated empty on every redeploy and `/paper/{arxiv_id}` starts 404ing for
-papers that the gap list is actively citing.
+### Memory — read this before assuming headroom
 
-> The API has a safety net for exactly this: on startup it compares Neo4j Paper
-> nodes to SQLite rows and rebuilds any missing rows from the graph. If it fires
-> it logs at **WARNING**, naming the volume. **Treat that warning as a bug
-> report about your volume configuration, not as a routine message** — the
-> rebuild cannot recover `objectives`, `evaluation_metrics` or `raw_json`,
-> because Neo4j never stored them.
+Render's free plan gives **512MB**. Measured on the built image with the limit
+actually applied (`docker run --memory=512m`), against the live databases:
+
+| State | Memory |
+|---|---|
+| After startup, idle | 418MB (82%) |
+| Serving `/gaps?top_n=20` | 468MB |
+| Peak, during `/cross-domain` | **476MB (93%)** |
+| After 10 consecutive searches | 457MB |
+
+It fits, and nothing was OOM-killed across the whole endpoint sweep. But **36MB
+of headroom is not much**, and the figures above are from a single-user test on
+a 127-paper corpus. Concurrent traffic or a materially larger corpus could cross
+the line.
+
+If the service starts dying with exit code 137, that is the OOM killer. The
+levers, cheapest first: drop the baked-in weights so they are not resident at
+boot (see the image-size note above — three things must come out together), or
+move to a paid plan with more memory. Note that Render's Starter plan does not
+add RAM over free; you need a larger instance type, not just a paid one.
 
 ### Set the environment variables
 
-Service → **Variables** → paste each of these:
+The blueprint sets the non-secret ones for you. These are the values it will
+prompt for, plus what the blueprint already contains:
 
 ```
-DEMO_MODE=true
+DEMO_MODE=true                      # set by render.yaml
 ALLOWED_ORIGINS=https://<your-vercel-domain>.vercel.app
 
 NEO4J_URI=neo4j+s://<your-aura-id>.databases.neo4j.io
-NEO4J_USER=neo4j
+NEO4J_USER=neo4j                    # set by render.yaml
 NEO4J_PASSWORD=<from the Aura credentials file>
-NEO4J_DATABASE=neo4j
+NEO4J_DATABASE=neo4j                # set by render.yaml
 
 QDRANT_URL=https://<cluster-id>.<region>.aws.cloud.qdrant.io:6333
 QDRANT_API_KEY=<from Qdrant Cloud>
 
-PAPERS_DB_PATH=/data/papers.db
-SELFHEAL_ON_STARTUP=true
-RATE_LIMIT_ENABLED=true
-LOG_LEVEL=INFO
+PAPERS_DB_PATH=/data/papers.db      # set by render.yaml
+SELFHEAL_ON_STARTUP=true            # set by render.yaml
+RATE_LIMIT_ENABLED=true             # set by render.yaml
+LOG_LEVEL=INFO                      # set by render.yaml
 ```
 
-Notes on three of these:
+Three notes:
 
 - **`DEMO_MODE=true` is mandatory in production.** With it false, `/ingest` and
   `/explain` would try to reach an Ollama that does not exist, and CORS would be
   wide open.
 - **`ALLOWED_ORIGINS` has a chicken-and-egg problem** with Vercel: you do not
   know the domain until §5. Deploy the frontend first if you prefer, or set this
-  afterwards and let Railway redeploy. **If you leave it empty while
+  afterwards and let Render redeploy. **If you leave it empty while
   `DEMO_MODE=true`, the API allows no origins at all and the frontend will fail
   with a CORS error in the browser.** That is deliberate — a closed door rather
   than a silent fallback to `*`.
-- **`PAPERS_DB_PATH` must match the volume mount path** from the previous step.
+- **`SELFHEAL_ON_STARTUP` must stay `true` here.** Without a disk it is the only
+  thing that puts papers into SQLite, so turning it off leaves
+  `/paper/{arxiv_id}` returning 404 for every paper the gap list cites.
 
 You do **not** need `OLLAMA_*` or `SEMANTIC_SCHOLAR_API_KEY` — both are only
 used by paths that demo mode refuses.
 
-### Seed the volume
-
-The volume starts empty, so SQLite has no papers even though Aura does. You have
-two options:
-
-- **Do nothing.** On first boot the self-heal rebuilds all 127 rows from Aura
-  automatically. It will log a WARNING saying so, which in this one case is
-  expected rather than alarming. You lose `objectives`, `evaluation_metrics` and
-  `raw_json` on every row.
-- **Upload the real file** (preferred, keeps all fields). With the Railway CLI:
-  ```bash
-  npm i -g @railway/cli
-  railway login
-  railway link           # pick your project
-  railway run --service <service-name> -- ls /data   # confirm the mount
-  ```
-  Railway has no direct file-copy command; the practical route is to add a
-  one-off command that pulls the file from somewhere you control, or accept the
-  self-heal. **For a demo, the self-heal is fine.**
-
 ### Get the public URL
 
-Service → **Settings** → **Networking** → **Generate Domain**. You get something
-like `https://research-gap-hunter-production.up.railway.app`.
+Render assigns one automatically, shown at the top of the service page. It looks
+like `https://research-gap-hunter-api.onrender.com`. There is no separate step to
+generate it.
+
+### Cold starts — expect them
+
+A free service **spins down after 15 minutes without traffic**. The next request
+wakes it, and that takes roughly **30–60 seconds**: Render has to start the
+container, and the app loads the embedding model before it will answer. Locally
+that load is about 4 seconds on a warm machine; Render's free CPU is slower and
+the container start is on top.
+
+Practically: the first person to open the site after a quiet period will wait,
+possibly long enough that the frontend's fetch looks stuck. Everyone after them
+gets a normal response until it idles again. If that matters for a demo, hit the
+URL yourself a minute beforehand.
 
 ### Verify
 
 ```bash
-curl https://<your-railway-domain>/health
+curl https://<your-service>.onrender.com/health
 ```
 
 Expect `{"status":"ok","papers":127,"limitations":168,"future_directions":94}`.
+Allow up to a minute for the first call if the service was idle.
 
 This exact response was verified locally from the built container running against
-the live Neo4j and Qdrant, with an empty volume — the self-heal rebuilt all 127
-rows on boot and `/health` reported them.
+the live Neo4j and Qdrant, with no disk and a 512MB memory cap — the self-heal
+rebuilt all 127 rows on boot and `/health` reported them.
 
 ```bash
-curl "https://<your-railway-domain>/corpus?domain=computer_vision"
+curl "https://<your-service>.onrender.com/corpus?domain=computer_vision"
 ```
 
 Expect 46 papers / 64 limitations / 34 future directions.
 
-Then check the Railway **Deploy Logs** for the self-heal line — either
+Then check the Render **Logs** tab for the self-heal line:
 
 ```
-INFO  pipeline.selfheal: Paper stores agree: 127 in Neo4j, 127 in SQLite. No repair needed.
+WARNING pipeline.selfheal: Paper store drift detected: Neo4j has 127 papers, SQLite has 0.
+WARNING pipeline.selfheal: Paper store repair complete: 127 rebuilt, 0 failed.
 ```
 
-or the WARNING that it rebuilt rows. `LOG_LEVEL=INFO` is what makes both
-visible; at WARNING you would still see the drift message but lose the
-confirmation that the stores agree.
-
----
+`LOG_LEVEL=INFO` is what makes the surrounding startup lines visible too.
 
 ## 5. Vercel — the frontend
 
@@ -311,7 +338,7 @@ confirmation that the stores agree.
 3. Framework preset: **Next.js** (auto-detected).
 4. **Environment Variables**, before the first build:
    ```
-   NEXT_PUBLIC_API_URL=https://<your-railway-domain>
+   NEXT_PUBLIC_API_URL=https://<your-service>.onrender.com
    ```
    No trailing slash. Add it for **Production**, **Preview** and **Development**.
 5. **Deploy.**
@@ -326,8 +353,13 @@ confirmation that the stores agree.
 
 ### Close the CORS loop
 
-Copy your Vercel production domain back into Railway's `ALLOWED_ORIGINS` and let
-it redeploy. If you have a custom domain, include both, comma-separated:
+Copy your Vercel production domain back into Render's `ALLOWED_ORIGINS`
+(service → **Environment**) and let it redeploy. CORS matching is on the origin
+string and is platform-agnostic — verified against a
+`https://<name>.vercel.app` origin with a Render-style backend: the allowed
+origins get an `access-control-allow-origin` header on both the preflight and
+the actual request, and an unlisted origin gets none, so the browser blocks
+it. If you have a custom domain, include both, comma-separated:
 
 ```
 ALLOWED_ORIGINS=https://your-app.vercel.app,https://www.yourdomain.com
@@ -337,7 +369,8 @@ ALLOWED_ORIGINS=https://your-app.vercel.app,https://www.yourdomain.com
 
 ## 6. Verify the whole thing
 
-Open your Vercel URL and check each of these:
+Open your Vercel URL and check each of these. **If the backend has been idle,
+give the first request up to a minute** — Render is waking the container.
 
 | Check | Expected |
 |---|---|
@@ -361,12 +394,12 @@ Everything you personally have to obtain, and where each value goes:
 
 | Value | Where you get it | Where it goes |
 |---|---|---|
-| `NEO4J_URI` | Aura credentials file | Railway variables |
-| `NEO4J_PASSWORD` | Aura credentials file (**shown once**) | Railway variables |
-| `QDRANT_URL` | Qdrant Cloud cluster overview | Railway variables |
-| `QDRANT_API_KEY` | Qdrant Cloud → API Keys (**shown once**) | Railway variables |
-| Railway public domain | Railway → Settings → Networking | Vercel `NEXT_PUBLIC_API_URL` |
-| Vercel production domain | Vercel project overview | Railway `ALLOWED_ORIGINS` |
+| `NEO4J_URI` | Aura credentials file | Render env vars (blueprint prompts) |
+| `NEO4J_PASSWORD` | Aura credentials file (**shown once**) | Render env vars (blueprint prompts) |
+| `QDRANT_URL` | Qdrant Cloud cluster overview | Render env vars (blueprint prompts) |
+| `QDRANT_API_KEY` | Qdrant Cloud → API Keys (**shown once**) | Render env vars (blueprint prompts) |
+| Render service URL | Shown on the Render service page | Vercel `NEXT_PUBLIC_API_URL` |
+| Vercel production domain | Vercel project overview | Render `ALLOWED_ORIGINS` |
 
 `SEMANTIC_SCHOLAR_API_KEY` is optional and only affects local ingestion.
 
@@ -389,6 +422,15 @@ bug introduced by deploying.
   healthy response**. What has not changed is that ~440MB of weights is resident
   before the app serves traffic, which is what bounds how small an instance can
   be. That memory question is G4 and is still open.
+- **Render free spins down after 15 minutes idle.** The next request pays a
+  30–60 second cold start. Not a bug, and not fixable on the free plan.
+- **Render free has 512MB and this app peaks at 476MB.** Measured under an
+  enforced limit. It fits with ~36MB spare; concurrent traffic or a much larger
+  corpus could not. Exit code 137 in the logs is the OOM killer.
+- **SQLite is rebuilt from Neo4j on every boot**, because there is no disk. This
+  is the intended arrangement on this platform, not a degraded mode — but it
+  does mean `objectives`, `evaluation_metrics` and `raw_json` are empty on every
+  row, since Neo4j never stored them.
 - **AuraDB Free pauses after 3 days idle.** The first request after a pause will
   fail or hang while it resumes.
 - **`/ingest` and `/explain` are refused in demo mode.** To grow the corpus, run

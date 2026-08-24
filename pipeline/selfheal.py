@@ -13,12 +13,24 @@ filesystem would reproduce it on every redeploy.
 The fix has two layers, and this module is the second one:
 
   1. **Persistence.** `PAPERS_DB_PATH` points the database at a mounted volume
-     so the file survives a redeploy. That is the layer that is supposed to work.
+     so the file survives a redeploy.
   2. **Self-heal.** This module. On startup it compares the two stores and
      rebuilds any rows SQLite is missing, straight from graph relationships.
 
-Layer 2 firing is a *signal*, not a routine event: if it rebuilds anything, the
-volume did not do its job, and the log says so at WARNING.
+**Which of those is primary depends on the platform, and on the current
+deployment target it is this one.** Render's free tier has no persistent disk at
+all, and free services spin down after 15 minutes idle and cold-start on the
+next request. So there is no volume for layer 1 to point at, SQLite starts empty
+on every boot, and this module rebuilds all of it from Neo4j each time. That is
+the intended design on that platform, not a workaround: Neo4j is already the
+scoring source of truth, so treating SQLite as a derived cache rebuilt from it
+is the honest arrangement — and it is what makes a disk-less free tier viable.
+
+The WARNING this logs is therefore **routine on Render and alarming anywhere
+else**. On a platform with a mounted volume, a rebuild means the volume did not
+do its job and is worth investigating. On Render free it means the container
+restarted, which is expected. The log text names the volume because that is the
+actionable case; read it with the platform in mind.
 
 **Reconstruction, not re-extraction.** Rows are rebuilt from what the graph
 already holds — no LLM call, no network call, fully deterministic. Re-running

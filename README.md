@@ -371,7 +371,7 @@ Interactive docs at `http://localhost:8000/docs` when the API is running.
 
 ### Planned — deployment and access
 
-- **Public deployment** on Railway (API) + Vercel (frontend), running in demo mode
+- **Public deployment** on Render (API) + Vercel (frontend), running in demo mode
 - **Authenticated ingestion** so trusted users can add papers to a deployed instance — today `/ingest` is simply disabled in demo mode, with no auth layer of any kind
 - **Usage-based pricing via Razorpay** for high-volume programmatic access.
   **Not implemented — there is no billing code, no payment integration, no

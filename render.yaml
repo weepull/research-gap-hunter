@@ -1,0 +1,82 @@
+# Render blueprint — backend web service.
+#
+# The frontend is NOT here; it deploys separately to Vercel.
+#
+# Render is the deployment target because its free tier is genuinely free and
+# permanent with no card required. The trade-offs that choice brings are real
+# and are handled deliberately rather than worked around:
+#
+#   - No persistent disk on free. SQLite therefore resets on every restart, and
+#     the startup self-heal rebuilds it from Neo4j. See PAPERS_DB_PATH below and
+#     the note in pipeline/selfheal.py — on this platform the self-heal is the
+#     primary persistence mechanism, not a safety net.
+#   - Free services spin down after 15 minutes idle. The next request pays a
+#     cold start while the container boots and loads the embedding model.
+#
+# Secrets use `sync: false`, which makes Render prompt for the value at deploy
+# time and keeps it out of this file. Never put a credential in this blueprint —
+# it is committed to the repository.
+services:
+  - type: web
+    name: research-gap-hunter-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Pick the region nearest your Neo4j Aura and Qdrant Cloud instances; every
+    # request crosses that link.
+    region: oregon
+    healthCheckPath: /health
+    autoDeploy: false
+
+    envVars:
+      # --- Deployment mode ---------------------------------------------------
+      # Mandatory. With this false the app would try to reach a local Ollama
+      # that does not exist, and CORS would be wide open.
+      - key: DEMO_MODE
+        value: "true"
+
+      # Set to the Vercel domain once the frontend is deployed. Left unset while
+      # DEMO_MODE is true, the API allows NO origins — a closed door rather than
+      # a silent fallback to "*", so a misconfigured deploy fails visibly.
+      - key: ALLOWED_ORIGINS
+        sync: false
+
+      # --- Neo4j AuraDB ------------------------------------------------------
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USER
+        value: neo4j
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: NEO4J_DATABASE
+        value: neo4j
+
+      # --- Qdrant Cloud ------------------------------------------------------
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+
+      # --- Paper store -------------------------------------------------------
+      # /data exists in the image but is container-local and NOT persistent on
+      # Render's free tier. That is expected here: the corpus of record lives in
+      # Neo4j, and the startup self-heal rebuilds these rows from it on every
+      # boot. Do not add a disk: block for the free plan — Render disks are a
+      # paid feature and adding one makes the blueprint fail to apply.
+      - key: PAPERS_DB_PATH
+        value: /data/papers.db
+
+      # Must stay on. Without a persistent disk this is the only thing that puts
+      # papers into SQLite, so disabling it leaves /paper/{arxiv_id} 404ing for
+      # every paper the gap list cites.
+      - key: SELFHEAL_ON_STARTUP
+        value: "true"
+
+      # --- Operational -------------------------------------------------------
+      # INFO so the startup reconciliation reports what it did. On this platform
+      # its WARNING is routine rather than alarming — see DEPLOYMENT.md.
+      - key: LOG_LEVEL
+        value: INFO
+      - key: RATE_LIMIT_ENABLED
+        value: "true"

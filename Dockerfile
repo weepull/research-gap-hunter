@@ -1,4 +1,4 @@
-# Backend image for Railway.
+# Backend image for Render.
 #
 # The frontend is NOT in this image — it deploys separately to Vercel.
 #
@@ -36,7 +36,7 @@ COPY pyproject.toml ./
 #
 # sentence-transformers pulls torch, and the default PyPI wheel on Linux drags
 # in the whole CUDA runtime — nvidia-cudnn alone is ~445MB and the full stack is
-# several GB. Railway runs this on CPU, so every byte of that is dead weight in
+# several GB. Render runs this on CPU, so every byte of that is dead weight in
 # the image and in the deploy time. Installing the CPU build first means the
 # dependency resolution below finds torch already satisfied and leaves it alone.
 RUN pip install --upgrade pip \
@@ -115,13 +115,17 @@ COPY . .
 # shadowed by a stale copy.
 RUN pip install --no-deps -e .
 
-# The volume mount point. Railway mounts over this; creating it means the image
-# also runs correctly with no volume attached.
+# The paper store's directory. On Render's free tier there is no persistent
+# disk, so this is container-local and resets on every restart — which is
+# expected: the corpus of record is Neo4j, and the startup self-heal rebuilds
+# SQLite from it. Creating it here means the image runs correctly whether or not
+# a disk is ever mounted over it.
 RUN mkdir -p /data
 
 EXPOSE 8000
 
-# Railway injects $PORT and it is not always 8000. Single worker on purpose:
+# Render injects $PORT (and so does every other PaaS worth using); it is not
+# always 8000. Single worker on purpose:
 # the rate limiter holds per-process in-memory token buckets, so N workers
 # would multiply every limit by N (G5 in PROJECT_HARDENING_PLAN.md).
 CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

@@ -371,7 +371,12 @@ committed files; the rate limiter correctly ignores spoofable `X-Forwarded-For`.
 
 ---
 
-## G. Deployment readiness (local → Railway / Vercel / AuraDB / Qdrant Cloud)
+## G. Deployment readiness (local → Render / Vercel / AuraDB / Qdrant Cloud)
+
+> Target changed from Railway to Render on 2026-08-24: Render's free tier is permanent
+> and needs no card. Items written before that date name Railway; the analysis is
+> unchanged, since every blocker was about ephemeral disks, managed Qdrant and build
+> configuration rather than about Railway specifically.
 
 ### G1 · Ollama has no managed equivalent — HARD BLOCKER
 **Status: DONE 2026-08-23 (revised)** — commits `578c782` then `REVISION`. Resolved by *removing* the dependency rather than replacing it: `DEMO_MODE=true` refuses both `/ingest` and `/explain` with a 403, so a public deployment never needs Ollama. An interim hosted-LLM path (claude-opus-5) was implemented and then deleted at the advisor's direction — a per-request paid API call for anonymous callers is an open-ended cost. `explain_match()` now has a single backend (Ollama) and a test asserts no hosted branch is re-added.
@@ -876,7 +881,7 @@ to in any of these.
 
 ### Deployment preparation — done, nothing deployed
 
-`Dockerfile`, `.dockerignore`, `railway.json`, `frontend/vercel.json`,
+`Dockerfile`, `.dockerignore`, `render.yaml`, `frontend/vercel.json`,
 `.env.example`, `frontend/.env.example`, `DEPLOYMENT.md`,
 `scripts/prune_hf_cache.py`.
 

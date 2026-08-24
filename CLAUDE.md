@@ -529,7 +529,7 @@ it appears in this file or in chat.
 The original MVP scope (CV-only corpus, then CV + Medical Imaging for
 cross-domain, ~50→500 papers, 3-page frontend, no auth, no cloud deploy)
 has been built. Scope expansion (100-paper corpus growth, deployment to
-Railway/Vercel/AuraDB/Qdrant Cloud, Kaggle-related work) is tracked
+Render/Vercel/AuraDB/Qdrant Cloud, Kaggle-related work) is tracked
 separately and is not gated behind a "Phase 5" that no longer exists in
 this plan — it's gated behind finishing the four-session hardening plan
 above.

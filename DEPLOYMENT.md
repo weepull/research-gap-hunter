@@ -80,6 +80,37 @@ Render.
 > The `+s` in `neo4j+s://` is TLS and is required. A plain `bolt://` URI will
 > fail to connect to Aura.
 
+### Find the database name — do not assume it is `neo4j`
+
+Older Aura Free instances name the database `neo4j`. Instances created more
+recently name it **after the instance id** instead, e.g. `ca34cbce`. This was hit
+on the real instance: authentication succeeds and the connection opens, then
+every query fails with
+
+```
+Unable to get a routing table for database 'neo4j' because this database does not exist
+```
+
+which reads like a credentials problem and is not one. Read the real name:
+
+```bash
+python - <<'PY'
+import os
+from neo4j import GraphDatabase
+d = GraphDatabase.driver(os.environ["NEO4J_URI"],
+                         auth=(os.environ["NEO4J_USER"], os.environ["NEO4J_PASSWORD"]))
+with d.session(database="system") as s:
+    for r in s.run("SHOW DATABASES").data():
+        if r.get("type") == "standard":
+            print("NEO4J_DATABASE =", r["name"])
+d.close()
+PY
+```
+
+Use that value for `NEO4J_DATABASE` everywhere — locally when loading data, and
+in Render's environment. `render.yaml` prompts for it rather than presetting it,
+for exactly this reason.
+
 ### Load your data into it
 
 Your graph currently lives in local Neo4j Desktop with **127 Paper nodes**. Aura
@@ -94,7 +125,7 @@ cd research-gap-hunter
 NEO4J_URI="neo4j+s://<your-id>.databases.neo4j.io" \
 NEO4J_USER="neo4j" \
 NEO4J_PASSWORD="<your-password>" \
-NEO4J_DATABASE="neo4j" \
+NEO4J_DATABASE="<the name you just read, NOT necessarily neo4j>" \
 uv run python -c "from graph.populate import populate_graph; print(populate_graph())"
 ```
 
@@ -113,7 +144,27 @@ In the Aura console's **Query** tab:
 MATCH (p:Paper) RETURN count(p)
 ```
 
-You want **127**. Also check `MATCH (l:Limitation) RETURN count(l)`.
+You want **127**. This load has been performed and verified against the live
+instance; a correct result looks exactly like this:
+
+| Node | Count | | Relationship | Count |
+|---|---|---|---|---|
+| Paper | 127 | | REPORTS_LIMITATION | 168 |
+| Limitation | 166 | | SUGGESTS_FUTURE | 94 |
+| FutureDirection | 94 | | USES_DATASET | 199 |
+| Method | 353 | | USES_METHOD | 355 |
+| Dataset | 197 | | | |
+
+937 nodes and 816 relationships in total, with Paper splitting 46 computer
+vision / 81 medical imaging — the same split `/corpus` reports.
+
+Note `Limitation` is **166** while `REPORTS_LIMITATION` is **168**: two
+limitation texts are reported by more than one paper, and `MERGE` on exact text
+dedupes the node while keeping both relationships. That is correct, not a
+shortfall.
+
+`populate_graph()` reads SQLite and writes Neo4j; it makes no LLM or Semantic
+Scholar calls, so re-running it is safe and idempotent.
 
 ---
 
@@ -253,7 +304,7 @@ ALLOWED_ORIGINS=https://<your-vercel-domain>.vercel.app
 NEO4J_URI=neo4j+s://<your-aura-id>.databases.neo4j.io
 NEO4J_USER=neo4j                    # set by render.yaml
 NEO4J_PASSWORD=<from the Aura credentials file>
-NEO4J_DATABASE=neo4j                # set by render.yaml
+NEO4J_DATABASE=<from SHOW DATABASES, see §2 — often NOT "neo4j">
 
 QDRANT_URL=https://<cluster-id>.<region>.aws.cloud.qdrant.io:6333
 QDRANT_API_KEY=<from Qdrant Cloud>

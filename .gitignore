@@ -1,4 +1,10 @@
 .env
+# Any .env variant is a credentials file — the plain `.env` rule alone does not
+# match `.env.aura`, `.env.production` and friends, which is how a secret gets
+# committed by accident. The example template is negated back in because it
+# contains no values.
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 .DS_Store

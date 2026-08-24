@@ -49,8 +49,13 @@ services:
         value: neo4j
       - key: NEO4J_PASSWORD
         sync: false
+      # NOT hardcodeable. Aura Free used to name the database "neo4j", but
+      # instances created more recently name it after the instance id (e.g.
+      # "ca34cbce"). Connecting with the wrong name fails at routing with
+      # "Unable to get a routing table for database 'neo4j'" — verified on the
+      # live instance. DEPLOYMENT.md §2 shows how to read the real name.
       - key: NEO4J_DATABASE
-        value: neo4j
+        sync: false
 
       # --- Qdrant Cloud ------------------------------------------------------
       - key: QDRANT_URL

@@ -288,7 +288,7 @@ def test_health_verifies_connectivity_rather_than_just_constructing_a_driver(mon
 
 
 def _patch_corpus_backends(
-    monkeypatch, papers=31, contributing=22, lim=48, fd=24,
+    monkeypatch, papers=31, contributing=18, lim=48, fd=24,
     last="2026-08-23T01:00:00+00:00",
 ):
     monkeypatch.setattr("api.main._count_papers_in_domain", lambda domain: papers)
@@ -316,7 +316,7 @@ def test_corpus_reports_domain_size_and_freshness(client, monkeypatch):
     assert body == {
         "domain": "computer_vision",
         "papers": 31,
-        "papers_reporting_limitations": 22,
+        "papers_reporting_limitations": 18,
         "limitations": 48,
         "future_directions": 24,
         "last_updated": "2026-08-23T01:00:00+00:00",

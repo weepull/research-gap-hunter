@@ -534,8 +534,10 @@ Option 4B — normalisation — was rejected.**
 in the domain. But a paper that extracted no limitations cannot appear in any
 numerator, so the metric was the product of two unrelated things: how widely a
 limitation is reported, and how often extraction happened to succeed. On the
-curated corpus **22 of 31 CV papers and 54 of 85 MI papers contribute**, so every
-CV frequency was understated by ~29% and every MI frequency by ~36%.
+curated corpus **18 of 31 CV papers and 51 of 85 MI papers contribute**, so 42% of
+the CV denominator and 40% of the MI denominator was papers that could never appear
+in a numerator — understating every CV frequency by a factor of 1.72 and every MI
+frequency by 1.67.
 
 `_count_contributing_papers()` is now the denominator. It is kept as a separate
 function from `_count_papers_in_domain()` deliberately: a reader asking "how big

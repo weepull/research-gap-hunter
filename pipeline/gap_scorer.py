@@ -774,9 +774,11 @@ def _count_contributing_papers(domain: str) -> int:
     `frequency_score` the product of two unrelated things — how widely a
     limitation is reported, and how often extraction succeeded.
 
-    Measured on the curated corpus: 31 CV papers of which 22 contribute, and 85 MI
-    papers of which 54 contribute. Dividing by 31 and 85 understated every CV
-    frequency by ~29% and every MI frequency by ~36%.
+    Measured on the curated corpus: 31 CV papers of which **18** contribute, and 85
+    MI papers of which **51** contribute. Dividing by 31 and 85 understated every CV
+    frequency by a factor of 1.72 and every MI frequency by a factor of 1.67 — so
+    42% of the CV denominator and 40% of the MI denominator was papers that could
+    never appear in a numerator.
 
     Kept separate from _count_papers_in_domain, which /corpus still reports as the
     corpus size — a reader asking "how big is this corpus" wants every paper, and

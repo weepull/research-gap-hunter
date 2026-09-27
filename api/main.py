@@ -159,8 +159,8 @@ class CorpusInfo(BaseModel):
       denominator made frequency the product of two unrelated things: how widely a
       limitation is reported, and how often extraction succeeded.
 
-    The gap between them is large and worth showing: 31 CV papers of which 22
-    contribute, 85 MI papers of which 54 contribute on the curated corpus.
+    The gap between them is large and worth showing: on the curated corpus only 18
+    of 31 CV papers and 51 of 85 MI papers reported any limitation at all.
 
     `limitations` / `future_directions` are `None`, and `vectors_available` is
     False, when Qdrant cannot be reached. Previously any exception became `0`,
@@ -452,7 +452,7 @@ def corpus_info(domain: str = Query(default="computer_vision")) -> CorpusInfo:
 
     Every results page shows this. A ranked gap list means something very
     different over 31 papers than over 3,100, and a reader cannot judge the output
-    without knowing which it is — nor without knowing that only 22 of those 31
+    without knowing which it is — nor without knowing that only 18 of those 31
     contributed any limitation at all, which is what `papers_reporting_limitations`
     is for.
     """

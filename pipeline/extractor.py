@@ -14,6 +14,8 @@ import requests
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
+from pipeline.domains import validate_domain, verify_declared_domain
+
 load_dotenv()
 
 _SEMANTIC_SCHOLAR_BASE = "https://api.semanticscholar.org/graph/v1"
@@ -127,7 +129,15 @@ class PaperExtract(BaseModel):
     arxiv_id: str
     title: str
     year: int
-    domain: str = "computer_vision"
+    # No default, by advisor decision (PLAN.md #1, option 1A). This field used to
+    # default to "computer_vision" here *and* be hardcoded again at the
+    # construction site in extract_paper(), so a paper's domain recorded which
+    # script ingested it rather than what it was about. Six off-topic papers and
+    # four medical papers entered the corpus as computer_vision that way, and
+    # domain divides frequency_score, filters every Qdrant query and routes
+    # cross-domain matching. A caller that does not know the domain must now fail
+    # rather than quietly produce CV rows. See pipeline/domains.py.
+    domain: str
     objectives: list[str]
     methods: list[str]
     datasets: list[str]
@@ -428,11 +438,26 @@ def _build_prompt(paper_text: str, tier: str) -> str:
     return prompt
 
 
-def extract_paper(arxiv_id: str) -> PaperExtract:
+def extract_paper(arxiv_id: str, domain: str) -> PaperExtract:
     """Fetch paper, run LLM extraction, validate with Pydantic, and return PaperExtract.
+
+    ``domain`` is **required** and validated against pipeline.domains —
+    there is deliberately no default (PLAN.md #1, option 1A). It used to be
+    hardcoded to "computer_vision" here, and ``ingest_from_query`` never
+    overrode it, so the stored domain reflected the ingesting script rather than
+    the paper.
+
+    After extraction the declared domain is checked against the paper's own
+    title and abstract by a keyword heuristic, and a **warning is logged** when
+    they confidently disagree. That check never changes the stored value: the
+    heuristic is brittle on this corpus (SAM is a CV paper thick with
+    segmentation vocabulary; "Trustworthy Deep Learning for Medical Image
+    Segmentation" is a medical paper thick with CV vocabulary), so letting it
+    overrule a human declaration would swap a loud failure mode for a quiet one.
 
     On validation failure, logs to data/failed_extractions.log and re-raises.
     """
+    domain = validate_domain(domain)
     paper_meta = fetch_paper_text(arxiv_id)
     # Semantic Scholar supplies metadata (title, year); the body text comes from the
     # PDF's limitations/future-work/conclusion section, falling back to the abstract.
@@ -449,7 +474,7 @@ def extract_paper(arxiv_id: str) -> PaperExtract:
             arxiv_id=arxiv_id,
             title=paper_meta["title"],
             year=paper_meta["year"],
-            domain="computer_vision",
+            domain=domain,
             objectives=raw_dict.get("objectives", []),
             methods=raw_dict.get("methods", []),
             datasets=raw_dict.get("datasets", []),
@@ -463,5 +488,12 @@ def extract_paper(arxiv_id: str) -> PaperExtract:
     except ValidationError as exc:
         log_extraction_failure(arxiv_id, str(exc), raw=raw_json_str)
         raise
+
+    # Non-blocking verifier (PLAN.md #1, option 1C). Reports, never overrides.
+    warning = verify_declared_domain(
+        declared=domain, title=paper_meta["title"], abstract=paper_meta["abstract"]
+    )
+    if warning:
+        logger.warning("Domain check for %s: %s", arxiv_id, warning)
 
     return result

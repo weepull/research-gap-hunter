@@ -54,6 +54,7 @@ import os
 from datetime import datetime, timezone
 
 from pipeline.batch import _get_db, _paper_to_row
+from pipeline.domains import validate_domain
 from pipeline.extractor import PaperExtract
 
 logger = logging.getLogger(__name__)
@@ -154,7 +155,12 @@ def _row_to_extract(record: dict) -> PaperExtract:
         arxiv_id=record["arxiv_id"],
         title=record.get("title") or "",
         year=record.get("year") or 0,
-        domain=record.get("domain") or "computer_vision",
+        # validate_domain rather than a "computer_vision" fallback: a graph row
+        # with a missing or unknown domain is a data problem worth surfacing, and
+        # defaulting it would silently manufacture the exact mislabelling PLAN.md
+        # #1 exists to remove. reconcile_sqlite_from_graph catches per-row
+        # failures, so one bad row still cannot stop the repair.
+        domain=validate_domain(record.get("domain")),
         # Not recoverable from the graph — see the module docstring.
         objectives=[],
         evaluation_metrics=[],

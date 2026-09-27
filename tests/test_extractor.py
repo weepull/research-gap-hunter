@@ -484,7 +484,7 @@ def _patch_extract(monkeypatch, llm_dict: dict | None = None, meta: dict | None 
 def test_extract_paper_happy_path(monkeypatch):
     """extract_paper should return a valid PaperExtract on success."""
     _patch_extract(monkeypatch)
-    result = extract_paper("2301.00234")
+    result = extract_paper("2301.00234", domain="computer_vision")
 
     assert isinstance(result, PaperExtract)
     assert result.arxiv_id == "2301.00234"
@@ -497,7 +497,7 @@ def test_extract_paper_happy_path(monkeypatch):
 def test_extract_paper_sets_title_and_year(monkeypatch):
     """extract_paper should populate title and year from fetch_paper_text metadata."""
     _patch_extract(monkeypatch)
-    result = extract_paper("2303.05499")
+    result = extract_paper("2303.05499", domain="computer_vision")
 
     assert result.title == MOCK_PAPER_META["title"]
     assert result.year == MOCK_PAPER_META["year"]
@@ -522,7 +522,7 @@ def test_extract_paper_uses_full_text_in_prompt(monkeypatch):
 
     monkeypatch.setattr(mod, "call_ollama", fake_call_ollama)
 
-    extract_paper("2301.00234")
+    extract_paper("2301.00234", domain="computer_vision")
 
     assert "GPU memory bound" in captured["prompt"]
 
@@ -530,7 +530,7 @@ def test_extract_paper_uses_full_text_in_prompt(monkeypatch):
 def test_extract_paper_raw_json_contains_limitations(monkeypatch):
     """raw_json field should be deserializable and contain the limitations key."""
     _patch_extract(monkeypatch)
-    result = extract_paper("2212.09748")
+    result = extract_paper("2212.09748", domain="computer_vision")
     parsed = json.loads(result.raw_json)
     assert "limitations" in parsed
 
@@ -574,7 +574,7 @@ def test_extract_paper_logs_on_validation_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "PaperExtract", _AlwaysFails)
 
     with pytest.raises(ValidationError):
-        mod.extract_paper("bad-id")
+        mod.extract_paper("bad-id", domain="computer_vision")
 
     assert log_file.exists(), "Failure log should have been written"
     content = log_file.read_text()
@@ -586,22 +586,28 @@ def test_extract_paper_logs_on_validation_failure(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_paper_extract_model_defaults_domain():
-    """PaperExtract should default domain to 'computer_vision'."""
-    paper = PaperExtract(
-        arxiv_id="2301.00234",
-        title="Test Paper",
-        year=2023,
-        objectives=["obj"],
-        methods=["method"],
-        datasets=["ImageNet"],
-        evaluation_metrics=["mAP"],
-        limitations=["slow inference"],
-        future_directions=["speed up"],
-        raw_json="{}",
-        ingested_at="2026-06-29T00:00:00+00:00",
-    )
-    assert paper.domain == "computer_vision"
+def test_paper_extract_model_requires_domain():
+    """PaperExtract must NOT default domain — omitting it is a validation error.
+
+    Inverted from test_paper_extract_model_defaults_domain, which asserted the
+    default this fix removes (PLAN.md #1, option 1A). The default was half of the
+    mislabelling mechanism: it meant a construction site that forgot the field
+    produced a plausible-looking computer_vision row instead of failing.
+    """
+    with pytest.raises(ValidationError):
+        PaperExtract(
+            arxiv_id="2301.00234",
+            title="Test Paper",
+            year=2023,
+            objectives=["obj"],
+            methods=["method"],
+            datasets=["ImageNet"],
+            evaluation_metrics=["mAP"],
+            limitations=["slow inference"],
+            future_directions=["speed up"],
+            raw_json="{}",
+            ingested_at="2026-06-29T00:00:00+00:00",
+        )
 
 
 def test_paper_extract_model_rejects_missing_fields():
@@ -616,6 +622,7 @@ def test_paper_extract_defaults_extraction_tier():
         arxiv_id="2301.00234",
         title="Test Paper",
         year=2023,
+        domain="computer_vision",
         objectives=["obj"],
         methods=["method"],
         datasets=["ImageNet"],
@@ -676,7 +683,7 @@ def test_extract_paper_sets_extraction_tier(monkeypatch):
     )
     monkeypatch.setattr(mod, "call_ollama", lambda _prompt: MOCK_LLM_DICT)
 
-    result = extract_paper("2301.00234")
+    result = extract_paper("2301.00234", domain="computer_vision")
     assert result.extraction_tier == "conclusion"
 
 
@@ -697,5 +704,5 @@ def test_extract_paper_conclusion_tier_shapes_prompt(monkeypatch):
 
     monkeypatch.setattr(mod, "call_ollama", fake_call_ollama)
 
-    extract_paper("2301.00234")
+    extract_paper("2301.00234", domain="computer_vision")
     assert "conclusion section" in captured["prompt"]

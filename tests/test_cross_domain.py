@@ -97,15 +97,24 @@ def _patch_ingest_backends(monkeypatch, db, extract_mock) -> MagicMock:
 
 
 def test_ingest_domain_papers_stores_domain_tag(monkeypatch):
-    """The extracted paper's domain is overridden and persisted to SQLite as given."""
+    """The declared domain is passed INTO extraction and persisted as given.
+
+    Premise updated for PLAN.md #1 (option 1A): the domain is no longer patched
+    onto the PaperExtract after the fact, because extract_paper now requires and
+    validates it. The stub therefore has to honour the argument it is handed,
+    which is exactly the contract the real extractor now enforces.
+    """
     db = sqlite_utils.Database(memory=True)
-    extract_mock = MagicMock(return_value=_make_paper(domain="computer_vision"))
+    extract_mock = MagicMock(
+        side_effect=lambda arxiv_id, domain: _make_paper(domain=domain)
+    )
     _patch_ingest_backends(monkeypatch, db, extract_mock)
 
     result = ingest_domain_papers(["2206.01106"], domain="medical_imaging")
 
     assert result["ingested"] == 1
     assert result["failed"] == 0
+    assert extract_mock.call_args.kwargs["domain"] == "medical_imaging"
     row = list(db["papers"].rows)[0]
     assert row["domain"] == "medical_imaging"
     # List fields serialized as JSON strings, never str(list).

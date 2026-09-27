@@ -53,12 +53,16 @@ MOCK_SS_RESPONSE = {
 }
 
 
-def _make_paper_extract(arxiv_id: str = "2301.00234") -> PaperExtract:
+def _make_paper_extract(
+    arxiv_id: str = "2301.00234", domain: str = "computer_vision"
+) -> PaperExtract:
+    # domain is explicit here because PaperExtract no longer defaults it
+    # (PLAN.md #1, option 1A).
     return PaperExtract(
         arxiv_id=arxiv_id,
         title="Object Detection with Transformers",
         year=2023,
-        domain="computer_vision",
+        domain=domain,
         objectives=["Detect objects efficiently"],
         methods=["DETR", "Transformer"],
         datasets=["COCO"],
@@ -224,11 +228,11 @@ def test_ingest_from_query_paces_requests(monkeypatch, tmp_db):
     ]
     monkeypatch.setattr(batch_mod, "search_papers", lambda q, limit: papers)
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: _make_paper_extract(arxiv_id))
+                        lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
     waits: list[float] = []
     monkeypatch.setattr(batch_mod.time, "sleep", waits.append)
 
-    ingest_from_query("object detection")
+    ingest_from_query("object detection", domain="computer_vision")
 
     assert len(waits) == len(papers), "expected one pause per paper"
     assert all(w >= 1 for w in waits), f"pauses too short for a 1 req/sec tier: {waits}"
@@ -239,14 +243,14 @@ def test_ingest_from_query_paces_even_when_extraction_fails(monkeypatch, tmp_db)
     monkeypatch.setattr(batch_mod, "search_papers",
                         lambda q, limit: [{"arxiv_id": "2301.00234", "title": "A", "year": 2023}])
 
-    def _boom(arxiv_id):
+    def _boom(arxiv_id, domain):
         raise RuntimeError("extraction failed")
 
     monkeypatch.setattr(batch_mod, "extract_paper", _boom)
     waits: list[float] = []
     monkeypatch.setattr(batch_mod.time, "sleep", waits.append)
 
-    result = ingest_from_query("object detection")
+    result = ingest_from_query("object detection", domain="computer_vision")
 
     assert result["failed"] == 1
     assert len(waits) == 1
@@ -261,7 +265,7 @@ def test_ingest_from_query_tolerates_schema_drift(monkeypatch, tmp_db):
     monkeypatch.setattr(batch_mod, "search_papers",
                         lambda q, limit: [{"arxiv_id": "2301.00235", "title": "B", "year": 2023}])
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: _make_paper_extract(arxiv_id))
+                        lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
     monkeypatch.setattr(batch_mod.time, "sleep", lambda _s: None)
 
     # Pre-create the table WITHOUT the extraction_tier column, simulating an
@@ -273,7 +277,7 @@ def test_ingest_from_query_tolerates_schema_drift(monkeypatch, tmp_db):
     )
     assert "extraction_tier" not in db["papers"].columns_dict
 
-    result = ingest_from_query("object detection")
+    result = ingest_from_query("object detection", domain="computer_vision")
 
     assert result == {"ingested": 1, "skipped": 0, "failed": 0}
     assert "extraction_tier" in sqlite_utils.Database(tmp_db / "papers.db")["papers"].columns_dict
@@ -289,9 +293,9 @@ def test_ingest_from_query_returns_summary(monkeypatch, tmp_db):
     monkeypatch.setattr(batch_mod, "search_papers",
                         lambda q, limit: [{"arxiv_id": "2301.00234", "title": "T", "year": 2023}])
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: _make_paper_extract(arxiv_id))
+                        lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
 
-    result = ingest_from_query("object detection")
+    result = ingest_from_query("object detection", domain="computer_vision")
 
     assert result == {"ingested": 1, "skipped": 0, "failed": 0}
 
@@ -301,9 +305,9 @@ def test_ingest_from_query_writes_to_sqlite(monkeypatch, tmp_db):
     monkeypatch.setattr(batch_mod, "search_papers",
                         lambda q, limit: [{"arxiv_id": "2301.00234", "title": "T", "year": 2023}])
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: _make_paper_extract(arxiv_id))
+                        lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
 
-    ingest_from_query("object detection")
+    ingest_from_query("object detection", domain="computer_vision")
 
     db = sqlite_utils.Database(tmp_db / "papers.db")
     assert "papers" in db.table_names()
@@ -322,9 +326,9 @@ def test_ingest_from_query_skips_existing(monkeypatch, tmp_db):
                         lambda q, limit: [{"arxiv_id": "2301.00234", "title": "T", "year": 2023}])
     extract_called = []
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: extract_called.append(arxiv_id) or _make_paper_extract(arxiv_id))
+                        lambda arxiv_id, domain: extract_called.append(arxiv_id) or _make_paper_extract(arxiv_id))
 
-    result = ingest_from_query("object detection")
+    result = ingest_from_query("object detection", domain="computer_vision")
 
     assert result == {"ingested": 0, "skipped": 1, "failed": 0}
     assert extract_called == [], "extract_paper should not be called for existing papers"
@@ -338,14 +342,14 @@ def test_ingest_from_query_handles_extraction_failure(monkeypatch, tmp_db):
                             {"arxiv_id": "bad-id", "title": "Bad", "year": 2023},
                         ])
 
-    def fake_extract(arxiv_id):
+    def fake_extract(arxiv_id, domain):
         if arxiv_id == "bad-id":
             raise RuntimeError("Ollama timed out")
         return _make_paper_extract(arxiv_id)
 
     monkeypatch.setattr(batch_mod, "extract_paper", fake_extract)
 
-    result = ingest_from_query("mixed batch")
+    result = ingest_from_query("mixed batch", domain="computer_vision")
 
     assert result["ingested"] == 1
     assert result["failed"] == 1
@@ -359,7 +363,7 @@ def test_ingest_from_query_logs_failure_to_file(monkeypatch, tmp_db):
     monkeypatch.setattr(batch_mod, "extract_paper",
                         lambda arxiv_id: (_ for _ in ()).throw(RuntimeError("boom")))
 
-    ingest_from_query("failing query")
+    ingest_from_query("failing query", domain="computer_vision")
 
     log_file = tmp_db / "failed_extractions.log"
     assert log_file.exists()
@@ -374,9 +378,9 @@ def test_ingest_from_query_prints_progress(monkeypatch, tmp_db, capsys):
                             {"arxiv_id": "2303.05499", "title": "T2", "year": 2023},
                         ])
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: _make_paper_extract(arxiv_id))
+                        lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
 
-    ingest_from_query("progress test")
+    ingest_from_query("progress test", domain="computer_vision")
 
     captured = capsys.readouterr().out
     assert "[1/2] 2301.00234" in captured
@@ -388,9 +392,9 @@ def test_ingest_stores_list_fields_as_json_strings(monkeypatch, tmp_db):
     monkeypatch.setattr(batch_mod, "search_papers",
                         lambda q, limit: [{"arxiv_id": "2301.00234", "title": "T", "year": 2023}])
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: _make_paper_extract(arxiv_id))
+                        lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
 
-    ingest_from_query("object detection")
+    ingest_from_query("object detection", domain="computer_vision")
 
     db = sqlite_utils.Database(tmp_db / "papers.db")
     row = list(db["papers"].rows_where("arxiv_id = ?", ["2301.00234"]))[0]
@@ -411,8 +415,8 @@ def test_get_paper_returns_dict(monkeypatch, tmp_db):
     monkeypatch.setattr(batch_mod, "search_papers",
                         lambda q, limit: [{"arxiv_id": "2301.00234", "title": "T", "year": 2023}])
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: _make_paper_extract(arxiv_id))
-    ingest_from_query("seed")
+                        lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
+    ingest_from_query("seed", domain="computer_vision")
 
     result = get_paper("2301.00234")
 
@@ -439,8 +443,8 @@ def test_get_paper_deserializes_all_list_fields(monkeypatch, tmp_db):
     monkeypatch.setattr(batch_mod, "search_papers",
                         lambda q, limit: [{"arxiv_id": "2301.00234", "title": "T", "year": 2023}])
     monkeypatch.setattr(batch_mod, "extract_paper",
-                        lambda arxiv_id: _make_paper_extract(arxiv_id))
-    ingest_from_query("seed")
+                        lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
+    ingest_from_query("seed", domain="computer_vision")
 
     result = get_paper("2301.00234")
 

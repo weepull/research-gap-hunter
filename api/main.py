@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 from graph.populate import _upsert_paper_counting, get_neo4j_driver  # noqa: E402
 from pipeline.batch import _get_db, _log_failure, _paper_to_row, get_paper  # noqa: E402
 from pipeline.config import allowed_origins, is_demo_mode  # noqa: E402
+from pipeline.domains import validate_domain  # noqa: E402
 from pipeline.cross_domain import (  # noqa: E402
     CrossDomainMatch,
     explain_match,
@@ -112,7 +113,11 @@ class LimitationResult(BaseModel):
 
 class IngestRequest(BaseModel):
     arxiv_id: str
-    domain: str = "computer_vision"
+    # Required, with no default (PLAN.md #1, option 1A). Defaulting to
+    # "computer_vision" here carried exactly the hazard the extractor default
+    # did: a caller who omits the field gets a plausible-looking but unverified
+    # label on a paper that drives scoring. A 422 is the better outcome.
+    domain: str
 
     @field_validator("arxiv_id")
     @classmethod
@@ -123,6 +128,11 @@ class IngestRequest(BaseModel):
         if not is_valid_arxiv_id(candidate):
             raise ValueError(f"{value!r} is not a valid arXiv id")
         return candidate
+
+    @field_validator("domain")
+    @classmethod
+    def _check_domain(cls, value: str) -> str:
+        return validate_domain(value)
 
 
 class IngestResponse(BaseModel):
@@ -519,7 +529,11 @@ def ingest_paper(body: IngestRequest) -> IngestResponse:
     """Extract a paper from arXiv, store it in SQLite + Neo4j, and re-sync Qdrant.
 
     Extraction runs Semantic Scholar metadata fetch + PDF download + Ollama LLM.
-    Expect ~30–60 s per paper. The domain field overrides the extractor default.
+    Expect ~30–60 s per paper.
+
+    `domain` is required and validated — there is no default. A paper whose own
+    text disagrees with the declared domain is still ingested, but the extractor
+    logs a warning; see pipeline/domains.py for why the check does not override.
     """
     if is_demo_mode():
         # 403, not 501: the endpoint is implemented and works — this deployment
@@ -538,8 +552,9 @@ def ingest_paper(body: IngestRequest) -> IngestResponse:
     domain = body.domain.strip()
 
     try:
-        paper = extract_paper(arxiv_id)
-        paper = paper.model_copy(update={"domain": domain})
+        # domain goes into extraction rather than being patched on afterwards:
+        # extract_paper requires and validates it (PLAN.md #1, option 1A).
+        paper = extract_paper(arxiv_id, domain=domain)
 
         # SQLite — alter=True handles missing columns from schema drift
         db = _get_db()

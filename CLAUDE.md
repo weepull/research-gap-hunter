@@ -338,6 +338,81 @@ failed backend now logs at ERROR and is set to `None`; selfheal is skipped
 without a driver. The 503 behaviour change is documented in `DEPLOYMENT.md`
 because it affects the Render health check.
 
+### Phase 1 · #1 domain labelling — DONE 2026-09-28
+
+**Decision: option 1A + 1C-as-verifier. LLM classification (1B) was rejected.**
+
+**1A — `domain` is required and validated.** The default is gone from
+`PaperExtract.domain` *and* from the construction site in `extract_paper()`
+(`pipeline/extractor.py:452`), which were two halves of one mechanism: a call
+site that omitted the field produced a plausible-looking `computer_vision` row
+instead of failing. `extract_paper(arxiv_id, domain)`,
+`ingest_from_query(query, domain, limit=100)` and `IngestRequest.domain` are all
+required now, validated by `pipeline.domains.validate_domain`. `selfheal.py`
+validates rather than defaulting, so a graph row with a missing domain surfaces
+as a per-row failure instead of silently becoming CV.
+
+**1C — the keyword heuristic is a reporter, never an authority.**
+`verify_declared_domain()` logs a WARNING when a paper's own title/abstract
+confidently disagrees with the declaration and **never changes the stored
+value**. This restraint is the whole point and must not be "improved" later: the
+heuristic flagged 19 of 127 papers as matching neither domain, and several
+(Flickr30k Entities, SPHINX, PaliGemma, streaming video understanding, 3D shape
+matching) are perfectly good computer vision whose vocabulary the term lists do
+not cover. Letting it auto-assign would have deleted real papers — a quiet
+failure mode replacing a loud one. Medical terms are deliberately *clinical*
+(modality, subject, reader) rather than task-shaped, because "segmentation" says
+nothing about domain: SAM is a CV paper thick with segmentation vocabulary.
+
+`curate_declared_domain()` is a deliberately separate verb that **may** decide,
+used only for one-off curation and the integration fixture loader. It is wired
+into no ingestion path. `verify_*` reports; `curate_*` decides.
+
+**Backfill (commit below, `scripts/domain_backfill.py`).** The determinations
+were reviewed paper by paper against real titles and metadata, and recorded as an
+explicit manifest rather than recomputed, so the historical curation is auditable
+and cannot silently change if the term lists are edited.
+
+| | before | after |
+|---|---:|---:|
+| papers | 127 | **116** |
+| computer_vision | 46 | **31** |
+| medical_imaging | 81 | **85** |
+| Qdrant limitations | 168 | **154** |
+| Qdrant future_directions | 94 | **86** |
+
+- **11 removed** as bad search-ingestion hits (neither domain): two language
+  models, atomic physics, survey astronomy, analytic number theory, copyright
+  law, domain-specific NLP, music generation, vehicle motion planning, control
+  theory, LLM inference scaling. Removal rather than a third label, because a
+  paper kept under any label keeps diluting its domain's frequency denominator.
+- **4 relabelled** CV → MI: `2305.17456`, `2307.15872`, `2409.03367`,
+  `2501.16469`.
+- **10 borderline papers examined and deliberately kept** as CV — listed in the
+  script's `KEPT_AFTER_REVIEW` so a future session does not re-litigate them or
+  read the classifier's flags as unactioned findings.
+- **57 orphaned nodes deleted.** `Limitation`/`FutureDirection` are keyed on
+  exact text and `Method`/`Dataset` on name, so they survive their last Paper.
+
+**Qdrant was dropped and rebuilt, not patched.** `vectors/embed.py:236` assigns
+point ids positionally over a Cypher result with no `ORDER BY` and only ever
+upserts, so a shrinking corpus leaves orphaned points holding stale text and a
+stale `domain` payload that still match queries. Side benefit: the rebuild
+created the `domain` payload index, which the live collections had been missing
+since commit `0eb58bc` added `ensure_payload_indexes`.
+
+**Measured effect on output.** CV gaps 27 → 19, and the entire off-topic top of
+the list is gone. Ranks 1–7 were previously copyright law, control theory, LLM
+latency, analytic number theory (×2) and atomic physics (×2); they are now
+object-tracking failures under occlusion, VLM hallucination, and attribute
+bleeding in image synthesis. MI is essentially unchanged, as expected — nothing
+was removed from it. The 34-paper mega-cluster and the tie blocks remain, and are
+Phase 2 and Phase 4 work respectively.
+
+Note the incidental knock-on: the CV corpus reference year moved 2025 → 2024,
+because the removed control-theory paper was the newest CV paper reporting a
+limitation. That is `_corpus_reference_year` behaving as designed.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

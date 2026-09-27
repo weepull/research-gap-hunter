@@ -10,6 +10,7 @@ import requests
 import sqlite_utils
 from dotenv import load_dotenv
 
+from pipeline.domains import validate_domain
 from pipeline.extractor import (
     extract_paper,
     log_extraction_failure,
@@ -126,8 +127,20 @@ def search_papers(query: str, limit: int = 100) -> list[dict]:
     raise RuntimeError("search_papers exhausted retries")
 
 
-def ingest_from_query(query: str, limit: int = 100) -> dict:
+def ingest_from_query(query: str, domain: str, limit: int = 100) -> dict:
     """Search Semantic Scholar, extract each paper, and persist to SQLite.
+
+    ``domain`` is **required** and applies to every paper this call ingests
+    (PLAN.md #1, option 1A). This function previously took no domain at all and
+    relied on ``extract_paper``'s hardcoded "computer_vision", which is how
+    analytic number theory, atomic physics, control theory, astronomy and several
+    language-model papers entered the corpus labelled as computer vision: a
+    keyword search returns whatever matches the words, and nothing here checked.
+
+    Declaring the domain does not make the search results relevant — it only
+    makes the label honest about what the caller intended. ``extract_paper``
+    logs a warning when a paper's own text disagrees with the declaration, and
+    that log is the signal to curate the query's results.
 
     Skips papers already present in the database.
     Logs extraction failures to data/failed_extractions.log and continues.
@@ -135,6 +148,7 @@ def ingest_from_query(query: str, limit: int = 100) -> dict:
 
     Returns {"ingested": n, "skipped": n, "failed": n}.
     """
+    domain = validate_domain(domain)
     papers = search_papers(query, limit=limit)
     db = _get_db()
     table = db["papers"]
@@ -160,7 +174,7 @@ def ingest_from_query(query: str, limit: int = 100) -> dict:
             continue
 
         try:
-            paper = extract_paper(arxiv_id)
+            paper = extract_paper(arxiv_id, domain=domain)
             row = _paper_to_row(paper)
             # alter=True: new PaperExtract fields must be added to pre-existing
             # tables, since SQLite does not auto-migrate. Omitting it is how

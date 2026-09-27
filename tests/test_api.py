@@ -553,7 +553,7 @@ def test_ingest_happy_path(monkeypatch):
     monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
     monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
     monkeypatch.setattr("api.main.get_neo4j_driver", lambda: mock_driver)
-    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: paper)
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id, domain: paper)
     monkeypatch.setattr("api.main._get_db", lambda: mock_db)
     monkeypatch.setattr("api.main._paper_to_row", lambda p: {"arxiv_id": p.arxiv_id})
     monkeypatch.setattr("api.main._upsert_paper_counting", MagicMock())
@@ -572,9 +572,15 @@ def test_ingest_happy_path(monkeypatch):
     assert body["tier"] == "explicit"
 
 
-def test_ingest_patches_domain(monkeypatch):
-    """The domain from the request body overrides the extractor default."""
-    paper = _make_paper_extract()  # domain defaults to computer_vision
+def test_ingest_passes_the_requested_domain_into_extraction(monkeypatch):
+    """The request body's domain is passed INTO extract_paper, not patched after it.
+
+    Replaces test_ingest_patches_domain, whose premise the fix removes: there is
+    no extractor default left to override (PLAN.md #1, option 1A). The old flow
+    extracted with a hardcoded computer_vision and then rewrote the field, which
+    meant any call site that forgot the rewrite stored the wrong label.
+    """
+    paper = _make_paper_extract()
     stored = {}
 
     def fake_get_db():
@@ -591,7 +597,14 @@ def test_ingest_patches_domain(monkeypatch):
     monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
     monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
     monkeypatch.setattr("api.main.get_neo4j_driver", lambda: mock_driver)
-    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: paper)
+    seen: dict = {}
+
+    def fake_extract(arxiv_id, domain):
+        seen["arxiv_id"] = arxiv_id
+        seen["domain"] = domain
+        return paper.model_copy(update={"domain": domain})
+
+    monkeypatch.setattr("api.main.extract_paper", fake_extract)
     monkeypatch.setattr("api.main._get_db", fake_get_db)
     monkeypatch.setattr("api.main._paper_to_row",
                         lambda p: {"arxiv_id": p.arxiv_id, "domain": p.domain})
@@ -603,6 +616,7 @@ def test_ingest_patches_domain(monkeypatch):
     with TestClient(app) as c:
         c.post("/ingest", json={"arxiv_id": "2301.00234", "domain": "medical_imaging"})
 
+    assert seen == {"arxiv_id": "2301.00234", "domain": "medical_imaging"}
     assert stored["domain"] == "medical_imaging"
 
 
@@ -631,9 +645,9 @@ def test_ingest_refused_in_demo_mode(client, monkeypatch):
     """A public demo must not accept ingestion requests."""
     monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
     called = []
-    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: called.append(arxiv_id))
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id, domain: called.append(arxiv_id))
 
-    r = client.post("/ingest", json={"arxiv_id": "2301.00234"})
+    r = client.post("/ingest", json={"arxiv_id": "2301.00234", "domain": "computer_vision"})
 
     assert r.status_code == 403
     assert called == [], "demo mode still reached the extraction path"
@@ -646,9 +660,9 @@ def test_ingest_demo_refusal_explains_itself(client, monkeypatch):
     deployment policy and the message has to say so.
     """
     monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
-    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: None)
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id, domain: None)
 
-    body = client.post("/ingest", json={"arxiv_id": "2301.00234"}).json()
+    body = client.post("/ingest", json={"arxiv_id": "2301.00234", "domain": "computer_vision"}).json()
 
     assert "disabled in the public demo" in body["detail"]
     assert "DEMO_MODE=false" in body["detail"]
@@ -661,12 +675,12 @@ def test_ingest_demo_refusal_precedes_validation(client, monkeypatch):
     only the payload was wrong.
     """
     monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
-    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: None)
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id, domain: None)
 
     # A valid id is refused; an invalid one is still rejected by the validator,
     # which runs before the handler — both refuse, neither ingests.
-    assert client.post("/ingest", json={"arxiv_id": "2301.00234"}).status_code == 403
-    assert client.post("/ingest", json={"arxiv_id": "../etc"}).status_code == 422
+    assert client.post("/ingest", json={"arxiv_id": "2301.00234", "domain": "computer_vision"}).status_code == 403
+    assert client.post("/ingest", json={"arxiv_id": "../etc", "domain": "computer_vision"}).status_code == 422
 
 
 def test_ingest_works_when_not_in_demo_mode(monkeypatch):
@@ -675,7 +689,7 @@ def test_ingest_works_when_not_in_demo_mode(monkeypatch):
     monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
     monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
     monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
-    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: _make_paper_extract())
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id, domain: _make_paper_extract())
     monkeypatch.setattr("api.main._paper_to_row", lambda p: {"arxiv_id": p.arxiv_id})
     monkeypatch.setattr("api.main._get_db", lambda: MagicMock())
     monkeypatch.setattr("api.main._upsert_paper_counting", MagicMock())
@@ -685,7 +699,7 @@ def test_ingest_works_when_not_in_demo_mode(monkeypatch):
     from api.main import app
 
     with TestClient(app) as c:
-        r = c.post("/ingest", json={"arxiv_id": "2301.00234"})
+        r = c.post("/ingest", json={"arxiv_id": "2301.00234", "domain": "computer_vision"})
 
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
@@ -759,7 +773,7 @@ def test_ingest_error_does_not_leak_internals(monkeypatch):
 
     from api.main import app
     with TestClient(app, raise_server_exceptions=False) as c:
-        r = c.post("/ingest", json={"arxiv_id": "0000.99999"})
+        r = c.post("/ingest", json={"arxiv_id": "0000.99999", "domain": "computer_vision"})
 
     assert r.status_code == 500
     body = r.text
@@ -808,10 +822,10 @@ def test_ingest_rejects_malformed_arxiv_id(client, monkeypatch, bad_id):
     validation regresses — without it, these cases reach the live handler.
     """
     called = []
-    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id: called.append(arxiv_id))
+    monkeypatch.setattr("api.main.extract_paper", lambda arxiv_id, domain: called.append(arxiv_id))
     monkeypatch.setattr("api.main._log_failure", lambda aid, reason: None)
 
-    r = client.post("/ingest", json={"arxiv_id": bad_id})
+    r = client.post("/ingest", json={"arxiv_id": bad_id, "domain": "computer_vision"})
 
     assert r.status_code == 422
     assert called == [], "malformed id reached the extraction path"
@@ -834,7 +848,7 @@ def test_ingest_accepts_valid_arxiv_id_forms(monkeypatch, good_id):
 
     from api.main import app
     with TestClient(app, raise_server_exceptions=False) as c:
-        r = c.post("/ingest", json={"arxiv_id": good_id})
+        r = c.post("/ingest", json={"arxiv_id": good_id, "domain": "computer_vision"})
 
     # Reaches the handler (which then fails on the stub) rather than 422ing.
     assert r.status_code != 422

@@ -20,6 +20,7 @@ from graph.populate import (
     get_neo4j_driver,
 )
 from pipeline.batch import _get_db, _log_failure, _paper_to_row
+from pipeline.domains import validate_domain
 from pipeline.extractor import extract_paper
 from pipeline.gap_scorer import GapResult, score_gaps
 from vectors.embed import (
@@ -71,8 +72,8 @@ class CrossDomainMatch(BaseModel):
 def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
     """Ingest papers for a specific domain, overriding the extracted domain field.
 
-    Runs the existing pipeline per paper — extract_paper → SQLite → Neo4j — with the
-    domain field patched after extraction (extract_paper hardcodes computer_vision).
+    Runs the existing pipeline per paper — extract_paper → SQLite → Neo4j — passing
+    ``domain`` straight into extraction, which requires and validates it.
     Papers already present in SQLite are skipped, never re-tagged. After ingestion,
     both Qdrant collections are re-synced from Neo4j so the new domain's limitations
     and future_directions carry the correct domain payload.
@@ -80,6 +81,7 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
     Failures are logged to data/failed_extractions.log and do not abort the batch.
     Returns {"ingested": n, "failed": n, "skipped": n}.
     """
+    domain = validate_domain(domain)
     db = _get_db()
     table = db["papers"]
     existing: set[str] = set()
@@ -105,9 +107,9 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
             continue
 
         try:
-            paper = extract_paper(arxiv_id)
-            # extract_paper hardcodes domain="computer_vision"; patch it here.
-            paper = paper.model_copy(update={"domain": domain})
+            # domain is passed in, not patched afterwards: extract_paper now
+            # requires and validates it (PLAN.md #1, option 1A).
+            paper = extract_paper(arxiv_id, domain=domain)
             table.insert(_paper_to_row(paper), pk="arxiv_id", replace=False, alter=True)
 
             with driver.session(

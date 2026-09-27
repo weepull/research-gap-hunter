@@ -390,12 +390,67 @@ URL yourself a minute beforehand.
 curl https://<your-service>.onrender.com/health
 ```
 
-Expect `{"status":"ok","papers":127,"limitations":168,"future_directions":94}`.
+Expect something like:
+
+```json
+{
+  "status": "ok",
+  "papers": 119,
+  "limitations": 152,
+  "future_directions": 90,
+  "services": {"sqlite": "ok", "neo4j": "ok", "qdrant": "ok"}
+}
+```
+
 Allow up to a minute for the first call if the service was idle.
 
-This exact response was verified locally from the built container running against
-the live Neo4j and Qdrant, with no disk and a 512MB memory cap — the self-heal
-rebuilt all 127 rows on boot and `/health` reported them.
+> ### `/health` now returns 503 when a store is unreachable
+>
+> **This is a behaviour change (PLAN.md item #6) and it affects the Render health
+> check and any external uptime monitor pointed at this path.**
+>
+> `/health` previously returned `200 {"status":"ok", …}` unconditionally: the
+> status string was a literal, Qdrant errors were swallowed into `0` counts, and
+> Neo4j — the scoring source of truth — was never contacted at all. An instance
+> with both stores down therefore reported itself healthy, and the Render health
+> check kept it in the load balancer.
+>
+> It now probes each dependency and derives the status:
+>
+> | `services.<name>` | meaning | effect on status |
+> |---|---|---|
+> | `ok` | reachable, and the thing asked for is there | — |
+> | `absent` | reachable, but the collection/table does not exist yet (cold start) | still `ok` |
+> | `unreachable` | the store cannot be reached at all | `degraded` → **HTTP 503** |
+>
+> Counts are `null` rather than `0` when the store behind them is unreachable, so
+> "nothing there" is distinguishable from "could not look".
+>
+> **What to expect operationally:** a deploy whose Neo4j credentials or Qdrant URL
+> are wrong will now fail its health check and Render will not route to it,
+> instead of serving an empty-looking but "ok" API. That is the intended
+> behaviour. If you would rather the service stay in the load balancer while
+> degraded, point the Render health check at a path that always returns 200 —
+> do not soften `/health` itself.
+>
+> **Startup is now resilient on purpose.** The lifespan no longer aborts when a
+> backend is unavailable; it logs at ERROR and continues with that backend set to
+> `None`. Without this the 503 above would be unreachable in exactly the case it
+> exists for: `get_neo4j_driver()` calls `verify_connectivity()`, so an
+> unreachable graph used to make the process die before it could serve `/health`,
+> producing a crash loop instead of a diagnosis. A process that starts and
+> truthfully says `"neo4j": "unreachable"` is strictly more diagnosable than one
+> that never answers. Startup reconciliation is skipped (with a WARNING) when the
+> graph is unavailable, since it reads from the graph.
+
+`/corpus` follows the same rule: a missing collection still reports `0`, but an
+unreachable Qdrant reports `null` with `"vectors_available": false`, so the
+corpus banner says the figure is unavailable instead of asserting an empty
+corpus underneath a working results list.
+
+The pre-change response was verified locally from the built container running
+against the live Neo4j and Qdrant, with no disk and a 512MB memory cap — the
+self-heal rebuilt all 127 rows on boot and `/health` reported them.
 
 ```bash
 curl "https://<your-service>.onrender.com/corpus?domain=computer_vision"

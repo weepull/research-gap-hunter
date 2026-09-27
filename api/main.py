@@ -13,9 +13,10 @@ import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
+from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 load_dotenv()
@@ -73,11 +74,33 @@ from api.rate_limit import rate_limit_middleware  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+# Per-dependency probe outcomes. The distinction that matters is ABSENT vs
+# UNREACHABLE: a collection that does not exist yet is a normal cold-start state,
+# while a store that cannot be reached is an outage. Collapsing both to "0" is
+# what let a fully broken deployment report itself healthy.
+_OK = "ok"
+_ABSENT = "absent"        # store reachable, the thing asked for is not there yet
+_UNREACHABLE = "unreachable"  # store cannot be reached at all
+
+
 class HealthResponse(BaseModel):
+    """Readiness, per dependency.
+
+    `status` is DERIVED from `services`, never asserted. It was previously the
+    literal string "ok" computed from nothing, while Qdrant errors were swallowed
+    into zero counts and Neo4j was not contacted at all — so an instance with both
+    stores down returned 200 {"status":"ok"}. A probe that cannot fail is not a
+    probe.
+
+    Counts are `None` when the store backing them is unreachable, so a reader can
+    tell "nothing there" from "could not look".
+    """
+
     status: str
-    papers: int
-    limitations: int
-    future_directions: int
+    papers: int | None
+    limitations: int | None
+    future_directions: int | None
+    services: dict[str, str]
 
 
 class LimitationResult(BaseModel):
@@ -115,13 +138,22 @@ class CorpusInfo(BaseModel):
     `papers` is deliberately the Neo4j Paper count for the domain — the same
     value that divides frequency_score — so the figure shown to a reader is the
     one the scores were derived from, not a near-miss from another store.
+
+    `limitations` / `future_directions` are `None`, and `vectors_available` is
+    False, when Qdrant cannot be reached. Previously any exception became `0`,
+    so an unreachable vector store rendered as a confident "0 limitations"
+    underneath a working results list — indistinguishable from a genuinely empty
+    corpus. A missing collection still reports 0 with `vectors_available` True,
+    because that is a real cold-start state rather than an outage.
     """
 
     domain: str
-    papers: int
-    limitations: int
-    future_directions: int
+    papers: int | None
+    limitations: int | None
+    future_directions: int | None
     last_updated: str | None
+    graph_available: bool = True
+    vectors_available: bool = True
 
 
 class ErrorResponse(BaseModel):
@@ -138,13 +170,41 @@ class ExplainResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _warm(name: str, factory):
+    """Initialise a backend without letting its absence prevent startup.
+
+    Every backend used to be constructed unguarded here, and `get_neo4j_driver()`
+    calls `verify_connectivity()`, so an unreachable store made the application
+    fail to start. On a container platform that is a crash loop, which means
+    /health is never served and the degraded state it now reports (PLAN.md #6)
+    could never actually be observed in the situation it exists for. A process
+    that starts and truthfully says "neo4j: unreachable" is strictly more
+    diagnosable than one that dies before it can answer.
+
+    The failure is logged at ERROR, because it is always worth investigating.
+    """
+    try:
+        return factory()
+    except Exception:  # noqa: BLE001 — report and degrade, never block startup
+        logger.error(
+            "Backend %r is unavailable at startup. The API will serve traffic and "
+            "/health will report it as unreachable; endpoints needing it will fail.",
+            name,
+            exc_info=True,
+        )
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up Research Gap Hunter API…")
-    app.state.model = load_embedding_model()
-    app.state.qdrant = get_qdrant_client()
-    app.state.neo4j = get_neo4j_driver()
-    logger.info("All backend services connected.")
+    app.state.model = _warm("embedding_model", load_embedding_model)
+    app.state.qdrant = _warm("qdrant", get_qdrant_client)
+    app.state.neo4j = _warm("neo4j", get_neo4j_driver)
+    if all((app.state.model, app.state.qdrant, app.state.neo4j)):
+        logger.info("All backend services connected.")
+    else:
+        logger.error("Started with one or more backends unavailable — see /health.")
 
     # Second layer of the G3 fix. The first layer is PAPERS_DB_PATH pointing at
     # a persistent volume; this catches the case where that did not work, by
@@ -154,7 +214,12 @@ async def lifespan(app: FastAPI):
     # papers, which is worse than it was but far better than an API that will
     # not start at all.
     app.state.selfheal = None
-    if selfheal_enabled():
+    if selfheal_enabled() and app.state.neo4j is None:
+        logger.warning(
+            "Skipping startup paper-store reconciliation: Neo4j is unavailable. "
+            "/paper/{arxiv_id} may 404 for papers that only exist in the graph."
+        )
+    elif selfheal_enabled():
         try:
             app.state.selfheal = reconcile_sqlite_from_graph(app.state.neo4j)
         except Exception:  # noqa: BLE001 — never block startup on the safety net
@@ -168,7 +233,8 @@ async def lifespan(app: FastAPI):
 
     yield
     logger.info("Shutting down…")
-    app.state.neo4j.close()
+    if app.state.neo4j is not None:
+        app.state.neo4j.close()
 
 
 # ---------------------------------------------------------------------------
@@ -239,30 +305,97 @@ def _internal_error(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    """Liveness and readiness check — counts papers, limitations, future_directions."""
-    db = _get_db()
-    if "papers" in db.table_names():
-        papers = db.execute("SELECT count(*) FROM papers").fetchone()[0]
-    else:
-        papers = 0
+def _probe_sqlite() -> tuple[str, int | None]:
+    """(state, paper count). A missing table is absent, not an outage."""
+    try:
+        db = _get_db()
+        if "papers" not in db.table_names():
+            return _ABSENT, 0
+        return _OK, db.execute("SELECT count(*) FROM papers").fetchone()[0]
+    except Exception:  # noqa: BLE001 — classified, not swallowed; see _UNREACHABLE
+        logger.warning("SQLite paper store unreachable during health probe", exc_info=True)
+        return _UNREACHABLE, None
 
-    client = get_qdrant_client()
+
+def _probe_neo4j() -> str:
+    """Neo4j is the scoring source of truth, so readiness must actually ask it.
+
+    `verify_connectivity()` alone would pass against a reachable server with the
+    configured database missing, so the probe runs the same count query the
+    scorer depends on.
+    """
+    driver = None
     try:
-        lim_count = client.get_collection("limitations").points_count or 0
-    except Exception:
-        lim_count = 0
+        driver = get_neo4j_driver()
+        driver.verify_connectivity()
+        with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
+            session.run("MATCH (p:Paper) RETURN count(p) AS n").single()
+        return _OK
+    except Exception:  # noqa: BLE001
+        logger.warning("Neo4j unreachable during health probe", exc_info=True)
+        return _UNREACHABLE
+    finally:
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001 — closing a broken driver must not mask the probe
+                pass
+
+
+def _probe_qdrant_collection(client, collection: str) -> tuple[str, int | None]:
+    """(state, point count). UnexpectedResponse means the collection is absent."""
     try:
-        fd_count = client.get_collection("future_directions").points_count or 0
-    except Exception:
-        fd_count = 0
+        return _OK, client.get_collection(collection).points_count or 0
+    except UnexpectedResponse:
+        # 404 from a reachable Qdrant: the collection has not been created yet.
+        return _ABSENT, 0
+    except Exception:  # noqa: BLE001
+        logger.warning("Qdrant unreachable while probing %r", collection, exc_info=True)
+        return _UNREACHABLE, None
+
+
+@app.get("/health", response_model=HealthResponse)
+def health(response: Response) -> HealthResponse:
+    """Readiness check, per dependency. Returns 503 when any store is unreachable.
+
+    **Behaviour change (PLAN.md #6):** this used to return 200 with
+    `status="ok"` unconditionally. It now returns **503** when a required store
+    cannot be reached, so a platform health check can actually restart a broken
+    container. See DEPLOYMENT.md.
+    """
+    sqlite_state, papers = _probe_sqlite()
+    neo4j_state = _probe_neo4j()
+
+    try:
+        client = get_qdrant_client()
+    except Exception:  # noqa: BLE001 — cannot even construct a client
+        logger.warning("Could not create a Qdrant client during health probe", exc_info=True)
+        qdrant_state, lim_count, fd_count = _UNREACHABLE, None, None
+    else:
+        lim_state, lim_count = _probe_qdrant_collection(client, "limitations")
+        fd_state, fd_count = _probe_qdrant_collection(client, "future_directions")
+        # The store is unreachable only if it could not be reached at all; one
+        # absent collection does not condemn the other.
+        if _UNREACHABLE in (lim_state, fd_state):
+            qdrant_state = _UNREACHABLE
+        elif _ABSENT in (lim_state, fd_state):
+            qdrant_state = _ABSENT
+        else:
+            qdrant_state = _OK
+
+    services = {"sqlite": sqlite_state, "neo4j": neo4j_state, "qdrant": qdrant_state}
+    degraded = [name for name, state in services.items() if state == _UNREACHABLE]
+
+    if degraded:
+        logger.error("Health check degraded — unreachable: %s", ", ".join(sorted(degraded)))
+        response.status_code = 503
 
     return HealthResponse(
-        status="ok",
+        status="degraded" if degraded else "ok",
         papers=papers,
         limitations=lim_count,
         future_directions=fd_count,
+        services=services,
     )
 
 
@@ -274,36 +407,68 @@ def corpus_info(domain: str = Query(default="computer_vision")) -> CorpusInfo:
     different over 46 papers than over 4,600, and a reader cannot judge the
     output without knowing which it is.
     """
-    papers = _count_papers_in_domain(domain)
+    graph_available = True
+    try:
+        papers = _count_papers_in_domain(domain)
+    except Exception:  # noqa: BLE001 — report the outage rather than a false zero
+        logger.warning("Neo4j unreachable while reading /corpus", exc_info=True)
+        papers, graph_available = None, False
 
-    client = get_qdrant_client()
     domain_filter = Filter(
         must=[FieldCondition(key="domain", match=MatchValue(value=domain))]
     )
 
-    def _count(collection: str) -> int:
+    vectors_available = True
+
+    def _count(client, collection: str) -> int | None:
+        """Domain-filtered point count, or None when the store cannot be reached.
+
+        A missing collection legitimately counts as 0 — that is a cold start. A
+        connection failure does not: returning 0 there put a confident
+        "0 limitations" under a working results list.
+        """
+        nonlocal vectors_available
         try:
             return client.count(
                 collection_name=collection, count_filter=domain_filter, exact=True
             ).count
-        except Exception:  # noqa: BLE001 — a missing collection is not an error here
+        except UnexpectedResponse:
             return 0
+        except Exception:  # noqa: BLE001
+            logger.warning("Qdrant unreachable while counting %r", collection, exc_info=True)
+            vectors_available = False
+            return None
+
+    try:
+        client = get_qdrant_client()
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not create a Qdrant client for /corpus", exc_info=True)
+        vectors_available = False
+        limitations = future_directions = None
+    else:
+        limitations = _count(client, "limitations")
+        future_directions = _count(client, "future_directions")
 
     last_updated = None
-    db = _get_db()
-    if "papers" in db.table_names():
-        row = db.execute(
-            "SELECT max(ingested_at) FROM papers WHERE domain = ?", [domain]
-        ).fetchone()
-        if row:
-            last_updated = row[0]
+    try:
+        db = _get_db()
+        if "papers" in db.table_names():
+            row = db.execute(
+                "SELECT max(ingested_at) FROM papers WHERE domain = ?", [domain]
+            ).fetchone()
+            if row:
+                last_updated = row[0]
+    except Exception:  # noqa: BLE001 — freshness is the least important field here
+        logger.warning("SQLite unreachable while reading /corpus freshness", exc_info=True)
 
     return CorpusInfo(
         domain=domain,
         papers=papers,
-        limitations=_count("limitations"),
-        future_directions=_count("future_directions"),
+        limitations=limitations,
+        future_directions=future_directions,
         last_updated=last_updated,
+        graph_available=graph_available,
+        vectors_available=vectors_available,
     )
 
 

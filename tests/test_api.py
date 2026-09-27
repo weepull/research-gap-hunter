@@ -98,6 +98,22 @@ def client(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _unexpected_response(status: int = 404) -> Exception:
+    """A real Qdrant 'collection not found', which is ABSENT rather than an outage.
+
+    The endpoints now narrow on this type: a reachable Qdrant answering 404 means
+    the collection has not been created yet (a normal cold start, count 0), while
+    a connection failure means the store is unreachable (count None). A bare
+    Exception cannot express that difference, which is why these tests no longer
+    raise one.
+    """
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    return UnexpectedResponse(
+        status_code=status, reason_phrase="Not Found", content=b"", headers=None
+    )
+
+
 def _make_mock_db(paper_count: int = 2) -> MagicMock:
     """Return a _get_db() mock that reports paper_count without real SQLite threads."""
     db = MagicMock()
@@ -128,12 +144,20 @@ def test_health_returns_ok(monkeypatch):
     assert body["papers"] == 2
     assert body["limitations"] == 79
     assert body["future_directions"] == 44
+    # status is derived from per-service probes, never asserted as a literal.
+    assert body["services"] == {"sqlite": "ok", "neo4j": "ok", "qdrant": "ok"}
 
 
 def test_health_missing_collection_returns_zero(monkeypatch):
-    """If a Qdrant collection doesn't exist yet, counts default to 0."""
+    """A collection that does not exist yet is ABSENT: still 200, counts 0.
+
+    This is the cold-start case and must stay non-fatal — the intention the
+    original test encoded. What changed is that it now has to be expressed as a
+    real Qdrant 404 rather than a bare Exception, because a bare Exception is
+    now classified as an outage instead.
+    """
     mock_qdrant = MagicMock()
-    mock_qdrant.get_collection.side_effect = Exception("collection not found")
+    mock_qdrant.get_collection.side_effect = _unexpected_response(404)
 
     monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
     monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
@@ -146,8 +170,85 @@ def test_health_missing_collection_returns_zero(monkeypatch):
 
     assert r.status_code == 200
     body = r.json()
+    assert body["status"] == "ok"
     assert body["limitations"] == 0
     assert body["future_directions"] == 0
+    assert body["services"]["qdrant"] == "absent"
+
+
+def test_health_unreachable_qdrant_is_degraded_with_503(monkeypatch):
+    """An unreachable Qdrant must fail visibly, not report zero counts.
+
+    Fails against pre-fix code, which returned 200 status="ok" with both counts
+    swallowed to 0 — indistinguishable from an empty corpus.
+    """
+    mock_qdrant = MagicMock()
+    mock_qdrant.get_collection.side_effect = OSError("connection refused")
+
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", lambda: mock_qdrant)
+    monkeypatch.setattr("api.main._get_db", lambda: _make_mock_db(2))
+
+    from api.main import app
+    with TestClient(app) as c:
+        r = c.get("/health")
+
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "degraded"
+    assert body["services"]["qdrant"] == "unreachable"
+    assert body["limitations"] is None
+    assert body["future_directions"] is None
+
+
+def test_health_probes_neo4j_at_all(monkeypatch):
+    """Neo4j is the scoring source of truth, so readiness must actually ask it.
+
+    Fails against pre-fix code: /health never contacted Neo4j, so an instance
+    whose graph was completely unreachable still reported status="ok".
+    """
+    mock_qdrant = MagicMock()
+    mock_qdrant.get_collection.side_effect = lambda name: _make_qdrant_collection(5)
+
+    def unreachable():
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", lambda: mock_qdrant)
+    monkeypatch.setattr("api.main._get_db", lambda: _make_mock_db(2))
+    monkeypatch.setattr("api.main.get_neo4j_driver", unreachable)
+
+    from api.main import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.get("/health")
+
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "degraded"
+    assert body["services"]["neo4j"] == "unreachable"
+
+
+def test_health_verifies_connectivity_rather_than_just_constructing_a_driver(monkeypatch):
+    """A driver object is not a working connection — verify_connectivity must run."""
+    mock_qdrant = MagicMock()
+    mock_qdrant.get_collection.side_effect = lambda name: _make_qdrant_collection(5)
+    driver = MagicMock()
+    driver.verify_connectivity.side_effect = OSError("handshake failed")
+
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", lambda: mock_qdrant)
+    monkeypatch.setattr("api.main._get_db", lambda: _make_mock_db(2))
+    monkeypatch.setattr("api.main.get_neo4j_driver", lambda: driver)
+
+    from api.main import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.get("/health")
+
+    assert r.status_code == 503
+    assert r.json()["services"]["neo4j"] == "unreachable"
+    driver.verify_connectivity.assert_called()
+    driver.close.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +289,8 @@ def test_corpus_reports_domain_size_and_freshness(client, monkeypatch):
         "limitations": 64,
         "future_directions": 34,
         "last_updated": "2026-08-23T01:00:00+00:00",
+        "graph_available": True,
+        "vectors_available": True,
     }
 
 
@@ -223,10 +326,15 @@ def test_corpus_counts_are_domain_filtered(client, monkeypatch):
 
 
 def test_corpus_survives_missing_collections(client, monkeypatch):
-    """A missing Qdrant collection reports zero rather than failing the page."""
+    """A missing Qdrant collection reports zero rather than failing the page.
+
+    The original intention holds — a cold start must not break the results page.
+    It now has to be expressed as a real Qdrant 404, because an arbitrary
+    exception is classified as an outage and reports None instead of 0.
+    """
     monkeypatch.setattr("api.main._count_papers_in_domain", lambda domain: 5)
     qdrant = MagicMock()
-    qdrant.count.side_effect = RuntimeError("collection not found")
+    qdrant.count.side_effect = _unexpected_response(404)
     monkeypatch.setattr("api.main.get_qdrant_client", lambda: qdrant)
     db = MagicMock()
     db.table_names.return_value = []
@@ -238,6 +346,49 @@ def test_corpus_survives_missing_collections(client, monkeypatch):
     assert r.json()["limitations"] == 0
     assert r.json()["future_directions"] == 0
     assert r.json()["last_updated"] is None
+    assert r.json()["vectors_available"] is True
+
+
+def test_corpus_reports_unreachable_vectors_as_unknown_not_zero(client, monkeypatch):
+    """An unreachable Qdrant must not render as a confident "0 limitations".
+
+    Fails against pre-fix code, where every exception became 0 — so the banner
+    asserted an empty corpus underneath a working gap list.
+    """
+    monkeypatch.setattr("api.main._count_papers_in_domain", lambda domain: 5)
+    qdrant = MagicMock()
+    qdrant.count.side_effect = OSError("connection refused")
+    monkeypatch.setattr("api.main.get_qdrant_client", lambda: qdrant)
+    db = MagicMock()
+    db.table_names.return_value = []
+    monkeypatch.setattr("api.main._get_db", lambda: db)
+
+    r = client.get("/corpus")
+
+    assert r.status_code == 200
+    assert r.json()["limitations"] is None
+    assert r.json()["future_directions"] is None
+    assert r.json()["vectors_available"] is False
+
+
+def test_corpus_reports_unreachable_graph_as_unknown_not_zero(client, monkeypatch):
+    """An unreachable Neo4j must not render the denominator as 0."""
+    def unreachable(domain):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("api.main._count_papers_in_domain", unreachable)
+    qdrant = MagicMock()
+    qdrant.count.return_value = MagicMock(count=7)
+    monkeypatch.setattr("api.main.get_qdrant_client", lambda: qdrant)
+    db = MagicMock()
+    db.table_names.return_value = []
+    monkeypatch.setattr("api.main._get_db", lambda: db)
+
+    r = client.get("/corpus")
+
+    assert r.status_code == 200
+    assert r.json()["papers"] is None
+    assert r.json()["graph_available"] is False
 
 
 def test_gaps_returns_gap_list(client, monkeypatch):
@@ -853,3 +1004,52 @@ def test_cors_headers_present(monkeypatch):
         r = c.get("/gaps", headers={"Origin": "http://localhost:3000"})
 
     assert r.headers.get("access-control-allow-origin") in ("*", "http://localhost:3000")
+
+
+# ---------------------------------------------------------------------------
+# Startup resilience — PLAN.md #6
+# ---------------------------------------------------------------------------
+
+
+def test_startup_survives_an_unavailable_backend(monkeypatch):
+    """The app must start with a store down so /health can report it.
+
+    Every backend used to be constructed unguarded in the lifespan, and
+    get_neo4j_driver() calls verify_connectivity(), so an unreachable store made
+    startup raise. On a container platform that is a crash loop — /health is
+    never served, and the degraded state it now reports could never be observed
+    in the one situation it exists for.
+    """
+    def unreachable():
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", unreachable)
+
+    from api.main import app
+    with TestClient(app) as c:
+        assert app.state.neo4j is None
+        # and the app is genuinely serving
+        assert c.get("/paper/not-an-arxiv-id").status_code == 422
+
+
+def test_startup_skips_selfheal_when_the_graph_is_unavailable(monkeypatch):
+    """Reconciliation reads from Neo4j, so it must be skipped rather than attempted."""
+    def unreachable():
+        raise OSError("connection refused")
+
+    called = []
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", unreachable)
+    monkeypatch.setattr("api.main.selfheal_enabled", lambda: True)
+    monkeypatch.setattr(
+        "api.main.reconcile_sqlite_from_graph", lambda driver: called.append(driver)
+    )
+
+    from api.main import app
+    with TestClient(app):
+        pass
+
+    assert called == [], "reconciliation must not run against a missing driver"

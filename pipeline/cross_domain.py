@@ -11,6 +11,7 @@ import logging
 import os
 import time
 
+import numpy as np
 from pydantic import BaseModel
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
@@ -22,9 +23,14 @@ from graph.populate import (
 from pipeline.batch import _get_db, _log_failure, _paper_to_row
 from pipeline.domains import validate_domain
 from pipeline.extractor import extract_paper
-from pipeline.gap_scorer import GapResult, score_gaps
+from pipeline.gap_scorer import (
+    GapResult,
+    _solution_threshold,
+    score_gaps,
+)
 from vectors.embed import (
     _COLLECTION_FUTURE_DIRECTIONS,
+    _COLLECTION_LIMITATIONS,
     _embed_texts,
     embed_future_directions,
     embed_limitations,
@@ -40,6 +46,29 @@ _UNRESOLVED_DEFICIT_FLOOR = 0.3
 _FETCH_SLEEP_SECONDS = 2
 # How many future-direction candidates to pull per gap before thresholding.
 _MAX_FD_CANDIDATES = 20
+
+# 95th percentile of the *null distribution*: the similarity that random,
+# unrelated cross-domain pairs reach by chance. Measured over all possible
+# (limitation, future-direction) pairs in both directions using the stored
+# Specter2 vectors. A match at or above this has at most a 5% chance of being
+# noise.
+#
+# Advisor decision A2, 2026-08-23, replacing 0.82. That value was not merely
+# loose, it sat *below the median of pure noise*: 61.6% of random pairs cleared
+# it. The earlier rationale — that cross-domain vocabulary divergence compresses
+# scores, so the threshold should sit below the within-domain one — had the logic
+# backwards. Compression raises the noise floor as well as the signal, so a
+# compressed space needs a *higher* bar, not a lower one.
+#
+# Hoisted from an inline default on find_cross_domain_matches on 2026-09-28 so
+# that verify_pairing gates on exactly the number the matcher admits; two copies
+# of the literal could drift. The value is unchanged.
+#
+# Corpus-dependent: re-derive with scripts/derive_thresholds.py after significant
+# ingestion. Re-derived on the curated 116-paper corpus it comes to 0.8793 — a
+# 0.0001 difference, left alone because changing it is an advisor decision. See
+# PROJECT_HARDENING_PLAN.md item A2.
+_CROSS_DOMAIN_THRESHOLD = 0.8792
 
 _EXPLAIN_PROMPT = """\
 You are a scientific research strategist evaluating a cross-domain research hypothesis.
@@ -59,9 +88,10 @@ no preamble."""
 class CrossDomainMatch(BaseModel):
     source_gap: str              # unresolved limitation in source domain
     target_solution: str         # future_direction from target domain
-    # Cosine similarity. The default cross-domain threshold is 0.8792, the 95th
-    # percentile of randomly-paired cross-domain similarity — i.e. the score a
-    # meaningless pairing reaches by chance. See find_cross_domain_matches.
+    # Cosine similarity. The default cross-domain threshold is
+    # _CROSS_DOMAIN_THRESHOLD, the 95th percentile of randomly-paired
+    # cross-domain similarity — i.e. the score a meaningless pairing reaches by
+    # chance. See find_cross_domain_matches and verify_pairing.
     similarity_score: float
     source_papers: list[str]
     target_papers: list[str]
@@ -153,22 +183,11 @@ def find_cross_domain_matches(
     source_domain: str = "computer_vision",
     target_domain: str = "medical_imaging",
     top_n: int = 10,
-    # 95th percentile of the *null distribution*: the similarity that random,
-    # unrelated cross-domain pairs reach by chance. Measured over all 1,490
-    # possible (limitation, future-direction) pairs in both directions using the
-    # stored Specter2 vectors — mean 0.8267, median 0.8294, p95 0.8792, max 0.9272.
-    # A match at or above this has at most a 5% chance of being noise.
-    #
-    # Advisor decision A2, 2026-08-23, replacing 0.82. That value was not merely
-    # loose, it sat *below the median of pure noise*: 61.6% of random pairs
-    # cleared it. The earlier rationale — that cross-domain vocabulary divergence
-    # compresses scores, so the threshold should sit below the within-domain one —
-    # had the logic backwards. Compression raises the noise floor as well as the
-    # signal, so a compressed space needs a *higher* bar, not a lower one.
-    #
-    # Corpus-dependent: re-derive after significant ingestion. See
-    # PROJECT_HARDENING_PLAN.md item A2.
-    similarity_threshold: float = 0.8792,
+    # See _CROSS_DOMAIN_THRESHOLD. Kept as an overridable parameter so a caller can
+    # explore a different operating point, but the default is the derived constant
+    # rather than a literal repeated here — verify_pairing must gate on exactly the
+    # same number this matcher admits, and two literals could drift apart.
+    similarity_threshold: float = _CROSS_DOMAIN_THRESHOLD,
 ) -> list[CrossDomainMatch]:
     """Match unresolved source-domain gaps to target-domain future directions.
 
@@ -225,6 +244,147 @@ def find_cross_domain_matches(
 
     matches.sort(key=lambda match: match.similarity_score, reverse=True)
     return matches[:top_n]
+
+
+class UngroundedPairingError(ValueError):
+    """A requested (gap, solution) pairing is not a defensible corpus match.
+
+    Raised *before* any LLM call, by design. See verify_pairing.
+    """
+
+
+class VerifiedPairing(BaseModel):
+    """A pairing confirmed to exist in the corpus and to clear its noise floor."""
+
+    source_gap: str
+    target_solution: str
+    source_domain: str
+    target_domain: str
+    # Recomputed from the stored vectors, not re-embedded and never a placeholder.
+    similarity_score: float
+    threshold: float
+    source_papers: list[str]
+    target_papers: list[str]
+
+
+def _find_stored_point(collection: str, domain: str, text: str):
+    """Locate an exact text in a collection, returning its point (with vector).
+
+    Scrolls the **domain-filtered** slice and matches the text client-side rather
+    than filtering on the text field server-side. That is deliberate: `domain` is
+    the only indexed payload field (vectors/embed.py:_INDEXED_PAYLOAD_FIELDS), and
+    Qdrant Cloud *refuses* a filter on an unindexed field rather than falling back
+    to a scan — so a server-side text filter would work locally and fail in
+    production, which is the exact failure mode documented in ensure_payload_indexes.
+    Adding a keyword index over a multi-sentence text field to avoid one scan of a
+    few hundred points would be a poor trade.
+    """
+    client = get_qdrant_client()
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection,
+            scroll_filter=Filter(
+                must=[FieldCondition(key="domain", match=MatchValue(value=domain))]
+            ),
+            limit=500,
+            offset=offset,
+            with_payload=True,
+            with_vectors=True,
+        )
+        for point in points:
+            if point.payload.get("limitation_text") == text:
+                return point
+        if offset is None:
+            return None
+
+
+def verify_pairing(
+    source_gap: str,
+    target_solution: str,
+    source_domain: str = "computer_vision",
+    target_domain: str = "medical_imaging",
+) -> VerifiedPairing:
+    """Confirm a pairing is real and above its noise floor, or raise.
+
+    This is the deterministic, server-side gate that PLAN.md #5 (option 5A)
+    requires, and it runs **before** any generation.
+
+    What it fixes. `/explain` accepted `source_gap` and `target_solution` as two
+    arbitrary client-supplied strings, built a CrossDomainMatch with
+    `similarity_score=0.0` hardcoded, and called the LLM — whose prompt never saw
+    the score and instructed it to "be specific about the shared structure". The
+    model therefore could not decline. Fed an analytic-number-theory limitation and
+    a histopathology future direction, llama3.1:8b produced a fluent account of how
+    "both domains involve distributed data and computational resources", and echoed
+    a false `computer_vision` label back as fact.
+
+    Prompt wording alone was explicitly rejected as the fix (option 5B): asking an
+    8B model to refuse a leading question is weak, and a probabilistic refusal
+    cannot be asserted by a test. The gate is code.
+
+    Two independent conditions, in order:
+
+    1. **Both texts must exist in the corpus.** The gap must be a stored Limitation
+       in `source_domain` and the solution a stored FutureDirection in
+       `target_domain`. This closes the arbitrary-string hole outright — no amount
+       of similarity makes a sentence that appears in no paper a finding about the
+       literature.
+    2. **The pair must clear the same noise floor the matcher uses.** Similarity is
+       recomputed from the two **stored** vectors, so it is exactly the number
+       `find_cross_domain_matches` would have produced, not a fresh embedding that
+       could drift. The bar is the cross-domain threshold for a cross-domain pair,
+       or `_solution_threshold(domain)` for a same-domain one — reusing the derived
+       nulls rather than inventing a third constant.
+    """
+    if not source_gap.strip() or not target_solution.strip():
+        raise UngroundedPairingError("source_gap and target_solution must be non-empty")
+
+    gap_point = _find_stored_point(_COLLECTION_LIMITATIONS, source_domain, source_gap)
+    if gap_point is None:
+        raise UngroundedPairingError(
+            f"not a corpus match: no limitation with this exact text is recorded in "
+            f"{source_domain!r}. Explanations are only generated for pairings that "
+            f"exist in the corpus."
+        )
+
+    solution_point = _find_stored_point(
+        _COLLECTION_FUTURE_DIRECTIONS, target_domain, target_solution
+    )
+    if solution_point is None:
+        raise UngroundedPairingError(
+            f"not a corpus match: no future direction with this exact text is "
+            f"recorded in {target_domain!r}."
+        )
+
+    left = np.asarray(gap_point.vector, dtype=float)
+    right = np.asarray(solution_point.vector, dtype=float)
+    denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
+    similarity = float(left @ right / denominator) if denominator else 0.0
+
+    threshold = (
+        _CROSS_DOMAIN_THRESHOLD
+        if source_domain != target_domain
+        else _solution_threshold(source_domain)
+    )
+    if similarity < threshold:
+        raise UngroundedPairingError(
+            f"below the noise floor: this pairing scores {similarity:.4f} against a "
+            f"threshold of {threshold:.4f}, the 95th percentile of randomly-paired "
+            f"similarity. At or below that a match is statistically indistinguishable "
+            f"from chance, so no explanation is generated."
+        )
+
+    return VerifiedPairing(
+        source_gap=source_gap,
+        target_solution=target_solution,
+        source_domain=source_domain,
+        target_domain=target_domain,
+        similarity_score=round(similarity, 4),
+        threshold=threshold,
+        source_papers=list(gap_point.payload.get("paper_ids") or []),
+        target_papers=list(solution_point.payload.get("paper_ids") or []),
+    )
 
 
 def explain_match(match: CrossDomainMatch) -> str:

@@ -47,8 +47,10 @@ from pipeline.config import allowed_origins, is_demo_mode  # noqa: E402
 from pipeline.domains import validate_domain  # noqa: E402
 from pipeline.cross_domain import (  # noqa: E402
     CrossDomainMatch,
+    UngroundedPairingError,
     explain_match,
     find_cross_domain_matches,
+    verify_pairing,
 )
 from pipeline.extractor import extract_paper, is_valid_arxiv_id  # noqa: E402
 from pipeline.selfheal import (  # noqa: E402
@@ -184,7 +186,30 @@ class ErrorResponse(BaseModel):
 
 
 class ExplainResponse(BaseModel):
+    """An explanation, shipped with the evidence that justified generating it.
+
+    PLAN.md #5 (option 5C). The endpoint used to return the prose alone, which gave
+    a reader no way to tell a 0.90 pairing from one the system had never measured —
+    and it had never measured any of them, because `similarity_score` was hardcoded
+    to 0.0 and the prompt never saw it.
+
+    `is_hypothesis` is always True and is meant to be rendered, not inspected: an
+    LLM's account of why two papers might connect is a suggestion to evaluate, not
+    a finding about the literature, however fluent it reads.
+    """
+
     explanation: str
+    # Recomputed from the stored vectors by verify_pairing — never a placeholder.
+    similarity_score: float
+    # The noise floor this pairing had to clear to be explained at all.
+    threshold: float
+    # Why this was considered groundable. Currently only "corpus_match": both texts
+    # are in the corpus and the pair clears its domain's threshold.
+    grounding: str
+    # Always True. An explanation is a hypothesis, never a finding.
+    is_hypothesis: bool = True
+    source_papers: list[str] = []
+    target_papers: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +638,13 @@ def explain_connection(
     """Generate an Ollama explanation for a cross-domain gap↔solution pairing.
 
     Calls llama3.1:8b — expect a few seconds of latency per request.
+
+    **Refuses with 422 unless the pairing is grounded** (PLAN.md #5): both texts
+    must exist in the corpus and the pair must clear the same measured noise floor
+    `find_cross_domain_matches` uses. The check is deterministic and runs before
+    any generation — see `verify_pairing` for why prompt wording was not accepted
+    as the fix. The response carries the real similarity and an explicit
+    `is_hypothesis` marker.
     """
     if is_demo_mode():
         # Same pattern as /ingest: the endpoint works, this deployment is not
@@ -628,19 +660,47 @@ def explain_connection(
             ),
         )
 
+    # Deterministic, server-side grounding BEFORE any generation (PLAN.md #5,
+    # option 5A). Without this the endpoint would explain any two strings a client
+    # sent: it previously hardcoded similarity_score=0.0, never showed the model a
+    # score, and instructed it to be specific about the shared structure — so the
+    # model could not decline. Asked to connect analytic number theory to
+    # histopathology federated learning, it obliged.
+    try:
+        verified = verify_pairing(
+            source_gap=source_gap,
+            target_solution=target_solution,
+            source_domain=source,
+            target_domain=target,
+        )
+    except UngroundedPairingError as exc:
+        # 422, not 500: the request is well-formed but asks for something the
+        # corpus does not support, and the caller can act on the reason.
+        raise HTTPException(status_code=422, detail=str(exc))
+
     match = CrossDomainMatch(
-        source_gap=source_gap,
-        target_solution=target_solution,
-        similarity_score=0.0,  # not used by the explanation prompt
-        source_papers=[],
-        target_papers=[],
-        source_domain=source,
-        target_domain=target,
+        source_gap=verified.source_gap,
+        target_solution=verified.target_solution,
+        similarity_score=verified.similarity_score,
+        source_papers=verified.source_papers,
+        target_papers=verified.target_papers,
+        source_domain=verified.source_domain,
+        target_domain=verified.target_domain,
     )
     try:
-        return ExplainResponse(explanation=explain_match(match))
+        explanation = explain_match(match)
     except Exception as exc:  # noqa: BLE001 — Ollama may be down
         raise _internal_error("Explain", exc)
+
+    return ExplainResponse(
+        explanation=explanation,
+        similarity_score=verified.similarity_score,
+        threshold=verified.threshold,
+        grounding="corpus_match",
+        is_hypothesis=True,
+        source_papers=verified.source_papers,
+        target_papers=verified.target_papers,
+    )
 
 
 @app.get("/paper/{arxiv_id}")

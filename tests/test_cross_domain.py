@@ -469,3 +469,165 @@ def test_call_ollama_text_sends_prompt_and_strips(monkeypatch):
     assert result == "the explanation"
     sent = fake_client.chat.call_args.kwargs["messages"][0]["content"]
     assert sent == "why is this interesting?"
+
+
+# ---------------------------------------------------------------------------
+# verify_pairing — PLAN.md #5, option 5A
+# ---------------------------------------------------------------------------
+
+
+def _stored_point(text: str, vector: list[float], papers: list[str] | None = None):
+    return types.SimpleNamespace(
+        vector=vector,
+        payload={"limitation_text": text, "paper_ids": papers or ["p1"], "domain": "d"},
+    )
+
+
+def _patch_store(monkeypatch, limitations: list, futures: list):
+    """Stub Qdrant scroll so verify_pairing sees a known corpus."""
+    import pipeline.cross_domain as cd
+
+    def fake_scroll(collection_name, scroll_filter=None, limit=None, offset=None, **kw):
+        source = limitations if collection_name == cd._COLLECTION_LIMITATIONS else futures
+        return source, None
+
+    client = MagicMock()
+    client.scroll.side_effect = fake_scroll
+    monkeypatch.setattr(cd, "get_qdrant_client", lambda: client)
+    return client
+
+
+def test_verify_pairing_accepts_a_real_pairing_above_the_threshold(monkeypatch):
+    """A pairing that exists and clears the noise floor verifies, with a real score."""
+    from pipeline.cross_domain import verify_pairing
+
+    # Identical unit vectors -> similarity 1.0, comfortably above the threshold.
+    _patch_store(
+        monkeypatch,
+        [_stored_point("a real limitation", [1.0, 0.0], ["2304.02643"])],
+        [_stored_point("a real future direction", [1.0, 0.0], ["2403.16502"])],
+    )
+
+    verified = verify_pairing(
+        source_gap="a real limitation",
+        target_solution="a real future direction",
+        source_domain="computer_vision",
+        target_domain="medical_imaging",
+    )
+
+    assert verified.similarity_score == pytest.approx(1.0)
+    assert verified.similarity_score != 0.0, "the hardcoded 0.0 placeholder must be gone"
+    assert verified.source_papers == ["2304.02643"]
+    assert verified.target_papers == ["2403.16502"]
+
+
+def test_verify_pairing_refuses_a_gap_absent_from_the_corpus(monkeypatch):
+    """An arbitrary client string is not a finding about the literature."""
+    from pipeline.cross_domain import UngroundedPairingError, verify_pairing
+
+    _patch_store(
+        monkeypatch,
+        [_stored_point("a real limitation", [1.0, 0.0])],
+        [_stored_point("a real future direction", [1.0, 0.0])],
+    )
+
+    with pytest.raises(UngroundedPairingError, match="not a corpus match"):
+        verify_pairing(
+            source_gap="Only applies to divisor-bounded multiplicative functions",
+            target_solution="a real future direction",
+        )
+
+
+def test_verify_pairing_refuses_a_solution_absent_from_the_corpus(monkeypatch):
+    from pipeline.cross_domain import UngroundedPairingError, verify_pairing
+
+    _patch_store(
+        monkeypatch,
+        [_stored_point("a real limitation", [1.0, 0.0])],
+        [_stored_point("a real future direction", [1.0, 0.0])],
+    )
+
+    with pytest.raises(UngroundedPairingError, match="not a corpus match"):
+        verify_pairing(source_gap="a real limitation", target_solution="invented text")
+
+
+def test_verify_pairing_refuses_a_pair_below_the_noise_floor(monkeypatch):
+    """Both texts real, but the pair is indistinguishable from chance."""
+    from pipeline.cross_domain import UngroundedPairingError, verify_pairing
+
+    # Orthogonal vectors -> similarity 0.0, far below the threshold.
+    _patch_store(
+        monkeypatch,
+        [_stored_point("a real limitation", [1.0, 0.0])],
+        [_stored_point("a real future direction", [0.0, 1.0])],
+    )
+
+    with pytest.raises(UngroundedPairingError, match="below the noise floor"):
+        verify_pairing(source_gap="a real limitation", target_solution="a real future direction")
+
+
+def test_verify_pairing_gates_on_the_same_threshold_the_matcher_admits(monkeypatch):
+    """One constant, so the gate and the matcher cannot drift apart."""
+    import inspect
+
+    import pipeline.cross_domain as cd
+
+    assert (
+        inspect.signature(cd.find_cross_domain_matches)
+        .parameters["similarity_threshold"]
+        .default
+        == cd._CROSS_DOMAIN_THRESHOLD
+    )
+
+    _patch_store(
+        monkeypatch,
+        [_stored_point("lim", [1.0, 0.0])],
+        [_stored_point("fut", [1.0, 0.0])],
+    )
+    verified = cd.verify_pairing(source_gap="lim", target_solution="fut")
+    assert verified.threshold == cd._CROSS_DOMAIN_THRESHOLD
+
+
+def test_verify_pairing_uses_the_solution_threshold_for_a_same_domain_pair(monkeypatch):
+    """A same-domain pairing is a different population, so a different null applies."""
+    import pipeline.cross_domain as cd
+    from pipeline.gap_scorer import _solution_threshold
+
+    _patch_store(
+        monkeypatch,
+        [_stored_point("lim", [1.0, 0.0])],
+        [_stored_point("fut", [1.0, 0.0])],
+    )
+    verified = cd.verify_pairing(
+        source_gap="lim",
+        target_solution="fut",
+        source_domain="computer_vision",
+        target_domain="computer_vision",
+    )
+    assert verified.threshold == _solution_threshold("computer_vision")
+
+
+def test_verify_pairing_rejects_empty_input(monkeypatch):
+    from pipeline.cross_domain import UngroundedPairingError, verify_pairing
+
+    with pytest.raises(UngroundedPairingError, match="non-empty"):
+        verify_pairing(source_gap="   ", target_solution="something")
+
+
+def test_verify_pairing_runs_before_any_llm_call(monkeypatch):
+    """The refusal must be deterministic and server-side, never the model's choice.
+
+    Option 5B — relying on prompt wording to make the model decline — was rejected:
+    an 8B model refusing a leading question is weak and untestable. This asserts the
+    gate cannot be bypassed by Ollama being reachable.
+    """
+    import pipeline.cross_domain as cd
+
+    def must_not_run(*a, **k):
+        raise AssertionError("verify_pairing must not reach the LLM")
+
+    monkeypatch.setattr(cd, "_call_ollama_text", must_not_run)
+    _patch_store(monkeypatch, [], [])
+
+    with pytest.raises(cd.UngroundedPairingError):
+        cd.verify_pairing(source_gap="anything", target_solution="anything else")

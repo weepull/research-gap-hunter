@@ -23,9 +23,20 @@ import {
  *
  * Collapsing the middle case into the third would make a working, deliberate
  * configuration look broken.
+ *
+ * The explanation is always rendered as a HYPOTHESIS, with the measured
+ * similarity beside it. That is not decoration: the server generates prose only
+ * for pairings that exist in the corpus and clear their measured noise floor
+ * (PLAN.md #5), and it previously generated prose for any two strings with a
+ * hardcoded similarity of 0.0. Showing the number and the word "hypothesis" is
+ * what stops a fluent paragraph reading as a finding.
  */
 export default function ExplanationPanel({ match }: { match: CrossDomainMatch }) {
   const [explanation, setExplanation] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<{
+    similarity: number;
+    threshold: number;
+  } | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [disabled, setDisabled] = useState<string | null>(null);
@@ -41,6 +52,7 @@ export default function ExplanationPanel({ match }: { match: CrossDomainMatch })
         match.target_domain,
       );
       setExplanation(res.explanation);
+      setEvidence({ similarity: res.similarity_score, threshold: res.threshold });
     } catch (err) {
       if (err instanceof FeatureDisabledError) setDisabled(err.message);
       else setError(err instanceof Error ? err.message : "Explanation failed");
@@ -53,9 +65,22 @@ export default function ExplanationPanel({ match }: { match: CrossDomainMatch })
     return (
       <div>
         <h3 className="text-eyebrow uppercase text-label-3">
-          Why this connection might matter
+          Hypothesis &mdash; why this connection might matter
         </h3>
         <p className="mt-2 text-callout text-label-2">{explanation}</p>
+        <p className="mt-2 text-footnote text-label-3">
+          Generated from the two statements below, not from evidence that the
+          connection holds. Treat it as a lead to check.
+          {evidence && (
+            <>
+              {" "}
+              Measured similarity{" "}
+              <span className="tabular">{evidence.similarity.toFixed(4)}</span>,
+              against a noise floor of{" "}
+              <span className="tabular">{evidence.threshold.toFixed(4)}</span>.
+            </>
+          )}
+        </p>
       </div>
     );
   }

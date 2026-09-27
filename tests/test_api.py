@@ -114,6 +114,32 @@ def _unexpected_response(status: int = 404) -> Exception:
     )
 
 
+def _patch_grounding(monkeypatch, similarity=0.9039, threshold=0.8792,
+                     source_papers=None, target_papers=None):
+    """Stub the /explain grounding gate with a successful verification.
+
+    /explain now refuses anything verify_pairing cannot ground (PLAN.md #5), and
+    verify_pairing reads real Qdrant vectors. Tests that are about the endpoint's
+    other behaviour have to say explicitly that the pairing is grounded, rather
+    than relying on an endpoint that explained whatever it was handed.
+    """
+    from pipeline.cross_domain import VerifiedPairing
+
+    def fake_verify(source_gap, target_solution, source_domain, target_domain):
+        return VerifiedPairing(
+            source_gap=source_gap,
+            target_solution=target_solution,
+            source_domain=source_domain,
+            target_domain=target_domain,
+            similarity_score=similarity,
+            threshold=threshold,
+            source_papers=source_papers or ["2304.02643"],
+            target_papers=target_papers or ["2403.16502"],
+        )
+
+    monkeypatch.setattr("api.main.verify_pairing", fake_verify)
+
+
 def _make_mock_db(paper_count: int = 2) -> MagicMock:
     """Return a _get_db() mock that reports paper_count without real SQLite threads."""
     db = MagicMock()
@@ -780,6 +806,7 @@ def test_explain_demo_refusal_explains_itself(client, monkeypatch):
 def test_explain_works_when_not_in_demo_mode(client, monkeypatch):
     """Local development keeps live explanations."""
     monkeypatch.setattr("api.main.is_demo_mode", lambda: False)
+    _patch_grounding(monkeypatch)
     monkeypatch.setattr("api.main.explain_match", lambda match: "because X relates to Y")
 
     r = client.get("/explain", params={"source_gap": "a", "target_solution": "b"})
@@ -834,6 +861,7 @@ def test_explain_error_does_not_leak_internals(monkeypatch):
     monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
     monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
     monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
+    _patch_grounding(monkeypatch)
     monkeypatch.setattr(
         "api.main.explain_match",
         lambda match: (_ for _ in ()).throw(ConnectionError(secret)),
@@ -954,6 +982,7 @@ def test_explain_returns_explanation(client, monkeypatch):
         captured["target_domain"] = match.target_domain
         return "Both domains share a registration problem."
 
+    _patch_grounding(monkeypatch)
     monkeypatch.setattr("api.main.explain_match", fake_explain)
 
     r = client.get(
@@ -967,7 +996,18 @@ def test_explain_returns_explanation(client, monkeypatch):
     )
 
     assert r.status_code == 200
-    assert r.json() == {"explanation": "Both domains share a registration problem."}
+    assert r.json() == {
+        "explanation": "Both domains share a registration problem.",
+        # PLAN.md #5 (option 5C): the evidence ships with the prose. similarity_score
+        # is the real recomputed value, replacing the hardcoded 0.0 the endpoint used
+        # to invent and never show the model.
+        "similarity_score": 0.9039,
+        "threshold": 0.8792,
+        "grounding": "corpus_match",
+        "is_hypothesis": True,
+        "source_papers": ["2304.02643"],
+        "target_papers": ["2403.16502"],
+    }
     assert captured == {
         "source_gap": "loses track of objects",
         "target_solution": "robust registration techniques",
@@ -987,6 +1027,7 @@ def test_explain_ollama_failure_returns_500(monkeypatch):
     monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
     monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
     monkeypatch.setattr("api.main.get_neo4j_driver", MagicMock())
+    _patch_grounding(monkeypatch)
     monkeypatch.setattr(
         "api.main.explain_match",
         lambda match: (_ for _ in ()).throw(ConnectionError("ollama down")),

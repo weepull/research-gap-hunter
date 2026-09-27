@@ -109,6 +109,23 @@ export interface HealthResponse {
 
 export interface ExplainResponse {
   explanation: string;
+  /**
+   * Recomputed from the stored vectors by the server, never a placeholder — the
+   * endpoint used to hardcode 0.0 and never show the model any score.
+   */
+  similarity_score: number;
+  /** The measured noise floor this pairing had to clear to be explained at all. */
+  threshold: number;
+  /** Why this was groundable. Currently only "corpus_match". */
+  grounding: string;
+  /**
+   * Always true. An LLM's account of why two papers might connect is a suggestion
+   * to evaluate, not a finding about the literature, however fluent it reads.
+   * Render this; do not branch on it.
+   */
+  is_hypothesis: boolean;
+  source_papers: string[];
+  target_papers: string[];
 }
 
 // ---------------------------------------------------------------------------

@@ -650,6 +650,65 @@ the sort, or by reweighting: both are formula changes needing their own advisor
 decision. The UI does flag single-source gaps in amber, which is the mitigation
 that exists today.
 
+### Phase 5 · #5 /explain grounding — DONE 2026-09-28
+
+**Decision: 5A + 5C combined. 5B — prompt wording — was explicitly rejected.**
+
+`/explain` took `source_gap` and `target_solution` as two **arbitrary client query
+strings**, built a `CrossDomainMatch` with `similarity_score=0.0` hardcoded
+(commented "not used by the explanation prompt"), and called the LLM. The prompt
+never interpolated the score and instructed the model to "be specific about the
+shared structure", so the only compliant output was a structural analogy — the
+model had no way to decline. Fed an analytic-number-theory limitation and a
+histopathology future direction, `llama3.1:8b` explained that "both domains involve
+distributed data and computational resources", and repeated a false
+`computer_vision` label back as fact.
+
+**5A — the gate is code, not wording.** `verify_pairing()` runs before any
+generation and raises `UngroundedPairingError` on two independent conditions:
+
+1. **Both texts must exist in the corpus** — the gap as a stored `Limitation` in
+   the source domain, the solution as a stored `FutureDirection` in the target. No
+   similarity makes a sentence that appears in no paper a finding about the
+   literature, so this closes the arbitrary-string hole outright.
+2. **The pair must clear the same noise floor the matcher uses.** Similarity is
+   recomputed from the two **stored** vectors, so it is exactly the number
+   `find_cross_domain_matches` would produce rather than a fresh embedding that
+   could drift. Cross-domain pairs use `_CROSS_DOMAIN_THRESHOLD`; same-domain pairs
+   use `_solution_threshold(domain)` — reusing the derived nulls rather than
+   inventing a third constant.
+
+`_CROSS_DOMAIN_THRESHOLD` is new **only as a name**: 0.8792 was an inline default on
+`find_cross_domain_matches` and is now a module constant so the gate and the matcher
+cannot drift apart. The value is unchanged. (Re-derived on the curated corpus it
+comes to 0.8793; left alone, since changing it is an advisor decision.)
+
+Why 5B was rejected: asking an 8B model to refuse a leading question is weak, and a
+probabilistic refusal cannot be asserted by a test. A test now proves the gate is
+unreachable-by-LLM by making `_call_ollama_text` raise if it is ever called.
+
+**5C — the evidence ships with the prose.** `ExplainResponse` now carries
+`similarity_score`, `threshold`, `grounding` ("corpus_match"), `is_hypothesis`
+(always True) and both paper lists. `ExplanationPanel` heads the block
+"**Hypothesis** — why this connection might matter", states that it was generated
+from the two statements rather than from evidence the connection holds, and prints
+the measured similarity against the noise floor. A refusal returns **422** with the
+reason, which the frontend can render as information.
+
+Note on the text lookup: it scrolls the **domain-filtered** slice and matches text
+client-side rather than filtering on the text field server-side. `domain` is the only
+indexed payload field, and Qdrant Cloud *refuses* a filter on an unindexed field
+rather than scanning — so a server-side text filter would work locally and fail in
+production, the exact trap `ensure_payload_indexes` documents. Indexing a
+multi-sentence text field to avoid one scan of a few hundred points is a poor trade.
+
+**Integration tier is now fully green: 27 passed, 3 skipped** (from 18 failing at
+the start of the run). The three skips are honest: the 13-paper fixture produces no
+cross-domain pair above the noise floor, which by this project's own doctrine is
+*correct output rather than a bug*, and its MI slice yields no multi-member cluster
+at 0.8954. Two happy-path assertions are therefore exercised against the live
+corpus in the run summary rather than by the fixture.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

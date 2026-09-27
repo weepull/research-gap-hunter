@@ -287,6 +287,57 @@ clean `[]` with HTTP 200, and the frontend renders "No connections found".
 ingestion; the read-only analysis is described in PROJECT_HARDENING_PLAN.md
 items A1/A2. Do not hand-tune them.
 
+## Post-audit hardening run — decided 2026-09-28 (advisor: Fable 5)
+
+An adversarial audit on 2026-09-27 found seven defects; `PLAN.md` at the repo
+root holds the full remediation plan with the options that were put to the
+advisor. All seven decisions below are **final** — do not re-open the options.
+Phases land in dependency order, because bad domain labels contaminate any
+before/after measurement of the scoring fixes.
+
+**Two line references in circulation are wrong.** `extract_paper` hardcodes the
+domain at `pipeline/extractor.py:452`, not `:455` (the audit) and not `:388`
+(`PROJECT_HARDENING_PLAN.md` item A8).
+
+### Phase 0 · #7 integration tier + #6 health honesty — DONE 2026-09-28
+
+**#7 (commit `8e8b121`).** The 327-test unit suite runs in 0.78s with every
+service mocked, so it is structurally unable to observe any of the seven
+defects — they all live in the interaction between real components and real
+data. Added an opt-in `integration` marker (excluded by default via `addopts`,
+so `pytest -q` stays a fast hermetic run), session-scoped probes that **skip
+rather than fail** when a service is down, and full store isolation: a separate
+Neo4j database (`rghintegration`), separate Qdrant collections
+(`*_integration`), and a `tmp_path` SQLite.
+
+Note for future sessions: the collection-name constants must be patched in **all
+four** namespaces that hold a by-value binding (`vectors.embed`,
+`vectors.search`, `pipeline.gap_scorer`, `pipeline.cross_domain`). Patching only
+`vectors.embed` leaves the other three pointed at the production collections.
+
+The fixture corpus (`tests/integration/fixtures/corpus.json`, 13 synthetic
+papers with deliberately impossible `99xx` arXiv ids) carries both a
+`true_domain` and the wrong `declared_domain` the pre-fix pipeline would store,
+reproducing the live defects in miniature. **Fail-first baseline at `0eb58bc`:
+18 failed, 12 passed.** Those 18 are the proof harness for #1–#6.
+
+**#6 (commit `df8f7e1`).** `/health` returned `200 {"status":"ok"}`
+unconditionally — a literal status, Qdrant errors swallowed to `0`, and Neo4j
+never contacted at all. It now probes each dependency and derives the status,
+distinguishing `absent` (reachable, collection not created yet — still `ok`)
+from `unreachable` (→ `degraded`, **HTTP 503**). Counts are `null` when the
+backing store is unreachable. `/corpus` gets the same treatment plus
+`graph_available` / `vectors_available`.
+
+**The lifespan is now resilient, and this is load-bearing rather than
+incidental.** Every backend was constructed unguarded at startup and
+`get_neo4j_driver()` calls `verify_connectivity()`, so an unreachable store made
+the process die before it could serve `/health` — a crash loop instead of a
+diagnosis, and the 503 path unreachable in exactly the case it exists for. A
+failed backend now logs at ERROR and is set to `None`; selfheal is skipped
+without a driver. The 503 behaviour change is documented in `DEPLOYMENT.md`
+because it affects the Render health check.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

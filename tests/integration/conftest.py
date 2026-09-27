@@ -32,8 +32,10 @@ at import. Patching only ``vectors.embed`` would leave those three pointing at
 the production collections, so every namespace that holds a binding is patched.
 """
 
+import importlib
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -54,6 +56,66 @@ _TEST_FUTURE_DIRECTIONS = "future_directions_integration"
 
 def _test_database() -> str:
     return os.getenv("NEO4J_TEST_DATABASE", "rghintegration").strip() or "rghintegration"
+
+
+@contextmanager
+def _isolated_stores(db_path=None):
+    """Point every store binding at the isolated test locations, then restore.
+
+    A context manager rather than fixture-level patching, because scope matters
+    here in a way that bit this harness once already. A session-scoped fixture's
+    finalizer runs at *end of session*, and `tests/integration/` sorts before
+    `tests/test_*.py` — so patching module globals in the session fixture leaked
+    the test collection names into the unit suite, and `pytest -m ''` failed three
+    tests that passed in either tier alone. This is applied around the corpus load
+    and again per test (see _isolate_collections), so nothing survives the
+    integration package.
+    """
+    previous_env = os.environ.get("NEO4J_DATABASE")
+    os.environ["NEO4J_DATABASE"] = _test_database()
+
+    import pipeline.batch as batch
+
+    previous_db_path = batch._DB_PATH
+    if db_path is not None:
+        batch._DB_PATH = db_path
+
+    patched: list[tuple[object, str, object]] = []
+    for name in _COLLECTION_NAMESPACES:
+        module = importlib.import_module(name)
+        for attr, value in (
+            ("_COLLECTION_LIMITATIONS", _TEST_LIMITATIONS),
+            ("_COLLECTION_FUTURE_DIRECTIONS", _TEST_FUTURE_DIRECTIONS),
+        ):
+            if hasattr(module, attr):
+                patched.append((module, attr, getattr(module, attr)))
+                setattr(module, attr, value)
+    try:
+        yield
+    finally:
+        for module, attr, value in patched:
+            setattr(module, attr, value)
+        batch._DB_PATH = previous_db_path
+        if previous_env is None:
+            os.environ.pop("NEO4J_DATABASE", None)
+        else:
+            os.environ["NEO4J_DATABASE"] = previous_env
+
+
+@pytest.fixture(autouse=True)
+def _isolate_collections(request):
+    """Re-apply store isolation for the duration of each integration test.
+
+    Autouse and function-scoped so it unwinds after every test. Skipped for tests
+    that never touch a store, so a pure-unit assertion in this package does not
+    pay for it.
+    """
+    if "loaded_corpus" not in request.fixturenames:
+        yield
+        return
+    db_path = getattr(request.config, "_rgh_integration_db", None)
+    with _isolated_stores(db_path):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -154,12 +216,18 @@ def _resolve_domain(paper: dict) -> str | None:
 
 
 @pytest.fixture(scope="session")
-def loaded_corpus(neo4j_available, qdrant_available, embedding_model, fixture_papers, tmp_path_factory):
+def loaded_corpus(
+    request, neo4j_available, qdrant_available, embedding_model, fixture_papers,
+    tmp_path_factory,
+):
     """Load the fixture corpus into the isolated stores through the production path.
 
-    Uses ``_paper_to_row`` and ``_upsert_paper_counting`` — the same functions
-    real ingestion uses — so schema and serialisation bugs surface here rather
-    than being mocked away. Yields a dict describing what was loaded.
+    Uses ``_paper_to_row`` and ``_upsert_paper_counting`` — the same functions real
+    ingestion uses — so schema and serialisation bugs surface here rather than being
+    mocked away. Yields a dict describing what was loaded.
+
+    Store isolation is applied *around the load only*; each test re-applies it via
+    the autouse ``_isolate_collections`` fixture. See _isolated_stores for why.
     """
     import sqlite_utils
     from qdrant_client.http.exceptions import UnexpectedResponse
@@ -171,103 +239,84 @@ def loaded_corpus(neo4j_available, qdrant_available, embedding_model, fixture_pa
     test_db = neo4j_available
     client = qdrant_available
 
-    # --- redirect every store at an isolated location -----------------------
-    previous_env = os.environ.get("NEO4J_DATABASE")
-    os.environ["NEO4J_DATABASE"] = test_db
-
     db_path = tmp_path_factory.mktemp("integration-sqlite") / "papers.db"
-    previous_db_path = batch._DB_PATH
-    batch._DB_PATH = db_path
+    # Stashed on the config so the per-test fixture can re-apply the same path.
+    request.config._rgh_integration_db = db_path
 
-    import importlib
+    with _isolated_stores(db_path):
+        # --- start from empty stores ---------------------------------------
+        for collection in (_TEST_LIMITATIONS, _TEST_FUTURE_DIRECTIONS):
+            try:
+                client.delete_collection(collection)
+            except (UnexpectedResponse, ValueError):
+                pass
 
-    patched: list[tuple[object, str, object]] = []
-    for name in _COLLECTION_NAMESPACES:
-        module = importlib.import_module(name)
-        for attr, value in (
-            ("_COLLECTION_LIMITATIONS", _TEST_LIMITATIONS),
-            ("_COLLECTION_FUTURE_DIRECTIONS", _TEST_FUTURE_DIRECTIONS),
-        ):
-            if hasattr(module, attr):
-                patched.append((module, attr, getattr(module, attr)))
-                setattr(module, attr, value)
-
-    # --- start from empty stores -------------------------------------------
-    for collection in (_TEST_LIMITATIONS, _TEST_FUTURE_DIRECTIONS):
-        try:
-            client.delete_collection(collection)
-        except (UnexpectedResponse, ValueError):
-            pass
-
-    driver = get_neo4j_driver()
-    with driver.session(database=test_db) as session:
-        session.run("MATCH (n) DETACH DELETE n")
-    create_constraints(driver)
-
-    # --- load ---------------------------------------------------------------
-    sqlite_db = sqlite_utils.Database(db_path)
-    loaded: list[dict] = []
-    excluded: list[str] = []
-    for paper in fixture_papers:
-        domain = _resolve_domain(paper)
-        if domain is None:
-            excluded.append(paper["arxiv_id"])
-            continue
-        record = {
-            "arxiv_id": paper["arxiv_id"],
-            "title": paper["title"],
-            "year": paper["year"],
-            "domain": domain,
-            "objectives": paper["objectives"],
-            "methods": paper["methods"],
-            "datasets": paper["datasets"],
-            "evaluation_metrics": paper["evaluation_metrics"],
-            "limitations": paper["limitations"],
-            "future_directions": paper["future_directions"],
-            "raw_json": json.dumps({"source": "integration_fixture"}),
-            "ingested_at": "2026-01-01T00:00:00+00:00",
-            "extraction_tier": paper["extraction_tier"],
-        }
-        row = dict(record)
-        for field in batch._LIST_FIELDS:
-            row[field] = json.dumps(row[field])
-        sqlite_db["papers"].insert(row, pk="arxiv_id", replace=True, alter=True)
-        with driver.session(database=test_db) as session:
-            session.execute_write(lambda tx, p=record: _upsert_paper_counting(tx, p))
-        loaded.append(record)
-    driver.close()
-
-    embed_limitations()
-    embed_future_directions()
-
-    yield {
-        "loaded": loaded,
-        "excluded": excluded,
-        "database": test_db,
-        "sqlite_path": db_path,
-        "limitations_collection": _TEST_LIMITATIONS,
-        "future_directions_collection": _TEST_FUTURE_DIRECTIONS,
-    }
-
-    # --- teardown ----------------------------------------------------------
-    for module, attr, value in patched:
-        setattr(module, attr, value)
-    batch._DB_PATH = previous_db_path
-    if previous_env is None:
-        os.environ.pop("NEO4J_DATABASE", None)
-    else:
-        os.environ["NEO4J_DATABASE"] = previous_env
-    for collection in (_TEST_LIMITATIONS, _TEST_FUTURE_DIRECTIONS):
-        try:
-            client.delete_collection(collection)
-        except (UnexpectedResponse, ValueError):
-            pass
-    try:
         driver = get_neo4j_driver()
         with driver.session(database=test_db) as session:
             session.run("MATCH (n) DETACH DELETE n")
+        create_constraints(driver)
+
+        # --- load -----------------------------------------------------------
+        sqlite_db = sqlite_utils.Database(db_path)
+        loaded: list[dict] = []
+        excluded: list[str] = []
+        for paper in fixture_papers:
+            domain = _resolve_domain(paper)
+            if domain is None:
+                excluded.append(paper["arxiv_id"])
+                continue
+            record = {
+                "arxiv_id": paper["arxiv_id"],
+                "title": paper["title"],
+                "year": paper["year"],
+                "domain": domain,
+                "objectives": paper["objectives"],
+                "methods": paper["methods"],
+                "datasets": paper["datasets"],
+                "evaluation_metrics": paper["evaluation_metrics"],
+                "limitations": paper["limitations"],
+                "future_directions": paper["future_directions"],
+                "raw_json": json.dumps({"source": "integration_fixture"}),
+                "ingested_at": "2026-01-01T00:00:00+00:00",
+                "extraction_tier": paper["extraction_tier"],
+            }
+            row = dict(record)
+            for field in batch._LIST_FIELDS:
+                row[field] = json.dumps(row[field])
+            sqlite_db["papers"].insert(row, pk="arxiv_id", replace=True, alter=True)
+            with driver.session(database=test_db) as session:
+                session.execute_write(lambda tx, p=record: _upsert_paper_counting(tx, p))
+            loaded.append(record)
         driver.close()
-    except Exception:  # noqa: BLE001 — teardown must not mask a test failure
+
+        embed_limitations()
+        embed_future_directions()
+
+        info = {
+            "loaded": loaded,
+            "excluded": excluded,
+            "database": test_db,
+            "sqlite_path": db_path,
+            "limitations_collection": _TEST_LIMITATIONS,
+            "future_directions_collection": _TEST_FUTURE_DIRECTIONS,
+        }
+
+    yield info
+
+    # --- teardown: drop the test collections and empty the test database ----
+    for collection in (_TEST_LIMITATIONS, _TEST_FUTURE_DIRECTIONS):
+        try:
+            client.delete_collection(collection)
+        except Exception:  # noqa: BLE001 — teardown must not mask a test failure
+            pass
+    try:
+        from graph.populate import get_neo4j_driver as _driver
+
+        driver = _driver()
+        with driver.session(database=test_db) as session:
+            session.run("MATCH (n) DETACH DELETE n")
+        driver.close()
+    except Exception:  # noqa: BLE001
         pass
 
 

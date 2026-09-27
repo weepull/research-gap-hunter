@@ -12,14 +12,20 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
+# Function-scoped, deliberately. A module- or session-scoped fixture is created
+# BEFORE function-scoped autouse fixtures run, so it would execute outside the
+# store isolation in conftest._isolate_collections and score the *real* corpus
+# instead of the fixture one. That is not hypothetical: it is what happened, and it
+# only showed up when both tiers ran in one process. Recomputing per test costs
+# little — the embedding model is session-cached and the fixture corpus is tiny.
+@pytest.fixture
 def cv_gaps(loaded_corpus):
     from pipeline.gap_scorer import score_gaps
 
     return score_gaps(domain="computer_vision", top_n=100)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def mi_gaps(loaded_corpus):
     from pipeline.gap_scorer import score_gaps
 

@@ -19,6 +19,23 @@ invisible to a mock.
 
 ## Isolation
 
+> **Scope gotcha, learned the hard way.** Store isolation is applied by a
+> **function-scoped autouse** fixture (`_isolate_collections`), not by the
+> session-scoped loader. A session fixture's finalizer runs at *end of session*,
+> and `tests/integration/` sorts before `tests/test_*.py`, so patching module
+> globals there leaked the test collection names into the unit suite — `pytest -m ''`
+> failed three `test_vectors` / `test_cross_domain` tests that passed in either tier
+> alone.
+>
+> For the same reason, any fixture that *calls* pipeline code must be
+> **function-scoped**. Higher-scoped fixtures are created before function-scoped
+> autouse fixtures run, so a `scope="module"` fixture executes outside the isolation
+> and silently scores the real corpus. `cv_gaps` / `mi_gaps` were module-scoped and
+> did exactly that.
+>
+> Always check all three invocations before trusting a change here:
+> `pytest -q`, `pytest -m integration`, and `pytest -m ''`.
+
 Nothing here touches the real corpus:
 
 - **Neo4j** — a separate database, `rghintegration` by default

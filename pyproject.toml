@@ -33,3 +33,11 @@ packages = ["pipeline", "graph", "vectors", "api"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The integration tier runs the real pipeline against live Neo4j / Qdrant / Ollama.
+# It is excluded by default so `pytest -q` stays a fast, hermetic unit run; opt in
+# with `pytest -m integration`. Without the exclusion a contributor with no
+# services running would see failures that say nothing about their change.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: exercises real Neo4j, Qdrant and Ollama; skipped when they are down",
+]

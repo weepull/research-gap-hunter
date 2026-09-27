@@ -1,0 +1,270 @@
+{
+  "_README": [
+    "Hand-labelled fixture corpus for the integration tier. NOT real papers.",
+    "arXiv ids are deliberately synthetic (year prefix 99) and format-valid, so",
+    "nothing here can be mistaken for a real paper or accidentally ingested --",
+    "CLAUDE.md's rule about never trusting an LLM-recalled arXiv id applies to",
+    "this file too, and the 99-prefix makes the synthetic origin unmistakable.",
+    "",
+    "Each entry carries BOTH:",
+    "  true_domain     -- ground truth, hand-assigned: computer_vision |",
+    "                     medical_imaging | other ('other' = not a research",
+    "                     domain this project covers, i.e. a bad search hit).",
+    "  declared_domain -- what the CURRENT (pre-fix) pipeline would store, which",
+    "                     for two entries is deliberately wrong. This reproduces",
+    "                     the two live defects in miniature: an off-topic search",
+    "                     hit stamped computer_vision (mirrors 2405.00658), and a",
+    "                     medical paper stamped computer_vision (mirrors",
+    "                     2305.17456).",
+    "",
+    "The invariant tests assert the corpus ends up matching true_domain, with",
+    "'other' papers absent entirely. Against pre-fix code they fail."
+  ],
+  "papers": [
+    {
+      "arxiv_id": "9901.00001",
+      "title": "Anchor-Free Dense Object Detection at High Input Resolution",
+      "year": 2024,
+      "true_domain": "computer_vision",
+      "declared_domain": "computer_vision",
+      "extraction_tier": "explicit",
+      "abstract": "We present an anchor-free detector for natural images, evaluated on COCO object detection benchmarks with a convolutional backbone and a transformer decoder head.",
+      "objectives": ["Remove anchor priors from dense detection"],
+      "methods": ["anchor-free detection", "transformer decoder"],
+      "datasets": ["COCO"],
+      "evaluation_metrics": ["mAP"],
+      "limitations": [
+        "Detection accuracy degrades sharply for objects smaller than sixteen pixels",
+        "Inference throughput falls below real time at high input resolution",
+        "Performance drops on heavily occluded pedestrians in crowded street scenes"
+      ],
+      "future_directions": [
+        "Extend the decoder to exploit temporal context across adjacent video frames"
+      ]
+    },
+    {
+      "arxiv_id": "9901.00002",
+      "title": "Long-Horizon Multiple Object Tracking in Untrimmed Video",
+      "year": 2025,
+      "true_domain": "computer_vision",
+      "declared_domain": "computer_vision",
+      "extraction_tier": "conclusion",
+      "abstract": "A tracking-by-detection pipeline for natural video that maintains object identity across shot boundaries and long occlusions on MOT benchmarks.",
+      "objectives": ["Maintain identity across occlusions"],
+      "methods": ["tracking-by-detection", "re-identification embedding"],
+      "datasets": ["MOT17"],
+      "evaluation_metrics": ["MOTA", "IDF1"],
+      "limitations": [
+        "Identity switches accumulate when objects are occluded for more than forty frames",
+        "Inference throughput falls below real time at high input resolution"
+      ],
+      "future_directions": [
+        "Investigate self-supervised re-identification objectives that need no identity labels"
+      ]
+    },
+    {
+      "arxiv_id": "9901.00003",
+      "title": "A Fast Single-Stage Detector for Edge Deployment",
+      "year": 2024,
+      "true_domain": "computer_vision",
+      "declared_domain": "computer_vision",
+      "extraction_tier": "conclusion",
+      "abstract": "We describe a single-stage detector optimised for edge hardware and report latency on embedded accelerators for natural image object detection.",
+      "objectives": ["Reduce detector latency on edge hardware"],
+      "methods": ["single-stage detection", "structured pruning"],
+      "datasets": ["COCO"],
+      "evaluation_metrics": ["mAP", "latency"],
+      "limitations": ["remains challenging", "future work includes"],
+      "future_directions": []
+    },
+    {
+      "arxiv_id": "9901.00004",
+      "title": "A Survey of Convolutional Backbones for Natural Image Recognition",
+      "year": 2023,
+      "true_domain": "computer_vision",
+      "declared_domain": "computer_vision",
+      "extraction_tier": "inferred",
+      "abstract": "This survey reviews convolutional and attention-based backbone architectures for natural image classification and object recognition.",
+      "objectives": ["Survey backbone architectures"],
+      "methods": ["convolutional networks", "vision transformers"],
+      "datasets": ["ImageNet"],
+      "evaluation_metrics": ["top-1 accuracy"],
+      "limitations": [],
+      "future_directions": []
+    },
+    {
+      "arxiv_id": "9901.00005",
+      "title": "Latent Diffusion for High-Resolution Natural Image Synthesis",
+      "year": 2025,
+      "true_domain": "computer_vision",
+      "declared_domain": "computer_vision",
+      "extraction_tier": "explicit",
+      "abstract": "A latent diffusion model for text-conditioned synthesis of natural images at high resolution, evaluated with FID on standard image generation benchmarks.",
+      "objectives": ["Synthesise high-resolution natural images"],
+      "methods": ["latent diffusion", "classifier-free guidance"],
+      "datasets": ["LAION"],
+      "evaluation_metrics": ["FID"],
+      "limitations": [
+        "Compositional prompts with several interacting subjects bleed attributes between them",
+        "Sampling requires many denoising steps, so generation is slow"
+      ],
+      "future_directions": [
+        "Distil the sampler so high-resolution synthesis needs far fewer denoising steps"
+      ]
+    },
+    {
+      "arxiv_id": "9902.00001",
+      "title": "Encoder-Decoder Segmentation of Abdominal Organs in Volumetric CT",
+      "year": 2024,
+      "true_domain": "medical_imaging",
+      "declared_domain": "medical_imaging",
+      "extraction_tier": "explicit",
+      "abstract": "We segment abdominal organs in volumetric CT with an encoder-decoder network and report Dice overlap against radiologist reference contours.",
+      "objectives": ["Segment abdominal organs in CT"],
+      "methods": ["encoder-decoder segmentation", "deep supervision"],
+      "datasets": ["BTCV"],
+      "evaluation_metrics": ["Dice"],
+      "limitations": [
+        "Segmentation accuracy degrades on anatomy underrepresented in the training cohort",
+        "The model generalises poorly to scanners and acquisition protocols it never saw in training",
+        "Manual voxel-level annotation of volumetric scans is prohibitively expensive to obtain"
+      ],
+      "future_directions": [
+        "Investigate federated training across hospitals so no patient scans leave their institution"
+      ]
+    },
+    {
+      "arxiv_id": "9902.00002",
+      "title": "Transformer Segmentation of Cardiac Structures in MRI",
+      "year": 2024,
+      "true_domain": "medical_imaging",
+      "declared_domain": "medical_imaging",
+      "extraction_tier": "conclusion",
+      "abstract": "A transformer segmentation network for cardiac chambers in MRI, evaluated with Dice and Hausdorff distance against clinical reference contours.",
+      "objectives": ["Segment cardiac chambers in MRI"],
+      "methods": ["transformer segmentation", "self-attention"],
+      "datasets": ["ACDC"],
+      "evaluation_metrics": ["Dice", "Hausdorff distance"],
+      "limitations": [
+        "Segmentation accuracy degrades on anatomy underrepresented in the training cohort",
+        "The model generalises poorly to scanners and acquisition protocols it never saw in training",
+        "Inter-observer disagreement between radiologists limits the reliability of the reference labels"
+      ],
+      "future_directions": [
+        "Exploit large volumes of unlabelled clinical scans through self-supervised pretraining"
+      ]
+    },
+    {
+      "arxiv_id": "9902.00003",
+      "title": "Semi-Supervised Tumour Segmentation in Whole-Slide Histopathology",
+      "year": 2025,
+      "true_domain": "medical_imaging",
+      "declared_domain": "medical_imaging",
+      "extraction_tier": "conclusion",
+      "abstract": "Semi-supervised tumour segmentation on whole-slide histopathology images, using stain normalisation and reporting Dice against pathologist annotation.",
+      "objectives": ["Segment tumour regions in whole-slide images"],
+      "methods": ["semi-supervised segmentation", "stain normalisation"],
+      "datasets": ["CAMELYON16"],
+      "evaluation_metrics": ["Dice", "AUC"],
+      "limitations": [
+        "Manual voxel-level annotation of volumetric scans is prohibitively expensive to obtain",
+        "Stain normalisation increases training time without markedly improving overlap scores",
+        "Inter-observer disagreement between radiologists limits the reliability of the reference labels"
+      ],
+      "future_directions": [
+        "Explore whether foundation models pretrained on histopathology transfer across staining protocols"
+      ]
+    },
+    {
+      "arxiv_id": "9902.00004",
+      "title": "Chest Radiograph Classification with Calibrated Uncertainty",
+      "year": 2025,
+      "true_domain": "medical_imaging",
+      "declared_domain": "medical_imaging",
+      "extraction_tier": "explicit",
+      "abstract": "We classify thoracic disease on chest radiographs and calibrate predictive uncertainty, reporting AUC and subgroup fairness against hospital records.",
+      "objectives": ["Classify thoracic disease on radiographs"],
+      "methods": ["convolutional classifier", "temperature scaling"],
+      "datasets": ["CheXpert"],
+      "evaluation_metrics": ["AUC", "expected calibration error"],
+      "limitations": [
+        "The classifier underdiagnoses specific patient subgroups more often than the cohort average",
+        "Restricted to five thoracic disease categories, so other clinical findings are unaddressed"
+      ],
+      "future_directions": [
+        "Audit subgroup calibration prospectively across multiple hospital sites"
+      ]
+    },
+    {
+      "arxiv_id": "9902.00005",
+      "title": "A Review of Registration Methods for Multimodal Clinical Imaging",
+      "year": 2023,
+      "true_domain": "medical_imaging",
+      "declared_domain": "medical_imaging",
+      "extraction_tier": "inferred",
+      "abstract": "A review of deformable and rigid registration methods for aligning multimodal clinical images such as CT, MRI and PET.",
+      "objectives": ["Review registration methods"],
+      "methods": ["deformable registration"],
+      "datasets": ["LPBA40"],
+      "evaluation_metrics": ["target registration error"],
+      "limitations": [],
+      "future_directions": []
+    },
+    {
+      "arxiv_id": "9902.00006",
+      "title": "Trustworthy Uncertainty Estimation for Clinical Organ Segmentation",
+      "year": 2023,
+      "true_domain": "medical_imaging",
+      "declared_domain": "computer_vision",
+      "extraction_tier": "explicit",
+      "abstract": "We study trustworthy uncertainty estimation for organ segmentation in clinical CT and MRI, reporting Dice and calibration against radiologist reference contours.",
+      "objectives": ["Estimate segmentation uncertainty for clinical use"],
+      "methods": ["deep ensembles", "encoder-decoder segmentation"],
+      "datasets": ["BTCV"],
+      "evaluation_metrics": ["Dice", "expected calibration error"],
+      "limitations": [
+        "Segmentation accuracy degrades on anatomy underrepresented in the training cohort",
+        "Predicted uncertainty is poorly calibrated on pathological anatomy"
+      ],
+      "future_directions": [
+        "Validate uncertainty estimates against radiologist confidence in a reader study"
+      ]
+    },
+    {
+      "arxiv_id": "9903.00001",
+      "title": "A Note on Partial Sums of Divisor-Bounded Multiplicative Functions",
+      "year": 2024,
+      "true_domain": "other",
+      "declared_domain": "computer_vision",
+      "extraction_tier": "inferred",
+      "abstract": "We prove an asymptotic estimate for partial sums of divisor-bounded multiplicative functions, assuming a growth condition on the associated Dirichlet series.",
+      "objectives": ["Estimate partial sums of multiplicative functions"],
+      "methods": ["Dirichlet series", "Selberg-Delange method"],
+      "datasets": [],
+      "evaluation_metrics": [],
+      "limitations": [
+        "Only applies to divisor-bounded multiplicative functions",
+        "Assumes specific growth rates for the associated partial sums"
+      ],
+      "future_directions": []
+    },
+    {
+      "arxiv_id": "9903.00002",
+      "title": "Robust Stability of Moving-Horizon Estimators for Nonlinear Systems",
+      "year": 2025,
+      "true_domain": "other",
+      "declared_domain": "computer_vision",
+      "extraction_tier": "conclusion",
+      "abstract": "We analyse robust stability of moving-horizon state estimators for Lipschitz nonlinear dynamical systems under imperfect cost minimisation.",
+      "objectives": ["Establish robust stability bounds"],
+      "methods": ["moving-horizon estimation", "Lyapunov analysis"],
+      "datasets": [],
+      "evaluation_metrics": [],
+      "limitations": [
+        "Imperfect minimisation of the cost function is rarely addressed in the literature",
+        "Robust stability of fast moving-horizon estimators remains challenging"
+      ],
+      "future_directions": []
+    }
+  ]
+}

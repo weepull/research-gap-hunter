@@ -76,12 +76,12 @@ export default function GapCard({
 
         <div className="mt-5 space-y-2">
           <Meter
-            label="Frequency (relative)"
+            label="Frequency (corroboration)"
             value={gap.frequency_score}
             colorVar="--meter-frequency"
             scaleMax={maxFrequency}
             relative
-            hint="Share of the domain's papers reporting this limitation. The bar is scaled to the highest frequency on screen so gaps can be compared; the number is the true score."
+            hint="Of the papers in this domain that reported any limitation at all, the share reporting this one, weighted by how explicitly each stated it. A corroboration signal rather than a driver of the ranking — at this corpus size it spans a narrow range, so recency and solution deficit dominate the score. The bar is scaled to the highest frequency on screen so gaps can be compared; the number is the true score."
           />
           <Meter
             label="Recency"

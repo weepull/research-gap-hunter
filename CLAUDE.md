@@ -220,13 +220,48 @@ class CrossDomainMatch(BaseModel):
 score = (0.40 × frequency_score) + (0.35 × recency_score) + (0.25 × solution_deficit_score)
 ```
 
-- `frequency_score` = papers_reporting_limitation / total_papers_in_domain
+- `frequency_score` = tier-weighted papers_reporting_limitation /
+  **papers_in_domain_reporting_any_limitation** (`_count_contributing_papers`).
+  Not `total_papers_in_domain` — changed 2026-09-28, see Phase 3 below.
 - `recency_score` = papers_last_2yr_reporting / papers_all_time_reporting
 - `solution_deficit_score` = 1 - (future_directions_addressing / papers_reporting),
   where "addressing" means same-domain **and** not authored by a paper that reports
   the limitation — see the decision below
 
-Seed-anchored union-find clustering groups similar limitation statements before scoring (HDBSCAN was the original design but was replaced — do not reintroduce it without an explicit advisor decision). Cluster representative text is used as `gap_description`.
+> ### The coefficients are not the influence — read this before citing "40/35/25"
+>
+> 0.40/0.35/0.25 are the coefficients. They are **not** how much each term moves
+> the ranking, and the gap is large enough that quoting the weights as if they
+> were is misleading:
+>
+> | term | coefficient | measured influence (CV / MI) |
+> |---|---:|---:|
+> | frequency | 0.40 | **9.2% / 10.0%** (by spread) · 5.7% / 3.7% (by sd) |
+> | recency | 0.35 | 52.9% / 52.5% · 51.9% / 60.9% |
+> | solution_deficit | 0.25 | 37.8% / 37.5% · 42.5% / 35.4% |
+>
+> The reason is range, not weighting: recency and deficit both span the full
+> [0, 1] on real data, while frequency spans ~0.04–0.19 (CV) because at this
+> corpus size a gap is reported by one to a handful of papers out of a few dozen.
+> **Deleting the frequency term entirely leaves the top 10 of both domains
+> unchanged.**
+>
+> This is documented rather than normalised away, by advisor decision (PLAN.md #4
+> rejected option 4B): rescaling terms to make coefficients match influence would
+> make every score relative to whatever else is in the result set, so adding one
+> paper would move every number with no change in evidence — destroying the
+> cross-run comparability the recency baseline below exists to guarantee.
+>
+> Refresh these figures with `python scripts/measure_weight_influence.py`.
+> Do not "fix" the discrepancy by reweighting; there has been no advisor decision
+> to change the coefficients.
+
+Seed-anchored clustering groups similar limitation statements before scoring, at a
+**per-domain threshold derived from the measured null distribution**, with a
+structural cap on cluster size (HDBSCAN was the original design but was replaced —
+do not reintroduce it without an explicit advisor decision). The cluster
+representative used as `gap_description` is the member **nearest the cluster's
+vector centroid**. Both of these changed on 2026-09-28; see Phases 2 and 4.
 
 ### Recency baseline — decided 2026-08-20
 
@@ -489,6 +524,68 @@ the coded 0.8987, so the coded value is currently *stricter* than its null — s
 but drifting. CV re-derives to 0.8784 against a coded 0.8773, and the cross-domain
 default to 0.8793 against a coded 0.8792. Both are effectively unchanged. Any
 revision needs its own advisor decision.
+
+### Phase 3 · #4 frequency denominator + honesty pass — DONE 2026-09-28
+
+**Decision: option 4A (fix the denominator) + 4C (document the real behaviour).
+Option 4B — normalisation — was rejected.**
+
+**4A.** `frequency_score` divided by `_count_papers_in_domain()`, every Paper node
+in the domain. But a paper that extracted no limitations cannot appear in any
+numerator, so the metric was the product of two unrelated things: how widely a
+limitation is reported, and how often extraction happened to succeed. On the
+curated corpus **22 of 31 CV papers and 54 of 85 MI papers contribute**, so every
+CV frequency was understated by ~29% and every MI frequency by ~36%.
+
+`_count_contributing_papers()` is now the denominator. It is kept as a separate
+function from `_count_papers_in_domain()` deliberately: a reader asking "how big
+is this corpus" wants every paper, a reader asking "what divides these scores"
+wants this one, and conflating them is exactly why the banner used to describe a
+number that was not the divisor.
+
+**4B was rejected and must not be reintroduced without a new decision.**
+Normalising the terms so their influence matches their coefficients would make
+each score relative to the result set: adding a single paper would move every
+number with no change in evidence. That destroys cross-run comparability, which
+is a deliberately-engineered property here (see the recency-baseline decision).
+
+**4C — what the measurement actually shows.** 4A helped but did not close the gap,
+exactly as the plan predicted. Frequency's influence went from 7.4% to **9.2%**
+(CV, by spread) against a nominal 40%. Deleting the term entirely still leaves the
+top 10 of both domains unchanged. The full table is in the Gap Scoring Formula
+section above and is refreshed by `scripts/measure_weight_influence.py`.
+
+**Do not read the residual discrepancy as an unfinished fix.** At n=31 (CV) a
+one-paper versus three-paper difference is not statistically meaningful — the
+Wilson 95% intervals overlap heavily — so a formula that largely ignores it is
+defensible, and the documentation was the thing that was wrong. Forcing frequency
+toward 40% of the influence would mean asserting a precision the corpus cannot
+support.
+
+**Honesty pass, everywhere the old claim appeared:**
+
+- `gap_scorer` module docstring and `compute_frequency_score` now state what the
+  term measures and that it is a weak corroboration signal.
+- `/corpus` reports **both** `papers` (corpus size) and
+  `papers_reporting_limitations` (the actual divisor).
+- `CorpusBanner` shows both, and renders "unavailable" rather than a confident
+  zero when Qdrant is unreachable.
+- `GapCard`'s meter is relabelled "Frequency (corroboration)" and its hint
+  describes the real denominator and the real influence.
+- `GapDetailSheet` said **"Frequency — 40% of the score"**, which was the
+  misleading claim in its most direct form. It now says the coefficient is 0.40
+  while the term accounts for roughly a tenth of what separates the gaps, and
+  notes that recency does most of the ordering and that deficit separates in
+  blocks because it saturates at 0 and 1.
+- `frontend/lib/api.ts` types now match the API, including the nullable counts
+  from Phase 0b.
+
+Related, still open and **not** addressed here: `PROJECT_HARDENING_PLAN.md` A9
+(the deficit metric is dimensionally incoherent — it divides a corpus-wide count
+of future directions by a cluster-local count of papers) and A4 (tier weights are
+undrived round numbers). A4's premise is now stale, incidentally: it says the
+whole corpus is `explicit` tier, but the live corpus is 28 explicit / 55
+conclusion / 44 inferred, so those weights are load-bearing rather than inert.
 
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 

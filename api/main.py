@@ -57,6 +57,7 @@ from pipeline.selfheal import (  # noqa: E402
 )
 from pipeline.gap_scorer import (  # noqa: E402
     GapResult,
+    _count_contributing_papers,
     _count_papers_in_domain,
     score_gaps,
 )
@@ -145,9 +146,19 @@ class IngestResponse(BaseModel):
 class CorpusInfo(BaseModel):
     """What the numbers on a results page were actually computed over.
 
-    `papers` is deliberately the Neo4j Paper count for the domain — the same
-    value that divides frequency_score — so the figure shown to a reader is the
-    one the scores were derived from, not a near-miss from another store.
+    Two paper counts, because they answer different questions and conflating them
+    is what made the previous banner describe a number that was not the divisor:
+
+    - `papers` — every Paper node in the domain. This is the corpus *size*, which
+      is what a reader asking "how big is this?" wants.
+    - `papers_reporting_limitations` — papers with at least one extracted
+      limitation. **This is what divides `frequency_score`** (PLAN.md #4). A paper
+      that extracted nothing cannot corroborate any gap, so including it in the
+      denominator made frequency the product of two unrelated things: how widely a
+      limitation is reported, and how often extraction succeeded.
+
+    The gap between them is large and worth showing: 31 CV papers of which 22
+    contribute, 85 MI papers of which 54 contribute on the curated corpus.
 
     `limitations` / `future_directions` are `None`, and `vectors_available` is
     False, when Qdrant cannot be reached. Previously any exception became `0`,
@@ -159,6 +170,7 @@ class CorpusInfo(BaseModel):
 
     domain: str
     papers: int | None
+    papers_reporting_limitations: int | None
     limitations: int | None
     future_directions: int | None
     last_updated: str | None
@@ -414,15 +426,18 @@ def corpus_info(domain: str = Query(default="computer_vision")) -> CorpusInfo:
     """Corpus size and freshness for a domain, so results can state their basis.
 
     Every results page shows this. A ranked gap list means something very
-    different over 46 papers than over 4,600, and a reader cannot judge the
-    output without knowing which it is.
+    different over 31 papers than over 3,100, and a reader cannot judge the output
+    without knowing which it is — nor without knowing that only 22 of those 31
+    contributed any limitation at all, which is what `papers_reporting_limitations`
+    is for.
     """
     graph_available = True
     try:
         papers = _count_papers_in_domain(domain)
+        contributing = _count_contributing_papers(domain)
     except Exception:  # noqa: BLE001 — report the outage rather than a false zero
         logger.warning("Neo4j unreachable while reading /corpus", exc_info=True)
-        papers, graph_available = None, False
+        papers, contributing, graph_available = None, None, False
 
     domain_filter = Filter(
         must=[FieldCondition(key="domain", match=MatchValue(value=domain))]
@@ -474,6 +489,7 @@ def corpus_info(domain: str = Query(default="computer_vision")) -> CorpusInfo:
     return CorpusInfo(
         domain=domain,
         papers=papers,
+        papers_reporting_limitations=contributing,
         limitations=limitations,
         future_directions=future_directions,
         last_updated=last_updated,

@@ -59,7 +59,7 @@ export default function GapDetailSheet({
             </h3>
             <div className="mt-3 space-y-2">
               <Meter
-                label="Frequency (relative)"
+                label="Frequency (corroboration)"
                 value={gap.frequency_score}
                 colorVar="--meter-frequency"
                 scaleMax={maxFrequency}
@@ -75,29 +75,55 @@ export default function GapDetailSheet({
 
             <dl className="mt-4 space-y-3 text-callout">
               <div>
-                <dt className="text-headline text-label">Frequency &mdash; 40% of the score</dt>
+                <dt className="text-headline text-label">
+                  Frequency &mdash; weighted 40%, but it moves the ranking far less
+                </dt>
                 <dd className="text-label-2">
-                  The share of the domain&rsquo;s papers reporting this
-                  limitation. Real values are small on a corpus this size, so
-                  the bar is drawn relative to the largest value on screen; the
-                  number beside it is always the true score.
+                  Of the papers in this domain that reported any limitation at
+                  all, the share reporting this one, weighted by how explicitly
+                  each stated it. Papers that extracted no limitations are
+                  excluded from the divisor, since they cannot corroborate
+                  anything.
+                  <br />
+                  <span className="text-label-3">
+                    Its coefficient is 0.40, but on a corpus this size the term
+                    only varies across a narrow range, so it accounts for
+                    roughly a tenth of what separates these gaps &mdash; read it
+                    as corroboration, not as the main driver. Recency and
+                    solution deficit do most of the ordering. The bar is drawn
+                    relative to the largest value on screen; the number beside
+                    it is always the true score.
+                  </span>
                 </dd>
               </div>
               <div>
-                <dt className="text-headline text-label">Recency &mdash; 35%</dt>
+                <dt className="text-headline text-label">Recency &mdash; weighted 35%</dt>
                 <dd className="text-label-2">
                   The proportion of reporting papers published in the two years
                   up to the newest paper in the corpus, not the current calendar
                   year.
+                  <br />
+                  <span className="text-label-3">
+                    This term spans its full range, so in practice it is the
+                    strongest influence on the order.
+                  </span>
                 </dd>
               </div>
               <div>
-                <dt className="text-headline text-label">Solution deficit &mdash; 25%</dt>
+                <dt className="text-headline text-label">
+                  Solution deficit &mdash; weighted 25%
+                </dt>
                 <dd className="text-label-2">
                   How little of the same domain proposes anything addressing it.
                   Future directions from the paper that raised the limitation
                   are excluded, since restating your own open problem is not a
                   solution to it.
+                  <br />
+                  <span className="text-label-3">
+                    Also spans its full range, and is frequently at 0 or 1 rather
+                    than in between, so it separates gaps in blocks rather than
+                    finely.
+                  </span>
                 </dd>
               </div>
             </dl>

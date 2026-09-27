@@ -79,17 +79,32 @@ export interface CrossDomainMatch {
 
 export interface CorpusInfo {
   domain: string;
-  papers: number;
-  limitations: number;
-  future_directions: number;
+  /** Every paper in the domain — the corpus SIZE. */
+  papers: number | null;
+  /**
+   * Papers with at least one extracted limitation. This is the value that
+   * divides `frequency_score`, which is NOT the same as the corpus size: a paper
+   * that extracted no limitations cannot corroborate any gap. Showing only
+   * `papers` described a number the scores were not computed against.
+   */
+  papers_reporting_limitations: number | null;
+  /** null when Qdrant is unreachable — distinct from a genuine 0. */
+  limitations: number | null;
+  future_directions: number | null;
   last_updated: string | null;
+  graph_available: boolean;
+  vectors_available: boolean;
 }
 
 export interface HealthResponse {
+  /** "ok" or "degraded" — derived from `services`, never asserted. */
   status: string;
-  papers: number;
-  limitations: number;
-  future_directions: number;
+  /** null when the backing store is unreachable, as opposed to genuinely empty. */
+  papers: number | null;
+  limitations: number | null;
+  future_directions: number | null;
+  /** Per-dependency state: "ok" | "absent" | "unreachable". */
+  services: Record<string, string>;
 }
 
 export interface ExplainResponse {

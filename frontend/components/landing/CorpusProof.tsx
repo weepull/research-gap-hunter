@@ -39,7 +39,9 @@ export default function CorpusProof() {
 
   if (failed) return null;
 
-  const formatted = (n: number) => n.toLocaleString();
+  // Counts are null when the store behind them is unreachable, which must read
+  // as "unknown" rather than as a confident zero (PLAN.md #6).
+  const formatted = (n: number | null) => (n === null ? "—" : n.toLocaleString());
   const asOf = (iso: string | null) =>
     iso
       ? new Date(iso).toLocaleDateString(undefined, {
@@ -78,10 +80,15 @@ export default function CorpusProof() {
                   </span>
                 )}
               </div>
-              <div className="mt-5 grid grid-cols-3 gap-4">
+              <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <Stat
                   value={info ? formatted(info.papers) : ""}
                   label="Papers"
+                  loading={!info}
+                />
+                <Stat
+                  value={info ? formatted(info.papers_reporting_limitations) : ""}
+                  label="Reporting a limitation"
                   loading={!info}
                 />
                 <Stat

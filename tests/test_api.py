@@ -261,8 +261,12 @@ def test_health_verifies_connectivity_rather_than_just_constructing_a_driver(mon
 # ---------------------------------------------------------------------------
 
 
-def _patch_corpus_backends(monkeypatch, papers=46, lim=64, fd=34, last="2026-08-23T01:00:00+00:00"):
+def _patch_corpus_backends(
+    monkeypatch, papers=31, contributing=22, lim=48, fd=24,
+    last="2026-08-23T01:00:00+00:00",
+):
     monkeypatch.setattr("api.main._count_papers_in_domain", lambda domain: papers)
+    monkeypatch.setattr("api.main._count_contributing_papers", lambda domain: contributing)
     qdrant = MagicMock()
     qdrant.count.side_effect = lambda collection_name, **kw: types.SimpleNamespace(
         count=lim if collection_name == "limitations" else fd
@@ -285,32 +289,74 @@ def test_corpus_reports_domain_size_and_freshness(client, monkeypatch):
     body = r.json()
     assert body == {
         "domain": "computer_vision",
-        "papers": 46,
-        "limitations": 64,
-        "future_directions": 34,
+        "papers": 31,
+        "papers_reporting_limitations": 22,
+        "limitations": 48,
+        "future_directions": 24,
         "last_updated": "2026-08-23T01:00:00+00:00",
         "graph_available": True,
         "vectors_available": True,
     }
 
 
-def test_corpus_paper_count_matches_the_scoring_denominator(client, monkeypatch):
-    """`papers` must come from the same source frequency_score divides by.
+def test_corpus_reports_the_real_scoring_denominator(client, monkeypatch):
+    """`papers_reporting_limitations` must be the value frequency_score divides by.
 
-    Reporting the SQLite total instead would show a number the scores were not
-    actually computed against — the whole point of the banner is that it is the
-    real denominator.
+    Rewritten from test_corpus_paper_count_matches_the_scoring_denominator, which
+    asserted that `papers` was the denominator. That was true and is no longer:
+    the divisor is now the papers that extracted at least one limitation (PLAN.md
+    #4), because a paper that extracted nothing cannot corroborate a gap and was
+    only ever diluting the metric. Both numbers are reported, and this test pins
+    which one is which — the banner's promise is that the divisor is visible, not
+    that it is the corpus size.
     """
     _patch_corpus_backends(monkeypatch)
-    seen = []
+    size_seen, denominator_seen = [], []
     monkeypatch.setattr(
-        "api.main._count_papers_in_domain", lambda domain: seen.append(domain) or 99
+        "api.main._count_papers_in_domain", lambda domain: size_seen.append(domain) or 99
+    )
+    monkeypatch.setattr(
+        "api.main._count_contributing_papers",
+        lambda domain: denominator_seen.append(domain) or 70,
     )
 
     r = client.get("/corpus?domain=medical_imaging")
 
-    assert r.json()["papers"] == 99
-    assert seen == ["medical_imaging"]
+    body = r.json()
+    assert body["papers"] == 99, "corpus size is every Paper node in the domain"
+    assert body["papers_reporting_limitations"] == 70, "the divisor is the contributing count"
+    assert size_seen == ["medical_imaging"]
+    assert denominator_seen == ["medical_imaging"]
+
+
+def test_score_gaps_divides_by_contributing_papers_not_domain_size(monkeypatch):
+    """score_gaps must call _count_contributing_papers for its denominator.
+
+    Fails against pre-fix code, which called _count_papers_in_domain — so every
+    frequency was multiplied by the extraction success rate (43% of CV papers and
+    38% of MI papers extracted no limitations).
+    """
+    import pipeline.gap_scorer as gs
+
+    monkeypatch.setattr(
+        gs, "get_all_limitations",
+        lambda domain: [
+            {"text": "a limitation", "paper_ids": ["p1"], "years": [2025], "tiers": ["explicit"]}
+        ],
+    )
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [lims])
+    monkeypatch.setattr(gs, "_find_addressing_solutions", lambda *a, **k: [])
+
+    def must_not_be_the_denominator(domain):
+        raise AssertionError("score_gaps must not divide by the domain's total paper count")
+
+    monkeypatch.setattr(gs, "_count_papers_in_domain", must_not_be_the_denominator)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 4)
+
+    gaps = gs.score_gaps(domain="computer_vision", top_n=5)
+
+    # one explicit-tier paper over 4 contributing papers
+    assert gaps[0].frequency_score == pytest.approx(0.25)
 
 
 def test_corpus_counts_are_domain_filtered(client, monkeypatch):

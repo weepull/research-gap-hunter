@@ -5,6 +5,21 @@ semantically-similar limitations into clusters via Qdrant similarity, and scores
 each cluster with the weighted formula from CLAUDE.md:
 
     score = 0.40*frequency + 0.35*recency + 0.25*solution_deficit
+
+**What those weights do and do not mean.** They are the coefficients, not the
+observed influence on the ranking. `recency` and `solution_deficit` both span the
+full [0, 1] interval on real data; `frequency` spans a small fraction of it,
+because at this corpus size a gap is reported by one to a handful of papers out of
+a few dozen. So the ordering is dominated by recency and deficit, and frequency
+acts as a weak corroboration signal rather than the largest term. The measured
+figures are recorded in CLAUDE.md and refreshed by
+scripts/measure_weight_influence.py.
+
+This is deliberately documented rather than corrected by normalisation: rescaling
+terms to make the coefficients match their influence (PLAN.md #4 option 4B) would
+make every score relative to whatever else is in the result set, so adding one
+paper would move every number with no change in evidence — destroying the
+cross-run comparability _corpus_reference_year exists to guarantee.
 """
 
 import logging
@@ -359,11 +374,32 @@ def _query_neighbours(
 
 
 def compute_frequency_score(cluster: list[dict], total_papers: int) -> float:
-    """Tier-weighted fraction of domain papers reporting any limitation in this cluster.
+    """Tier-weighted share of *contributing* papers reporting a limitation in this cluster.
 
     Each unique paper contributes its tier weight (explicit=1.0, conclusion=0.75,
     inferred=0.5; default 1.0 when tier is missing). frequency_score = sum of those
-    weights / total_papers_in_domain, capped at 1.0.
+    weights / total_papers, capped at 1.0.
+
+    `total_papers` is supplied by the caller and **must be the number of papers
+    that could possibly appear in a numerator** — i.e. papers with at least one
+    extracted limitation (`_count_contributing_papers`), not every Paper node in
+    the domain. score_gaps passes the former. Using the latter, as this did until
+    2026-09-28, silently multiplied the metric by the extraction success rate:
+    43% of CV papers and 38% of MI papers extracted no limitations at all, so they
+    could only ever dilute. See PLAN.md #4.
+
+    **Read this term as a weak corroboration signal, not as a driver of the
+    ranking.** Even after the denominator fix its dynamic range is far narrower
+    than recency's or solution-deficit's, both of which span the full unit
+    interval, so its measured influence on the ordering is nowhere near its
+    nominal 0.40 weight. The honest reading of a frequency_score is "how many
+    papers, out of those that said anything, said this" — at this corpus size that
+    is a count of one to a handful, and the 95% confidence intervals of a
+    one-paper and a three-paper gap overlap heavily. The composite score is
+    dominated by recency and deficit; that is a property of the data, not a bug,
+    and it is documented rather than normalised away (option 4B was rejected,
+    because normalising would make scores relative to the result set and destroy
+    the cross-run comparability _corpus_reference_year exists to protect).
     """
     if total_papers <= 0:
         return 0.0
@@ -461,7 +497,9 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
     if not limitations:
         return []
 
-    total_papers = _count_papers_in_domain(domain)
+    # The frequency denominator is the papers that could appear in a numerator,
+    # not every paper in the domain — see _count_contributing_papers (PLAN.md #4).
+    total_papers = _count_contributing_papers(domain)
     clusters = cluster_limitations(limitations, domain=domain)
 
     # One corpus-wide baseline for every cluster. Deriving it per-cluster would be
@@ -615,8 +653,45 @@ def _find_addressing_solutions(
     return solutions
 
 
+def _count_contributing_papers(domain: str) -> int:
+    """Papers in `domain` with at least one extracted limitation.
+
+    This is the frequency denominator. The population a frequency is a fraction
+    *of* has to be the population that could appear in its numerator; a paper that
+    extracted no limitations cannot corroborate any gap, so counting it makes
+    `frequency_score` the product of two unrelated things — how widely a
+    limitation is reported, and how often extraction succeeded.
+
+    Measured on the curated corpus: 31 CV papers of which 22 contribute, and 85 MI
+    papers of which 54 contribute. Dividing by 31 and 85 understated every CV
+    frequency by ~29% and every MI frequency by ~36%.
+
+    Kept separate from _count_papers_in_domain, which /corpus still reports as the
+    corpus size — a reader asking "how big is this corpus" wants every paper, and
+    a reader asking "what divides these scores" wants this. Conflating them is why
+    the banner previously described a number that was not the divisor.
+    """
+    driver = get_neo4j_driver()
+    with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
+        result = session.run(
+            """
+            MATCH (p:Paper {domain: $domain})-[:REPORTS_LIMITATION]->(:Limitation)
+            RETURN count(DISTINCT p) AS n
+            """,
+            domain=domain,
+        )
+        record = result.single()
+        count = record["n"] if record else 0
+    driver.close()
+    return count
+
+
 def _count_papers_in_domain(domain: str) -> int:
-    """Return the total number of Paper nodes in the given domain."""
+    """Return the total number of Paper nodes in the given domain.
+
+    This is the corpus *size* for a domain, reported by /corpus. It is deliberately
+    **not** the frequency denominator — see _count_contributing_papers.
+    """
     driver = get_neo4j_driver()
     with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
         result = session.run(

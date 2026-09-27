@@ -413,6 +413,83 @@ Note the incidental knock-on: the CV corpus reference year moved 2025 → 2024,
 because the removed control-theory paper was the newest CV paper reporting a
 limitation. That is `_corpus_reference_year` behaving as designed.
 
+### Phase 2 · #3 cluster threshold + domain filter — DONE 2026-09-28
+
+**Decision: option 3A (per-domain null p95) + the structural cap from 3C.**
+
+`_CLUSTER_THRESHOLD = 0.86` was never derived. Its comment justified it by
+sitting "well above the median" of corpus similarities — but the median of a
+*noise* distribution is not a bar. That is the identical error this project had
+already found and corrected for the cross-domain threshold ("0.82 sat below the
+median of pure noise"), and the correction was applied to `_SOLUTION_THRESHOLDS`
+and `find_cross_domain_matches` and **never to the threshold that decides what a
+gap is**. There was no item for it in `PROJECT_HARDENING_PLAN.md` either.
+
+Derived **after** the domain filter landed and **after** Phase 1's curation, as
+required — deriving earlier would have measured a contaminated population:
+
+| | measured null p95 | n pairs | was |
+|---|---:|---:|---:|
+| `_CLUSTER_THRESHOLDS["computer_vision"]` | **0.8769** | 1,128 | 0.86 |
+| `_CLUSTER_THRESHOLDS["medical_imaging"]` | **0.8954** | 5,565 | 0.86 |
+
+Against the old 0.86: 10.9% of arbitrary CV pairs and **28.3% of arbitrary MI
+pairs** cleared it. At a ~28% per-pair noise rate a long generic seed absorbs a
+quarter of its domain directly.
+
+`scripts/derive_thresholds.py` is new and is now the canonical re-derivation tool
+— the accepted A1/A2 method had no script, only prose. It reports all three
+populations and **filters by domain**, because deriving a within-domain null from
+an unfiltered scan mixes in cross-domain pairs.
+
+**Measured effect — the mega-cluster is gone.**
+
+| | before | after |
+|---|---|---|
+| MI largest cluster | 52 of 104 (**50%**) | 16 of 106 (**15%**) |
+| MI clusters | 24 | 54 |
+| CV largest cluster | 9 | 5 (10%) |
+| CV clusters | 27 | 28 |
+
+Clusters still partition their input exactly (48 = 48, 106 = 106).
+
+**Be honest about which half did the work: the cap never fires on this corpus.**
+CV's largest cluster is 5 against a cap of 10; MI's is 16 against a cap of 22. The
+derived threshold alone destroyed the mega-cluster. The cap is a structural guard
+against regrowth as the corpus scales — a percentile threshold bounds the error
+per *pair*, and the expected number of chance members in a cluster grows with
+corpus size — not an active fix today. Do not conclude from the numbers above that
+the cap is load-bearing right now, and do not remove it on the grounds that it
+never triggers.
+
+**Cap semantics.** `_MAX_CLUSTER_SHARE = 0.20` with `_MIN_CLUSTER_CAP = 2` (20% of
+8 limitations is 2, and a cap of 1 would forbid clustering entirely — a degeneracy
+guard, not a dial). An over-cap cluster **splits**: candidates are admitted in
+descending similarity so the tightest subgroup stays with the seed, and the
+remainder is left unassigned to re-seed its own cluster in the same pass. Nothing
+is ever dropped.
+
+**The neighbour query is now domain-filtered.** `_query_neighbours` was the only
+filtered query in the project that sent no filter, while asking for
+`limit=len(limitations)` from a collection holding every domain. Measured
+pre-fix: a mean **42 of every 64** CV hits were other-domain points, fetched and
+discarded client-side, evicting genuine same-domain neighbours from the window —
+three above-threshold CV pairs were lost that way, and the loss grew with the
+other domain's size.
+
+**Docstring correction.** `cluster_limitations` claimed seed-anchoring "prevents
+transitive A→B→C chains from collapsing unrelated limitations into one giant
+cluster". Seed-anchoring does remove the *chain* mechanism, but the giant cluster
+happened anyway by a different route — a generic seed absorbing a quarter of the
+domain directly. The claim was false as written and now says so.
+
+**Noted, not changed** (outside this phase's mandate): re-derived on the curated
+corpus, `_SOLUTION_THRESHOLDS["medical_imaging"]` would now be 0.8915 rather than
+the coded 0.8987, so the coded value is currently *stricter* than its null — safe,
+but drifting. CV re-derives to 0.8784 against a coded 0.8773, and the cross-domain
+default to 0.8793 against a coded 0.8792. Both are effectively unchanged. Any
+revision needs its own advisor decision.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

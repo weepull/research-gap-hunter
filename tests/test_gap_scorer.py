@@ -282,7 +282,7 @@ def test_score_gaps_anchors_recency_to_corpus_not_wall_clock(monkeypatch):
     )
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
     monkeypatch.setattr(
-        gs, "cluster_limitations", lambda lims: [recent, mid, stale]
+        gs, "cluster_limitations", lambda lims, domain=None: [recent, mid, stale]
     )
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
@@ -304,7 +304,7 @@ def test_score_gaps_recency_baseline_is_corpus_wide_not_per_cluster(monkeypatch)
     )
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
     monkeypatch.setattr(
-        gs, "cluster_limitations", lambda lims: [recent, stale]
+        gs, "cluster_limitations", lambda lims, domain=None: [recent, stale]
     )
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
@@ -558,7 +558,7 @@ def test_score_gaps_display_solutions_match_scored_solutions(monkeypatch):
     cluster = [{"text": "an open gap", "paper_ids": ["p1"], "years": [2025]}]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
-    monkeypatch.setattr(gs, "cluster_limitations", lambda lims: [cluster])
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
 
     hits = [
         _make_fd_hit("p1's own future work", 0.95, paper_ids=["p1"]),
@@ -578,7 +578,7 @@ def test_score_gaps_threads_domain_into_solution_search(monkeypatch):
     cluster = [{"text": "an open gap", "paper_ids": ["p1"], "years": [2025]}]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
-    monkeypatch.setattr(gs, "cluster_limitations", lambda lims: [cluster])
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     client = _make_qdrant_query_mock([])
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
 
@@ -599,7 +599,7 @@ def test_cluster_limitations_empty_input():
 
 
 def test_cluster_limitations_groups_similar(monkeypatch):
-    """Limitations scoring >= 0.86 against the seed collapse into one cluster."""
+    """Limitations scoring >= the domain threshold against the seed collapse into one cluster."""
     lims = [
         # Longest text → picked as seed first.
         {"text": "convergence is slow on long sequences", "paper_ids": ["a"], "years": [2024]},
@@ -619,7 +619,7 @@ def test_cluster_limitations_groups_similar(monkeypatch):
 
 
 def test_cluster_limitations_singletons_below_threshold(monkeypatch):
-    """Limitations whose neighbours all score below 0.86 stay as singleton clusters."""
+    """Limitations whose neighbours all score below the domain threshold stay singletons."""
     lims = [
         {"text": "slow convergence", "paper_ids": ["a"], "years": [2024]},
         {"text": "high memory use", "paper_ids": ["b"], "years": [2024]},
@@ -759,7 +759,7 @@ def test_score_gaps_formula_weights(monkeypatch):
     cluster = [{"text": "slow training", "paper_ids": ["a"], "years": [2024]}]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 5)
-    monkeypatch.setattr(gs, "cluster_limitations", lambda lims: [cluster])
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     monkeypatch.setattr(gs, "compute_frequency_score", lambda c, t: 0.6)
     monkeypatch.setattr(gs, "compute_recency_score", lambda c, current_year=2024: 0.4)
     monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.8)
@@ -782,7 +782,7 @@ def test_score_gaps_returns_sorted_list(monkeypatch):
 
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": c_low + c_high)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 4)
-    monkeypatch.setattr(gs, "cluster_limitations", lambda lims: [c_low, c_high])
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [c_low, c_high])
     monkeypatch.setattr(gs, "compute_frequency_score", lambda c, t: 0.9 if c is c_high else 0.1)
     monkeypatch.setattr(gs, "compute_recency_score", lambda c, current_year=2024: 0.5)
     monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.5)
@@ -803,7 +803,7 @@ def test_score_gaps_respects_top_n(monkeypatch):
     flat = [c[0] for c in clusters]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": flat)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 5)
-    monkeypatch.setattr(gs, "cluster_limitations", lambda lims: clusters)
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: clusters)
     # avoid Qdrant: no addressing solutions => deficit computed without network
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
@@ -821,7 +821,7 @@ def test_score_gaps_uses_most_frequent_text_as_description(monkeypatch):
     ]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
-    monkeypatch.setattr(gs, "cluster_limitations", lambda lims: [cluster])
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
 
     results = score_gaps()
@@ -836,7 +836,7 @@ def test_score_gaps_collects_proposed_solutions(monkeypatch):
     cluster = [{"text": "needs solving", "paper_ids": ["a"], "years": [2024]}]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
     monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
-    monkeypatch.setattr(gs, "cluster_limitations", lambda lims: [cluster])
+    monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.0)
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: ["try approach X"])
 
@@ -870,3 +870,152 @@ def test_gap_result_model_accepts_full_payload():
     assert gap.score == 0.5
     assert gap.supporting_papers == ["a"]
     assert gap.proposed_solutions == ["b"]
+
+
+# ---------------------------------------------------------------------------
+# Cluster threshold derivation and the size cap — PLAN.md #3
+# ---------------------------------------------------------------------------
+
+
+def test_cluster_thresholds_are_per_domain_and_above_their_nulls():
+    """Each domain's threshold must be its own measured null p95, not a shared guess.
+
+    Fails against pre-fix code, which had a single undrived _CLUSTER_THRESHOLD of
+    0.86 — below both domains' null p95 (CV 0.8769, MI 0.8954), so 10.9% of
+    arbitrary CV pairs and 28.3% of arbitrary MI pairs cleared it.
+    """
+    from pipeline.gap_scorer import _CLUSTER_THRESHOLDS, _cluster_threshold
+
+    assert set(_CLUSTER_THRESHOLDS) == {"computer_vision", "medical_imaging"}
+    for domain, value in _CLUSTER_THRESHOLDS.items():
+        assert _cluster_threshold(domain) == value
+        assert value > 0.86, (
+            f"{domain} threshold {value} is at or below the old undrived 0.86, "
+            "which sat beneath this population's noise floor"
+        )
+
+
+def test_unmeasured_domain_falls_back_to_the_strictest_threshold():
+    """Guessing low would silently merge unrelated limitations; guessing high only fragments."""
+    from pipeline.gap_scorer import _CLUSTER_THRESHOLDS, _cluster_threshold
+
+    assert _cluster_threshold("a_domain_with_no_measured_null") == max(
+        _CLUSTER_THRESHOLDS.values()
+    )
+
+
+@pytest.mark.parametrize(
+    "total,expected",
+    [(0, 2), (1, 2), (2, 2), (5, 2), (10, 2), (48, 10), (104, 21), (106, 22), (200, 40)],
+)
+def test_cluster_cap_is_a_share_with_a_floor(total, expected):
+    """20% of the domain, rounded up, but never below 2.
+
+    A cap of 1 would mean "no clusters may exist", so the floor is a degeneracy
+    guard rather than a tuning dial.
+    """
+    from pipeline.gap_scorer import _cluster_cap
+
+    assert _cluster_cap(total) == expected
+
+
+def test_oversized_cluster_splits_instead_of_truncating(monkeypatch):
+    """Members past the cap must re-seed their own clusters, never be dropped.
+
+    Fails against pre-fix code, which had no cap at all: 52 of 104 medical-imaging
+    limitations landed in a single cluster reported as one gap "supported by" 33
+    papers.
+    """
+    from pipeline.gap_scorer import _cluster_cap, cluster_limitations
+
+    # 10 limitations -> cap 2, so a seed may keep exactly one other member.
+    lims = [
+        {"text": f"limitation number {i} about a closely related failure mode",
+         "paper_ids": [f"p{i}"], "years": [2024], "tiers": ["explicit"]}
+        for i in range(10)
+    ]
+    assert _cluster_cap(len(lims)) == 2
+
+    # Every limitation is highly similar to every other, so without a cap the
+    # first seed would absorb all ten.
+    all_hits = [
+        [_make_hit(lim["text"], 0.99 - 0.001 * j) for j, lim in enumerate(lims)]
+        for _ in lims
+    ]
+    client = _make_qdrant_batch_mock(all_hits)
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    clusters = cluster_limitations(lims, domain="computer_vision")
+
+    assert all(len(c) <= 2 for c in clusters), [len(c) for c in clusters]
+    flattened = [m["text"] for c in clusters for m in c]
+    assert len(flattened) == len(lims), "a split must re-seed, not truncate"
+    assert sorted(flattened) == sorted(l["text"] for l in lims)
+
+
+def test_cluster_admits_the_most_similar_candidates_first(monkeypatch):
+    """When the cap binds, the tightest subgroup stays with the seed."""
+    from pipeline.gap_scorer import cluster_limitations
+
+    lims = [
+        {"text": "a seed limitation with the longest text of the group here",
+         "paper_ids": ["p0"], "years": [2024], "tiers": ["explicit"]},
+        {"text": "barely similar", "paper_ids": ["p1"], "years": [2024], "tiers": ["explicit"]},
+        {"text": "extremely similar", "paper_ids": ["p2"], "years": [2024], "tiers": ["explicit"]},
+    ]
+    # cap for 3 limitations is 2, so exactly one of the two candidates is admitted.
+    seed_hits = [
+        _make_hit(lims[1]["text"], 0.8800),   # clears the CV threshold, but lower
+        _make_hit(lims[2]["text"], 0.9500),   # much closer to the seed
+    ]
+    client = _make_qdrant_batch_mock([seed_hits, [], []])
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+
+    clusters = cluster_limitations(lims, domain="computer_vision")
+    seed_cluster = next(c for c in clusters if c[0]["text"] == lims[0]["text"])
+
+    assert len(seed_cluster) == 2
+    assert seed_cluster[1]["text"] == "extremely similar", (
+        "the cap must keep the most similar candidate, not whichever Qdrant returned first"
+    )
+
+
+def test_neighbour_query_sends_a_domain_filter(monkeypatch):
+    """The neighbour query must narrow by domain server-side.
+
+    Fails against pre-fix code, which sent no filter — the only filtered query in
+    the project that didn't — so a mean 42 of every 64 CV hits were other-domain
+    points that were fetched, discarded, and crowded genuine same-domain
+    neighbours out of the limit window.
+    """
+    from pipeline.gap_scorer import _query_neighbours
+
+    captured = {}
+
+    class Client:
+        def query_batch_points(self, collection_name, requests):
+            captured["requests"] = requests
+            return [MagicMock(points=[]) for _ in requests]
+
+    _query_neighbours(Client(), [[0.1] * 768], limit=5, domain="medical_imaging")
+
+    request = captured["requests"][0]
+    assert request.filter is not None, "no domain filter was sent"
+    condition = request.filter.must[0]
+    assert condition.key == "domain"
+    assert condition.match.value == "medical_imaging"
+
+
+def test_neighbour_query_without_a_domain_sends_no_filter():
+    """The parameter is optional so standalone/diagnostic calls can scan everything."""
+    from pipeline.gap_scorer import _query_neighbours
+
+    captured = {}
+
+    class Client:
+        def query_batch_points(self, collection_name, requests):
+            captured["requests"] = requests
+            return [MagicMock(points=[]) for _ in requests]
+
+    _query_neighbours(Client(), [[0.1] * 768], limit=5)
+    assert captured["requests"][0].filter is None

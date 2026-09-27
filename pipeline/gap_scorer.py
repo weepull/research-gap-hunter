@@ -28,9 +28,62 @@ from vectors.embed import (
 logger = logging.getLogger(__name__)
 
 # Similarity threshold for grouping two limitation statements into one cluster.
-# Specter2-base pairwise similarities on this corpus are compressed (median ~0.82),
-# so the threshold sits well above the median to keep clusters tight.
-_CLUSTER_THRESHOLD = 0.86
+#
+# Per-domain 95th percentile of the *null distribution* — the similarity that
+# arbitrary same-domain (limitation, limitation) pairs reach by chance, measured
+# over every such pair in the corpus using the stored Specter2 vectors. Derived by
+# scripts/derive_thresholds.py; re-run it after significant ingestion.
+#
+# Advisor decision, 2026-09-28 (PLAN.md #3, option 3A). The previous single 0.86
+# was never derived at all. Its justification was that it "sits well above the
+# median" — but the median of a *noise* distribution is not a bar, and using it as
+# one is the exact error this project already identified and corrected for the
+# cross-domain threshold ("0.82 sat below the median of pure noise"). That
+# correction was applied to _SOLUTION_THRESHOLDS and to find_cross_domain_matches
+# and never to the threshold that decides what a gap *is*.
+#
+# Measured against 0.86 on the pre-curation corpus: 10.9% of arbitrary CV pairs
+# and 28.3% of arbitrary MI pairs cleared it. At a ~28% per-pair noise rate a long
+# generic seed absorbs a quarter of its domain by chance, which is how 52 of 104
+# medical-imaging limitations ended up in one "gap" labelled with a sentence about
+# convolution kernel sizes while containing unrelated statements about stain
+# normalisation and FC-layer matrix sizes.
+#
+# NOTE these are not comparable to _SOLUTION_THRESHOLDS below. They measure
+# different pair populations (limitation x limitation vs limitation x
+# future-direction) and the numbers must never be reasoned about side by side —
+# doing so is what made 0.85 "look conservative" next to 0.86.
+_CLUSTER_THRESHOLDS = {
+    "computer_vision": 0.8769,   # null p95 over n=1,128 pairs (mean 0.8228, p50 0.8238)
+    "medical_imaging": 0.8954,   # null p95 over n=5,565 pairs (mean 0.8401, p50 0.8406)
+}
+
+
+def _cluster_threshold(domain: str) -> float:
+    """The clustering threshold for a domain.
+
+    An unmeasured domain falls back to the strictest known floor, matching
+    _solution_threshold's reasoning: guessing low silently merges unrelated
+    limitations in a domain whose null was never measured, which corrupts every
+    downstream score. Guessing high only fragments clusters, which is visible in
+    the output as more single-paper gaps and is recoverable.
+    """
+    return _CLUSTER_THRESHOLDS.get(domain, max(_CLUSTER_THRESHOLDS.values()))
+
+
+# No cluster may hold more than this share of its domain's limitations
+# (PLAN.md #3, the structural half of the decision — option 3C).
+#
+# A percentile threshold bounds the per-*pair* error rate; it does nothing about
+# the per-*cluster* outcome, because a seed is compared against every candidate
+# and the expected number of chance members therefore grows with the corpus. The
+# cap is what actually prevents one cluster from becoming half a domain, and it
+# fails loudly by splitting rather than quietly by truncating.
+_MAX_CLUSTER_SHARE = 0.20
+# Floor so a small domain is not forbidden from clustering at all: 20% of 8
+# limitations is 2, and a cap of 1 would mean "no clusters exist". This is a
+# degeneracy guard, not a tuning dial.
+_MIN_CLUSTER_CAP = 2
 # Similarity thresholds for deciding a FutureDirection "addresses" a Limitation.
 #
 # Per-domain 95th percentile of the *null distribution* — the similarity that
@@ -117,18 +170,56 @@ def get_all_limitations(domain: str = "computer_vision") -> list[dict]:
     return records
 
 
-def cluster_limitations(limitations: list[dict]) -> list[list[dict]]:
+def _cluster_cap(total_limitations: int) -> int:
+    """Largest cluster permitted in a domain of this size.
+
+    See _MAX_CLUSTER_SHARE. Ceiling rather than floor so the cap is never *below*
+    the share, and floored at _MIN_CLUSTER_CAP so a small domain can still form
+    clusters at all.
+    """
+    if total_limitations <= 0:
+        return _MIN_CLUSTER_CAP
+    share_cap = -(-int(total_limitations) * int(_MAX_CLUSTER_SHARE * 100) // 100)
+    return max(_MIN_CLUSTER_CAP, share_cap)
+
+
+def cluster_limitations(
+    limitations: list[dict], domain: str = "computer_vision"
+) -> list[list[dict]]:
     """Group semantically-similar limitations via seed-anchored direct grouping.
 
     All limitation texts are embedded in one batched Specter2 call and their
     Qdrant neighbours fetched up front (one batched query when the client
-    supports it). Limitations are then visited longest-text-first (a proxy for
-    specificity): each unassigned limitation seeds a new cluster and pulls in
-    only the still-unassigned limitations whose similarity *to the seed itself*
-    is at or above _CLUSTER_THRESHOLD (0.86). Anchoring membership to the seed
-    — rather than to any member, as the previous union-find did — prevents
-    transitive A→B→C chains from collapsing unrelated limitations into one
-    giant cluster. Assigned limitations never join a second cluster.
+    supports it), **filtered to `domain`**. Limitations are then visited
+    longest-text-first (a proxy for specificity): each unassigned limitation
+    seeds a new cluster and pulls in the still-unassigned limitations whose
+    similarity *to the seed itself* is at or above the domain's derived
+    threshold, taking the **most similar first** and stopping at the size cap.
+    Assigned limitations never join a second cluster.
+
+    Two guards, both added 2026-09-28 (PLAN.md #3):
+
+    **The neighbour query is domain-filtered.** It previously was not — the only
+    filtered query in the project that wasn't — while asking for
+    ``limit=len(limitations)`` from a collection holding every domain. Measured on
+    the pre-curation corpus: a mean 42 of every 64 CV hits were other-domain
+    points that were fetched, discarded, and crowded genuine same-domain
+    neighbours out of the window entirely. Three above-threshold CV pairs were
+    lost that way, and the loss grew with the other domain's size.
+
+    **Cluster size is capped, and an over-cap cluster splits rather than
+    truncating.** Candidates are considered in descending similarity, so the
+    tightest subgroup stays with the seed; everything past the cap is simply left
+    unassigned and re-seeds its own cluster later in the same pass. Nothing is
+    dropped — the clusters always partition the input exactly. Truncating instead
+    would silently delete limitations from the corpus's own accounting.
+
+    A note on why the threshold alone was not enough. Seed-anchoring does remove
+    the transitive A→B→C chain mechanism, and the previous docstring claimed that
+    therefore "prevents ... one giant cluster". It does not: at a per-pair noise
+    rate of ~28% a long generic seed absorbs a quarter of its domain *directly*,
+    which is how 52 of 104 medical-imaging limitations became one cluster. The
+    percentile threshold bounds the error per pair; the cap bounds the outcome.
 
     Singleton clusters are valid output and are never discarded. There is no
     minimum-size filter: a `min_cluster_size` parameter used to be declared here
@@ -155,7 +246,12 @@ def cluster_limitations(limitations: list[dict]) -> list[list[dict]]:
     for i, lim in enumerate(limitations):
         text_to_idx.setdefault(lim["text"], i)
 
-    neighbours = _query_neighbours(client, vectors, limit=len(limitations))
+    neighbours = _query_neighbours(
+        client, vectors, limit=len(limitations), domain=domain
+    )
+
+    threshold = _cluster_threshold(domain)
+    cap = _cluster_cap(len(limitations))
 
     # Longest text first: more specific statements make better cluster seeds.
     seed_order = sorted(
@@ -164,37 +260,86 @@ def cluster_limitations(limitations: list[dict]) -> list[list[dict]]:
 
     assigned = [False] * len(limitations)
     clusters: list[list[dict]] = []
+    split_count = 0
     for seed in seed_order:
         if assigned[seed]:
             continue
         assigned[seed] = True
         member_idxs = [seed]
+
+        # Gather every eligible candidate first, then admit the most similar up to
+        # the cap. Taking them in hit order instead would make membership depend
+        # on Qdrant's return order rather than on similarity.
+        candidates: list[tuple[float, int]] = []
         for hit in neighbours[seed]:
             # hit.score is cosine similarity against the seed's own vector, so
             # this threshold anchors membership to the seed, not to other members.
-            if hit.score < _CLUSTER_THRESHOLD:
+            if hit.score < threshold:
                 continue
             j = text_to_idx.get(hit.payload.get("limitation_text", ""))
-            if j is None or assigned[j]:
+            if j is None or j == seed or assigned[j]:
                 continue
+            candidates.append((float(hit.score), j))
+        candidates.sort(key=lambda pair: pair[0], reverse=True)
+
+        admitted = candidates[: max(0, cap - 1)]
+        if len(candidates) > len(admitted):
+            split_count += 1
+            logger.info(
+                "Cluster cap %d reached in %s: seed %r kept the %d most similar of "
+                "%d eligible members; the remaining %d re-seed their own clusters.",
+                cap,
+                domain,
+                texts[seed][:60],
+                len(admitted),
+                len(candidates),
+                len(candidates) - len(admitted),
+            )
+        for _score, j in admitted:
             assigned[j] = True
             member_idxs.append(j)
+
         clusters.append([limitations[k] for k in member_idxs])
 
+    if split_count:
+        logger.info(
+            "%s: %d cluster(s) hit the %d-member cap (%.0f%% of %d limitations) and split.",
+            domain,
+            split_count,
+            cap,
+            _MAX_CLUSTER_SHARE * 100,
+            len(limitations),
+        )
     return clusters
 
 
-def _query_neighbours(client, vectors: list[list[float]], limit: int) -> list[list]:
+def _query_neighbours(
+    client, vectors: list[list[float]], limit: int, domain: str | None = None
+) -> list[list]:
     """Fetch each vector's neighbours from the 'limitations' collection.
 
     Uses Qdrant's batch query endpoint (a single round trip) when the client
     provides it; otherwise falls back to sequential query_points calls reusing
     the cached embeddings. Returns hit lists index-aligned with `vectors`.
+
+    `domain` narrows the search server-side, matching every other filtered query
+    in the project (vectors/search.py, _find_addressing_solutions,
+    cross_domain.find_cross_domain_matches). Without it the `limit` window is
+    consumed by other-domain points that are then discarded client-side, which
+    silently evicts genuine same-domain neighbours — see cluster_limitations.
     """
+    query_filter = None
+    if domain is not None:
+        query_filter = Filter(
+            must=[FieldCondition(key="domain", match=MatchValue(value=domain))]
+        )
+
     batch_query = getattr(client, "query_batch_points", None)
     if callable(batch_query):
         requests = [
-            QueryRequest(query=vector, limit=limit, with_payload=True)
+            QueryRequest(
+                query=vector, limit=limit, with_payload=True, filter=query_filter
+            )
             for vector in vectors
         ]
         responses = batch_query(
@@ -204,7 +349,10 @@ def _query_neighbours(client, vectors: list[list[float]], limit: int) -> list[li
 
     return [
         client.query_points(
-            collection_name=_COLLECTION_LIMITATIONS, query=vector, limit=limit
+            collection_name=_COLLECTION_LIMITATIONS,
+            query=vector,
+            limit=limit,
+            query_filter=query_filter,
         ).points
         for vector in vectors
     ]
@@ -314,7 +462,7 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
         return []
 
     total_papers = _count_papers_in_domain(domain)
-    clusters = cluster_limitations(limitations)
+    clusters = cluster_limitations(limitations, domain=domain)
 
     # One corpus-wide baseline for every cluster. Deriving it per-cluster would be
     # wrong: a cluster's own newest paper would always fall inside its own window,

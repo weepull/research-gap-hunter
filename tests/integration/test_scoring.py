@@ -156,28 +156,45 @@ def test_gap_description_is_the_centroid_nearest_member(loaded_corpus, domain):
         pytest.skip(f"{domain} produced no multi-member clusters in the fixture")
 
     longest_wins = 0
+    discriminating = 0
     for cluster in multi:
         texts = [m["text"] for m in cluster]
         vectors = np.asarray(_embed_texts(model, texts), dtype=float)
         unit = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
         centroid = unit.mean(axis=0)
         centroid /= np.linalg.norm(centroid)
-        nearest = texts[int(np.argmax(unit @ centroid))]
+        similarities = unit @ centroid
+
+        # Mirror the production tie-break rather than np.argmax's array order.
+        # This is not a detail: in a TWO-member cluster both members are exactly
+        # equidistant from their own centroid by symmetry, so the similarity is
+        # always a tie and the label is always decided lexicographically. Using
+        # argmax here would assert whatever order the cluster happened to be in.
+        best = float(similarities.max())
+        nearest = min(
+            text for text, sim in zip(texts, similarities) if sim >= best - 1e-12
+        )
 
         assert _cluster_representative_text(cluster) == nearest, (
             f"{domain}: representative text is not the centroid-nearest member.\n"
             f"  got:      {_cluster_representative_text(cluster)[:90]}\n"
             f"  expected: {nearest[:90]}"
         )
-        if nearest == max(texts, key=len):
-            longest_wins += 1
+        if len(texts) > 2:
+            discriminating += 1
+            if nearest == max(texts, key=len):
+                longest_wins += 1
 
-    # Sanity: if the centroid-nearest member is always also the longest, this test
-    # cannot distinguish the fix from the bug on this fixture.
-    assert longest_wins < len(multi), (
-        "on this fixture the centroid-nearest member is always the longest member, "
-        "so the assertion above cannot discriminate — the fixture needs adjusting"
-    )
+    # Sanity: only clusters with 3+ members can discriminate the fix from the bug,
+    # since a 2-member cluster's label is decided by the tie-break either way. If
+    # every such cluster's centroid-nearest member is also its longest, this test
+    # proves nothing and the fixture needs adjusting.
+    if discriminating:
+        assert longest_wins < discriminating, (
+            f"{domain}: in all {discriminating} clusters of 3+ members the "
+            "centroid-nearest member is also the longest, so this assertion cannot "
+            "tell the fix from the bug — adjust the fixture"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -812,22 +812,48 @@ def test_score_gaps_respects_top_n(monkeypatch):
     assert len(results) == 2
 
 
-def test_score_gaps_uses_most_frequent_text_as_description(monkeypatch):
-    """gap_description is the most frequent limitation text in the cluster."""
+def test_score_gaps_uses_the_centroid_nearest_text_as_description(monkeypatch):
+    """gap_description is the cluster's centroid-nearest member.
+
+    Replaces test_score_gaps_uses_most_frequent_text_as_description, which asserted
+    the old "most frequent text" semantics. Two things were wrong with it. The
+    behaviour it pinned could never fire — `Limitation` is UNIQUE on text and
+    `get_all_limitations` groups by `l.text`, so every count inside a cluster is
+    always 1 and `most_common` always resolved a total tie by insertion order, i.e.
+    the longest seed text. And its fixture put two identical texts in one cluster,
+    which the graph cannot produce.
+    """
     cluster = [
-        {"text": "repeated gap", "paper_ids": ["a"], "years": [2024]},
-        {"text": "repeated gap", "paper_ids": ["b"], "years": [2024]},
-        {"text": "rare gap", "paper_ids": ["c"], "years": [2024]},
+        # The longest text sits deliberately far from the other two, so "longest"
+        # and "centroid-nearest" give different answers and the assertion can tell
+        # the fix from the bug.
+        {"text": "an outlying limitation with by far the longest text in this cluster",
+         "paper_ids": ["a"], "years": [2024], "tiers": ["explicit"]},
+        {"text": "middle gap", "paper_ids": ["b"], "years": [2024], "tiers": ["explicit"]},
+        {"text": "near middle", "paper_ids": ["c"], "years": [2024], "tiers": ["explicit"]},
     ]
+    vectors = {
+        cluster[0]["text"]: [1.0, 0.0, 0.0],
+        cluster[1]["text"]: [0.0, 1.0, 0.0],
+        cluster[2]["text"]: [0.0, 0.98, 0.20],
+    }
+    model = MagicMock()
+    model.encode.side_effect = lambda texts, **kw: np.array([vectors[t] for t in texts])
+
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 3)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
+    monkeypatch.setattr(gs, "load_embedding_model", lambda: model)
+    monkeypatch.setattr(gs, "_embed_texts", lambda m, texts: m.encode(texts).tolist())
+    gs._representative_cache.clear()
 
     results = score_gaps()
 
-    assert results[0].gap_description == "repeated gap"
-    # all three unique papers collected as supporting evidence
+    assert results[0].gap_description in {"middle gap", "near middle"}
+    assert results[0].gap_description != cluster[0]["text"], (
+        "the longest member must not win merely for being longest"
+    )
     assert results[0].supporting_papers == ["a", "b", "c"]
 
 
@@ -1019,3 +1045,144 @@ def test_neighbour_query_without_a_domain_sends_no_filter():
 
     _query_neighbours(Client(), [[0.1] * 768], limit=5)
     assert captured["requests"][0].filter is None
+
+
+# ---------------------------------------------------------------------------
+# Cluster representative text — PLAN.md #2
+# ---------------------------------------------------------------------------
+
+
+def _fixed_vector_model(mapping: dict[str, list[float]]) -> MagicMock:
+    model = MagicMock()
+    model.encode.side_effect = lambda texts, **kw: np.array([mapping[t] for t in texts])
+    return model
+
+
+def test_representative_is_the_centroid_nearest_member(monkeypatch):
+    """Fails against pre-fix code, which always returned the longest text.
+
+    Measured on the pre-fix live corpus: the description equalled the longest
+    member in 27 of 27 CV clusters, because Counter.most_common always saw a total
+    tie and resolved it by insertion order — the seed, chosen as the longest string.
+    """
+    cluster = [
+        {"text": "a very long outlying statement that shares little with the others"},
+        {"text": "short a"},
+        {"text": "short b"},
+    ]
+    mapping = {
+        cluster[0]["text"]: [1.0, 0.0, 0.0],
+        cluster[1]["text"]: [0.0, 1.0, 0.0],
+        cluster[2]["text"]: [0.0, 0.99, 0.14],
+    }
+    monkeypatch.setattr(gs, "load_embedding_model", lambda: _fixed_vector_model(mapping))
+    monkeypatch.setattr(gs, "_embed_texts", lambda m, texts: m.encode(texts).tolist())
+    gs._representative_cache.clear()
+
+    result = gs._cluster_representative_text(cluster)
+
+    assert result in {"short a", "short b"}
+    assert result != cluster[0]["text"]
+
+
+def test_representative_of_a_singleton_needs_no_embedding(monkeypatch):
+    """A one-member cluster has a trivial centre; embedding it would be waste."""
+    def must_not_load():
+        raise AssertionError("a singleton must short-circuit before loading the model")
+
+    monkeypatch.setattr(gs, "load_embedding_model", must_not_load)
+    assert gs._cluster_representative_text([{"text": "only one"}]) == "only one"
+
+
+def test_representative_of_an_empty_cluster_is_empty():
+    assert gs._cluster_representative_text([]) == ""
+
+
+def test_representative_is_independent_of_member_order(monkeypatch):
+    """Determinism: reordering a cluster must not change its label."""
+    texts = ["alpha limitation", "beta limitation", "gamma limitation"]
+    mapping = {
+        texts[0]: [1.0, 0.0, 0.0],
+        texts[1]: [1.0, 0.0, 0.0],   # identical vectors -> a genuine tie
+        texts[2]: [0.0, 1.0, 0.0],
+    }
+    monkeypatch.setattr(gs, "load_embedding_model", lambda: _fixed_vector_model(mapping))
+    monkeypatch.setattr(gs, "_embed_texts", lambda m, texts_: m.encode(texts_).tolist())
+
+    gs._representative_cache.clear()
+    forward = gs._cluster_representative_text([{"text": t} for t in texts])
+    gs._representative_cache.clear()
+    reverse = gs._cluster_representative_text([{"text": t} for t in reversed(texts)])
+
+    assert forward == reverse, "a similarity tie must break lexicographically, not by order"
+
+
+def test_representative_survives_a_degenerate_centroid(monkeypatch):
+    """Mutually opposed members have no centre; the result must still be deterministic."""
+    texts = ["aaa opposed", "zzz opposed"]
+    mapping = {texts[0]: [1.0, 0.0], texts[1]: [-1.0, 0.0]}
+    monkeypatch.setattr(gs, "load_embedding_model", lambda: _fixed_vector_model(mapping))
+    monkeypatch.setattr(gs, "_embed_texts", lambda m, t: m.encode(t).tolist())
+    gs._representative_cache.clear()
+
+    assert gs._cluster_representative_text([{"text": t} for t in texts]) == "aaa opposed"
+
+
+# ---------------------------------------------------------------------------
+# Ranking order — PLAN.md #2
+# ---------------------------------------------------------------------------
+
+
+def _gap(score, papers, description):
+    return gs.GapResult(
+        gap_description=description,
+        score=score,
+        frequency_score=0.0,
+        recency_score=0.0,
+        solution_deficit_score=0.0,
+        supporting_papers=[f"p{i}" for i in range(papers)],
+        proposed_solutions=[],
+    )
+
+
+def test_ranking_key_orders_by_score_first():
+    entries = [(_gap(0.4, 9, "a"), 2025), (_gap(0.6, 1, "b"), 2019)]
+    assert [g.score for g, _ in sorted(entries, key=gs._ranking_key)] == [0.6, 0.4]
+
+
+def test_ranking_key_breaks_a_tie_by_supporting_paper_count():
+    """The better-corroborated of two equally-scored gaps ranks higher."""
+    entries = [(_gap(0.5, 1, "aaa"), 2024), (_gap(0.5, 4, "zzz"), 2024)]
+    ordered = [g.gap_description for g, _ in sorted(entries, key=gs._ranking_key)]
+    assert ordered == ["zzz", "aaa"]
+
+
+def test_ranking_key_then_breaks_a_tie_by_newest_year():
+    entries = [(_gap(0.5, 2, "older"), 2019), (_gap(0.5, 2, "newer"), 2025)]
+    ordered = [g.gap_description for g, _ in sorted(entries, key=gs._ranking_key)]
+    assert ordered == ["newer", "older"]
+
+
+def test_ranking_key_is_a_total_order_ending_in_the_description():
+    """Otherwise output depends on set/dict iteration order and is irreproducible."""
+    entries = [(_gap(0.5, 2, "zebra"), 2024), (_gap(0.5, 2, "apple"), 2024)]
+    ordered = [g.gap_description for g, _ in sorted(entries, key=gs._ranking_key)]
+    assert ordered == ["apple", "zebra"]
+
+
+def test_ranking_key_never_uses_description_length():
+    """The pre-fix defect exactly: rank inside a tie block tracked text length.
+
+    On the live corpus, ranks 1-3 tied at 0.6065 had descriptions of 72, 70 and 64
+    characters, and ranks 4-7 tied at 0.6043 had 50, 44, 41 and 34 — monotonically
+    descending. A copyright-law paper held rank 1 for having the longest sentence
+    in its tie group.
+    """
+    long_but_weak = _gap(0.5, 1, "x" * 200)
+    short_but_corroborated = _gap(0.5, 5, "short")
+    ordered = [
+        g.gap_description
+        for g, _ in sorted([(long_but_weak, 2024), (short_but_corroborated, 2024)],
+                           key=gs._ranking_key)
+    ]
+    assert ordered[0] == "short", "length must not outrank corroboration"

@@ -472,7 +472,7 @@ def compute_solution_deficit_score(
     if papers_reporting == 0:
         return 1.0
 
-    centroid_text = _cluster_centroid_text(cluster)
+    centroid_text = _cluster_representative_text(cluster)
     matches = len(
         _find_addressing_solutions(
             centroid_text, domain=domain, exclude_paper_ids=unique_papers
@@ -507,7 +507,10 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
     # so an all-2019 cluster would score as recent as an all-2025 one.
     reference_year = _corpus_reference_year(limitations)
 
-    results: list[GapResult] = []
+    # (gap, newest_year) pairs: the newest publication year in a cluster is a
+    # tie-break key but is not part of GapResult, so it is carried alongside rather
+    # than widening the response model for an internal ordering concern.
+    scored: list[tuple[GapResult, int]] = []
     for cluster in clusters:
         frequency = compute_frequency_score(cluster, total_papers)
         recency = compute_recency_score(cluster, current_year=reference_year)
@@ -515,7 +518,7 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
 
         score = (0.40 * frequency) + (0.35 * recency) + (0.25 * deficit)
 
-        centroid_text = _cluster_centroid_text(cluster)
+        centroid_text = _cluster_representative_text(cluster)
         supporting_papers = sorted(
             {pid for lim in cluster for pid in lim.get("paper_ids", [])}
         )
@@ -525,7 +528,12 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
             centroid_text, domain=domain, exclude_paper_ids=set(supporting_papers)
         )
 
-        results.append(
+        newest_year = max(
+            (yr for lim in cluster for yr in lim.get("years", []) if isinstance(yr, int)),
+            default=0,
+        )
+
+        scored.append((
             GapResult(
                 gap_description=centroid_text,
                 score=round(score, 4),
@@ -534,16 +542,50 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
                 solution_deficit_score=round(deficit, 4),
                 supporting_papers=supporting_papers,
                 proposed_solutions=proposed_solutions,
-            )
-        )
+            ),
+            newest_year,
+        ))
 
-    results.sort(key=lambda gap: gap.score, reverse=True)
-    return results[:top_n]
+    scored.sort(key=_ranking_key)
+    return [gap for gap, _year in scored][:top_n]
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _ranking_key(entry: tuple[GapResult, int]) -> tuple:
+    """Total ordering for the gap list: score, then corroboration, then recency, then text.
+
+    Sorting by score alone left ties to the stable sort, which preserved cluster
+    creation order — and clusters are created longest-seed-text-first, so **rank
+    within a tie block tracked description length**. That was not a subtle bias:
+    on the pre-fix corpus, ranks 1-3 tied at 0.6065 had descriptions of 72, 70 and
+    64 characters and ranks 4-7 tied at 0.6043 had 50, 44, 41 and 34, monotonically
+    descending. A copyright-law paper held rank 1 because its sentence was the
+    longest in its tie group.
+
+    Ties remain common because recency and solution-deficit both saturate — a
+    single recent paper with no addressing future direction scores 1.0 on both — so
+    after fixing the denominator in #4 there are still 15 of 28 CV gaps and 27 of 54
+    MI gaps sharing a score with another gap. The keys, in order:
+
+    1. **score**, descending — the formula still decides.
+    2. **supporting-paper count**, descending. Among equally-scored gaps the
+       better-corroborated one ranks higher. This is the qualifier `SupportBadge`
+       already foregrounds in the UI, whose own comment notes that a one-paper gap
+       can out-rank a well-attested one.
+    3. **newest supporting paper's year**, descending — a live concern before a
+       dormant one.
+    4. **description**, ascending lexicographic. Not meaningful, but it guarantees
+       a *total* order, so the output is reproducible across runs and processes
+       rather than depending on dict or set iteration order.
+
+    Deliberately NOT a key: description length, in either direction.
+    """
+    gap, newest_year = entry
+    return (-gap.score, -len(gap.supporting_papers), -newest_year, gap.gap_description)
 
 
 def _current_year() -> int:
@@ -586,12 +628,82 @@ def _corpus_reference_year(limitations: list[dict]) -> int:
     return min(max(years), _current_year())
 
 
-def _cluster_centroid_text(cluster: list[dict]) -> str:
-    """Return the most frequently occurring limitation text in the cluster."""
+# Memo for _cluster_representative_text, keyed by the cluster's texts. The
+# representative is needed twice per cluster (once for the deficit score, once for
+# the displayed description and solutions) and computing it embeds every member, so
+# without this the embedding work doubles. Process-lifetime, like _model_cache.
+_representative_cache: dict[tuple[str, ...], str] = {}
+
+
+def _cluster_representative_text(cluster: list[dict]) -> str:
+    """The cluster member closest to the cluster's own vector centroid.
+
+    This text is what users see as `gap_description`, *and* what the deficit score
+    and `proposed_solutions` are computed against — so a bad choice here is visible
+    three ways at once.
+
+    **Renamed from `_cluster_centroid_text`, which never computed a centroid.** It
+    returned `Counter(lim["text"] for lim in cluster).most_common(1)[0][0]` and its
+    docstring called that "the most frequently occurring limitation text". But
+    `Limitation` is `UNIQUE` on `text` in Neo4j, so within a cluster every count is
+    always exactly 1; `most_common` therefore always resolved a total tie by
+    insertion order, which is the seed, which `cluster_limitations` picks as the
+    **longest string**. Measured before the fix: the description equalled the
+    longest member in 27 of 27 CV clusters. The "most frequent" code path could not
+    fire, and the effect was that a six-member cluster was labelled with whichever
+    member had the most characters — in one live case a sentence about imaged
+    anatomy written by exactly one of its five papers, which then drove the top
+    cross-domain match.
+
+    The centroid is the mean of the L2-normalised member vectors, renormalised, so
+    "nearest" is cosine similarity — the same metric clustering and thresholding
+    use. A singleton short-circuits without embedding anything. Ties in similarity
+    fall back to the lexicographically smallest text, so the result is
+    deterministic rather than dependent on member order.
+
+    **A two-member cluster's label is always decided by that tie-break, never by
+    similarity.** Both members of a pair are exactly equidistant from their own
+    centroid by symmetry, so the comparison is always a tie. That is not a defect
+    to fix — there is no principled "more central" member of a pair — but it does
+    mean the label of a two-member gap carries no semantic claim to being the
+    better summary of the two, and a reader should not infer one. It also means a
+    test asserting this function's output must mirror the lexicographic tie-break
+    rather than use argmax, which would silently assert member ordering instead.
+    """
     if not cluster:
         return ""
-    counter = Counter(lim["text"] for lim in cluster)
-    return counter.most_common(1)[0][0]
+    texts = [lim["text"] for lim in cluster]
+    if len(texts) == 1:
+        return texts[0]
+
+    key = tuple(texts)
+    cached = _representative_cache.get(key)
+    if cached is not None:
+        return cached
+
+    model = load_embedding_model()
+    vectors = np.asarray(_embed_texts(model, texts), dtype=float)
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    # A zero vector would divide by zero; it cannot be near anything, so leave it.
+    norms[norms == 0] = 1.0
+    unit = vectors / norms
+
+    centroid = unit.mean(axis=0)
+    centroid_norm = np.linalg.norm(centroid)
+    if centroid_norm == 0:
+        # Mutually opposed members — no meaningful centre. Fall back to the
+        # deterministic lexicographic choice rather than an arbitrary index.
+        representative = min(texts)
+    else:
+        similarities = unit @ (centroid / centroid_norm)
+        best = float(similarities.max())
+        # Lexicographic tie-break keeps this independent of member ordering.
+        representative = min(
+            text for text, sim in zip(texts, similarities) if sim >= best - 1e-12
+        )
+
+    _representative_cache[key] = representative
+    return representative
 
 
 def _find_addressing_solutions(

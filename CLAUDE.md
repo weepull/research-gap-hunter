@@ -587,6 +587,69 @@ undrived round numbers). A4's premise is now stale, incidentally: it says the
 whole corpus is `explicit` tier, but the live corpus is 28 explicit / 55
 conclusion / 44 inferred, so those weights are load-bearing rather than inert.
 
+### Phase 4 · #2 tie-breaking + cluster representative — DONE 2026-09-28
+
+**Decision: option 2A for ordering, plus the independent centroid-representative fix.**
+
+**The representative text never computed a centroid.** `_cluster_centroid_text`
+returned `Counter(...).most_common(1)[0][0]` and its docstring called that "the
+most frequently occurring limitation text". `Limitation` is `UNIQUE` on `text` and
+`get_all_limitations` groups by `l.text`, so **within a cluster every count is
+always exactly 1** — the "most frequent" branch could never fire, and
+`most_common` always resolved a total tie by insertion order, which is the seed,
+which `cluster_limitations` chooses as the longest string. Measured pre-fix: the
+description equalled the longest member in **27 of 27** CV clusters. A six-member
+cluster was therefore labelled with whichever member had the most characters; in
+one live case a sentence about imaged anatomy written by one of its five papers,
+which then drove the top cross-domain match.
+
+Renamed to `_cluster_representative_text` and now returns the member nearest the
+cluster's own vector centroid (mean of L2-normalised member vectors, renormalised;
+cosine, the same metric clustering uses). Memoised per cluster, because the
+representative is needed twice — once for the deficit score, once for the
+displayed description and solutions.
+
+**Non-obvious property, worth knowing before reading a two-member gap's label:**
+both members of a pair are *exactly* equidistant from their own centroid by
+symmetry, so a two-member cluster's label is always decided by the lexicographic
+tie-break, never by similarity. There is no principled "more central" member of a
+pair, so this is not a defect — but the label of a two-member gap carries no claim
+to being the better summary of the two. A test asserting this function must mirror
+the lexicographic tie-break; using `argmax` silently asserts member ordering
+instead (this caught a bug in the integration test itself).
+
+**Ordering (2A).** `_ranking_key` is now
+`(-score, -supporting_paper_count, -newest_year, gap_description)`. Previously
+`results.sort(key=score)` left ties to the stable sort, which preserved cluster
+creation order — and clusters are created longest-seed-first, so **rank inside a
+tie block tracked description length**: ranks 1–3 tied at 0.6065 had descriptions
+of 72, 70 and 64 characters, ranks 4–7 tied at 0.6043 had 50, 44, 41 and 34,
+monotonically descending. A copyright-law paper held rank 1 for having the longest
+sentence in its tie group. The final lexicographic key is not meaningful in itself;
+it guarantees a *total* order so output is reproducible across runs and processes.
+
+**Report this honestly: ties got more common, not less.**
+
+| | before Phase 4 | after |
+|---|---|---|
+| CV gaps tied with another | 15 of 28 | **20 of 28** |
+| MI gaps tied with another | 27 of 54 | **36 of 54** |
+
+This is the interaction PLAN.md flagged. Phase 2's fragmentation produced many
+more singleton clusters, and a singleton with one recent paper and no addressing
+future direction scores **exactly** 1.0 on both recency and solution-deficit, so
+large numbers of gaps land on identical composites. The tie-break makes the order
+deterministic and defensible; it does not make the scores discriminate.
+
+The visible consequence is that the top of both lists is now almost entirely
+single-paper gaps, and a 4-paper CV gap (`f=0.1944`) sits at rank 12 beneath eleven
+1-paper gaps, purely because its recency is 0.75 rather than 1.0. **That is
+`PROJECT_HARDENING_PLAN.md` A9 — saturation of the deficit term — in full view, and
+it is out of scope here.** Do not "fix" it by promoting paper count above score in
+the sort, or by reweighting: both are formula changes needing their own advisor
+decision. The UI does flag single-source gaps in amber, which is the mitigation
+that exists today.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

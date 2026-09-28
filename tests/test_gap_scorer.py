@@ -397,16 +397,25 @@ def test_solution_thresholds_sit_at_the_measured_noise_floors():
     and 44.8% of random MI pairs did, so a fifth to nearly half of "addressed"
     verdicts were chance.
     """
-    assert gs._SOLUTION_THRESHOLDS["computer_vision"] == 0.8773
-    assert gs._SOLUTION_THRESHOLDS["medical_imaging"] == 0.8987
+    # Deliberately NOT pinned to exact literals. These constants are owned by
+    # scripts/derive_thresholds.py and are rewritten whenever their drift from the
+    # measured null exceeds DRIFT_TOLERANCE — so asserting a literal here would turn
+    # every legitimate re-derivation into a unit-test failure, and the temptation
+    # would be to "fix" the test by copying whatever the code now says, which proves
+    # nothing. The exact values are guarded against the live null distribution by
+    # tests/integration/test_threshold_derivation.py. What is asserted here is the
+    # structure that must hold regardless of the measured numbers.
+    assert set(gs._SOLUTION_THRESHOLDS) == {"computer_vision", "medical_imaging"}
     # Every configured floor must be above the old value, or the fix is a no-op.
     assert all(v > 0.85 for v in gs._SOLUTION_THRESHOLDS.values())
+    # And each must be a plausible cosine floor rather than a typo.
+    assert all(0.85 < v < 1.0 for v in gs._SOLUTION_THRESHOLDS.values())
 
 
 def test_solution_threshold_lookup_is_per_domain():
     """Each domain gets its own floor rather than one global constant."""
-    assert gs._solution_threshold("computer_vision") == 0.8773
-    assert gs._solution_threshold("medical_imaging") == 0.8987
+    for domain, value in gs._SOLUTION_THRESHOLDS.items():
+        assert gs._solution_threshold(domain) == value
     assert gs._solution_threshold("computer_vision") != gs._solution_threshold(
         "medical_imaging"
     )
@@ -420,7 +429,10 @@ def test_solution_threshold_unknown_domain_is_conservative():
     """
     unknown = gs._solution_threshold("robotics")
     assert unknown == max(gs._SOLUTION_THRESHOLDS.values())
-    assert unknown >= 0.8987
+    assert unknown >= max(gs._SOLUTION_THRESHOLDS.values())
+    assert unknown > min(gs._SOLUTION_THRESHOLDS.values()) or len(
+        set(gs._SOLUTION_THRESHOLDS.values())
+    ) == 1
 
 
 def test_find_addressing_solutions_uses_the_domain_threshold(monkeypatch):
@@ -1186,3 +1198,28 @@ def test_ranking_key_never_uses_description_length():
                            key=gs._ranking_key)
     ]
     assert ordered[0] == "short", "length must not outrank corroboration"
+
+
+def test_threshold_constants_are_not_hand_editable_without_a_guard():
+    """Every threshold constant must be covered by the derivation guard.
+
+    The guard lives in the integration tier because it needs the live vector store.
+    This unit test only checks the *inventory* matches, so adding a new threshold
+    without adding it to the derivation report fails here rather than silently
+    shipping an unmeasured number — the failure mode that let _CLUSTER_THRESHOLD =
+    0.86 survive unchecked for the life of the project.
+    """
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import derive_thresholds
+
+    coded = derive_thresholds.coded_constants()
+    assert set(coded) == {"cluster", "solution", "cross_domain"}, (
+        "a threshold family was added or renamed without updating the derivation script"
+    )
+    assert set(coded["cluster"]) == set(coded["solution"]), (
+        "cluster and solution thresholds must cover the same domains"
+    )
+    assert derive_thresholds.DRIFT_TOLERANCE > 0

@@ -779,6 +779,54 @@ remains the one outlier: the coded 0.8987 is **stricter** than its measured null
 of 0.8915, so it under-counts addressing solutions and makes MI gaps look more open
 than they are. Safe, but drifting, and still awaiting an advisor decision.
 
+### Phase 1a · MI solution threshold re-derived — DONE 2026-09-28
+
+| constant | old | new | drift | action |
+|---|---:|---:|---:|---|
+| `_SOLUTION_THRESHOLDS["medical_imaging"]` | 0.8987 | **0.8915** | 0.0072 | **updated** |
+| `_SOLUTION_THRESHOLDS["computer_vision"]` | 0.8773 | — | 0.0016 | kept |
+| `_CLUSTER_THRESHOLDS["computer_vision"]` | 0.8769 | — | 0.0002 | kept |
+| `_CLUSTER_THRESHOLDS["medical_imaging"]` | 0.8954 | — | 0.0000 | kept |
+| `_CROSS_DOMAIN_THRESHOLD` | 0.8792 | — | 0.0002 | kept |
+
+The old 0.8987 was **stricter than its own noise floor** (measured null p95 0.8915
+over n=6,572 pairs), so it under-counted addressing future directions and made
+medical-imaging gaps look more open than they are.
+
+**`DRIFT_TOLERANCE = 0.002` and the rule it enforces.** A constant is rewritten only
+when its drift from the freshly derived value exceeds 0.002. Below that, drift is not
+distinguishable from resampling the same corpus — bootstrap 95% CIs on these p95s span
+roughly ±0.002 — so chasing the third decimal would move rankings for no defensible
+reason.
+
+**Constants are now only writable through the derivation script.**
+`scripts/derive_thresholds.py --apply` rewrites stale values in place and refreshes the
+`# n=` provenance comment beside each one. Hand-editing is how the unmeasured 0.86
+cluster threshold got in and survived, so that path is closed by convention and by the
+guard below.
+
+Two things this exposed, both fixed:
+
+- **Stale provenance comments were claiming unmeasured sample sizes.** The CV solution
+  line said `# n=2,176 random pairs`, a figure from the 127-paper corpus; the current
+  null is n=968. The *value* stays (drift 0.0016, inside tolerance) but the comment now
+  records when it was derived, what the current re-derivation says, and why it was not
+  rewritten. Same for both cluster entries.
+- **The unit tests pinned exact literals** (`== 0.8987`), which turns every legitimate
+  re-derivation into a test failure whose only "fix" is copying whatever the code now
+  says — proving nothing. Those three tests now assert *structure* (per-domain lookup,
+  above the superseded 0.85, strictest-known fallback, plausible cosine range) and the
+  exact values are guarded against the live null distribution instead.
+
+**New guard: `tests/integration/test_threshold_derivation.py`.** It imports
+`scripts/derive_thresholds.py` rather than reimplementing the derivation — a guard
+computed a second way can pass while the real derivation is wrong — and fails when any
+coded constant drifts beyond tolerance. Confirmed to fail against pre-1a code, naming
+the MI drift of 0.0072. It measures the **production** collections, not the integration
+fixture corpus, because a 13-paper fixture cannot produce a meaningful null. A companion
+unit test asserts the *inventory* of threshold families matches the derivation script, so
+a new threshold cannot be added without becoming checkable.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

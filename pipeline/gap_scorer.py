@@ -69,8 +69,11 @@ logger = logging.getLogger(__name__)
 # future-direction) and the numbers must never be reasoned about side by side —
 # doing so is what made 0.85 "look conservative" next to 0.86.
 _CLUSTER_THRESHOLDS = {
-    "computer_vision": 0.8769,   # null p95 over n=1,128 pairs (mean 0.8228, p50 0.8238)
-    "medical_imaging": 0.8954,   # null p95 over n=5,565 pairs (mean 0.8401, p50 0.8406)
+    # Derived 2026-09-28 on the 116-paper corpus; re-checked after curation pass 2 on
+    # 113 papers, where CV is 0.8771 over n=946 (drift 0.0002) and MI is unchanged at
+    # 0.8954 over n=5,565. Both inside DRIFT_TOLERANCE, so neither is rewritten.
+    "computer_vision": 0.8769,
+    "medical_imaging": 0.8954,
 }
 
 
@@ -115,8 +118,13 @@ _MIN_CLUSTER_CAP = 2
 # Corpus-dependent: re-derive after significant ingestion. See
 # PROJECT_HARDENING_PLAN.md item A1.
 _SOLUTION_THRESHOLDS = {
-    "computer_vision": 0.8773,  # n=2,176 random pairs
-    "medical_imaging": 0.8987,  # n=250 random pairs
+    # Value derived 2026-08-23 on the then-127-paper corpus (n=2,176 pairs). Left in
+    # place: re-derived 2026-09-28 on the curated 113-paper corpus it is 0.8789 over
+    # n=968 pairs, a drift of 0.0016 — inside DRIFT_TOLERANCE, so the constant is not
+    # rewritten. The guard test in tests/integration/test_threshold_derivation.py
+    # fails if that drift ever exceeds 0.002.
+    "computer_vision": 0.8773,
+    "medical_imaging": 0.8915,  # null p95 over n=6,572 pairs, derived 2026-09-28
 }
 
 

@@ -88,9 +88,57 @@ RELABEL: dict[str, tuple[str, str]] = {
     "2501.16469": ("medical_imaging", "Object Detection for Medical Image Analysis (RT-DETR)"),
 }
 
-# Borderline papers examined and deliberately KEPT as computer_vision, recorded so
-# a future session does not re-litigate them or read the classifier's flags as
-# unactioned findings.
+# --------------------------------------------------------------------------
+# Pass 2 — 2026-09-28, the arXiv-primary-category rule
+# --------------------------------------------------------------------------
+#
+# Pass 1 above was driven by reading titles and extracted metadata. That process
+# had a hole, found during read-only verification: the 33 papers the keyword
+# classifier flagged were reviewed individually, but the 94 it scored "ok" were
+# accepted on a title scan, so 21 of the 31 papers kept as CV had no individual
+# review note. `2404.07922` (LaVy) slipped through that way and ended up supplying
+# CV rank 2 and four of the ten cross-domain matches.
+#
+# The rule adopted to close it is external and checkable rather than judgemental:
+# **a paper stays in computer_vision only if its arXiv PRIMARY category is
+# cs.CV.** Cross-listing to cs.CV is not sufficient. Applied to all 31 CV papers,
+# three fail.
+#
+# The rule is applied to computer_vision ONLY. Medical imaging was checked and
+# reported, deliberately without action: its natural primary categories are cs.CV
+# (44) and eess.IV (35), plus six papers under cs.CY / cs.LG / physics.med-ph /
+# cs.AI / cs.CL that are unambiguously clinical on inspection (demographic bias in
+# medical vision-language models, MRI reconstruction, multimodal medical data
+# generation, radiomics automation, a generalist medical foundation model). A
+# single-category rule does not transfer to a field that legitimately spans two.
+REMOVE_PASS2: dict[str, str] = {
+    "2306.14824": (
+        "Kosmos-2 — arXiv primary cs.CL (cross-listed cs.CV). Grounding for "
+        "multimodal LLMs; contributes 0 limitations, so removal moves the "
+        "denominator only."
+    ),
+    "2401.13601": (
+        "MM-LLMs survey — arXiv primary cs.CL and NOT cross-listed to cs.CV at "
+        "all. Its two 'limitations' are the survey's own hedging ('certain "
+        "aspects may have eluded our scrutiny')."
+    ),
+    "2404.07922": (
+        "LaVy — arXiv primary cs.CL (cross-listed cs.CV). A Vietnamese "
+        "multimodal LLM: the contribution is language coverage, vision is the "
+        "modality it operates over."
+    ),
+}
+
+# Every removal this script is responsible for. Removal is idempotent — an id
+# already absent logs a warning and is skipped — so re-running applies both passes
+# safely. The two manifests stay separate so each pass's reasoning is auditable.
+ALL_REMOVALS: dict[str, str] = {**REMOVE, **REMOVE_PASS2}
+
+# Borderline papers examined and deliberately KEPT as computer_vision in pass 1.
+# NOTE: three of these were later removed by the pass-2 rule above
+# (2401.13601), or were never individually recorded at all (2306.14824,
+# 2404.07922) — which is the gap pass 2 exists to close. Kept here unedited as
+# the historical record of what pass 1 decided.
 KEPT_AFTER_REVIEW: dict[str, str] = {
     "1505.04870": "Flickr30k Entities — region-to-phrase grounding in images",
     "2207.10077": "DebiAN — bias mitigation on image classification (Multi-Color MNIST)",
@@ -106,8 +154,11 @@ KEPT_AFTER_REVIEW: dict[str, str] = {
 
 
 def _print_manifest() -> None:
-    print(f"REMOVE ({len(REMOVE)}) — belong to neither research domain:")
+    print(f"REMOVE · pass 1 ({len(REMOVE)}) — belong to neither research domain:")
     for pid, reason in sorted(REMOVE.items()):
+        print(f"    {pid}  {reason}")
+    print(f"\nREMOVE · pass 2 ({len(REMOVE_PASS2)}) — arXiv primary category is not cs.CV:")
+    for pid, reason in sorted(REMOVE_PASS2.items()):
         print(f"    {pid}  {reason}")
     print(f"\nRELABEL ({len(RELABEL)}) — computer_vision -> medical_imaging:")
     for pid, (domain, reason) in sorted(RELABEL.items()):
@@ -154,7 +205,7 @@ def run(apply: bool) -> int:
     print(f"before — neo4j: {before}   sqlite: {sqlite_before}")
 
     present = {row[0] for row in db.execute("SELECT arxiv_id FROM papers").fetchall()}
-    missing = (set(REMOVE) | set(RELABEL)) - present
+    missing = (set(ALL_REMOVALS) | set(RELABEL)) - present
     if missing:
         print(f"\nWARNING: manifest ids absent from SQLite (already curated?): {sorted(missing)}")
 
@@ -165,7 +216,7 @@ def run(apply: bool) -> int:
 
     # --- 1. remove off-topic papers ---------------------------------------
     removed = 0
-    for pid in sorted(REMOVE):
+    for pid in sorted(ALL_REMOVALS):
         with driver.session(database=database) as session:
             summary = session.run(
                 "MATCH (p:Paper {arxiv_id: $id}) DETACH DELETE p", id=pid
@@ -173,7 +224,8 @@ def run(apply: bool) -> int:
             removed += summary.counters.nodes_deleted
         db.execute("DELETE FROM papers WHERE arxiv_id = ?", [pid])
     db.conn.commit()
-    print(f"removed {removed} Paper nodes and {len(REMOVE)} SQLite rows")
+    print(f"removed {removed} Paper nodes this run "
+          f"({len(ALL_REMOVALS)} ids in the combined manifest)")
 
     # --- 2. delete nodes orphaned by that removal -------------------------
     # Limitation/FutureDirection are keyed on exact text and Method/Dataset on

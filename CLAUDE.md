@@ -711,6 +711,74 @@ cross-domain pair above the noise floor, which by this project's own doctrine is
 at 0.8954. Two happy-path assertions are therefore exercised against the live
 corpus in the run summary rather than by the fixture.
 
+### Corpus curation pass 2 · the arXiv-primary-category rule — DONE 2026-09-28
+
+**Decision: a paper stays in `computer_vision` only if its arXiv PRIMARY category
+is `cs.CV`. Cross-listing to `cs.CV` is not sufficient. Applied to CV only; MI was
+checked and reported without action.**
+
+**Why a second pass was needed.** Pass 1 (see Phase 1 above) reviewed the 33 papers
+the keyword classifier flagged, but accepted the 94 it scored "ok" on a title scan —
+so **21 of the 31 papers kept as CV had no individual review note**. Read-only
+verification found `2404.07922` (LaVy, a Vietnamese multimodal LLM) had passed that
+way, and it was not cosmetic: it supplied CV rank 2 and four of the ten cross-domain
+matches. The rule adopted here is external and checkable rather than judgemental,
+which is the point — it does not depend on anyone's reading of a title.
+
+| | before | after |
+|---|---:|---:|
+| papers | 116 | **113** |
+| computer_vision | 31 | **28** |
+| medical_imaging | 85 | 85 (untouched) |
+| CV contributing (frequency denominator) | 18 | **16** |
+| Qdrant limitations | 154 | **150** |
+| Qdrant future_directions | 86 | **84** |
+
+Removed (`REMOVE_PASS2` in `scripts/domain_backfill.py`), 3 of 31, all arXiv
+primary `cs.CL`:
+
+- **`2306.14824` Kosmos-2** — cross-listed `cs.CV`; contributes 0 limitations, so
+  removal moved the denominator only.
+- **`2401.13601` MM-LLMs survey** — **not cross-listed to `cs.CV` at all**. Its two
+  "limitations" were the survey's own hedging ("certain aspects may have eluded our
+  scrutiny").
+- **`2404.07922` LaVy** — cross-listed `cs.CV`; the contribution is language
+  coverage, vision is the modality it operates over.
+
+15 orphaned nodes deleted; both Qdrant collections dropped and rebuilt, for the same
+positional-point-id reason as pass 1.
+
+**Medical imaging: reported, deliberately not acted on.** Its primary categories are
+`cs.CV` (44) and `eess.IV` (35), plus six papers under `cs.CY`, `cs.LG`,
+`physics.med-ph`, `cs.AI` and `cs.CL` that are unambiguously clinical on inspection
+(demographic bias in medical vision-language models, MRI reconstruction ×2,
+multimodal medical data generation, radiomics automation, a generalist medical
+foundation model). **A single-category rule does not transfer to a field that
+legitimately spans two**, so applying this rule to MI would delete real papers. If MI
+ever needs one, it has to be `{cs.CV, eess.IV}` plus a manual exception list.
+
+`ALL_REMOVALS` is the union of both manifests and is what the script operates on;
+removal is idempotent, so re-running applies both passes safely. The two manifests
+stay separate so each pass's reasoning remains auditable. `KEPT_AFTER_REVIEW` is left
+unedited as the historical record of what pass 1 decided, with a note that pass 2
+later removed one of its entries.
+
+**Nulls re-derived, and no constant was changed** (explicitly out of scope):
+
+| constant | coded | re-derived now | drift |
+|---|---:|---:|---|
+| `_CLUSTER_THRESHOLDS["computer_vision"]` | 0.8769 | 0.8771 (n=946) | +0.0002 |
+| `_CLUSTER_THRESHOLDS["medical_imaging"]` | 0.8954 | 0.8954 (n=5,565) | exact |
+| `_SOLUTION_THRESHOLDS["computer_vision"]` | 0.8773 | 0.8789 (n=968) | +0.0016 |
+| `_SOLUTION_THRESHOLDS["medical_imaging"]` | 0.8987 | 0.8915 (n=6,572) | −0.0072 |
+| `find_cross_domain_matches` default | 0.8792 | 0.8794 (n=5,060) | +0.0002 |
+
+All three cluster/cross-domain values are stable to ~0.0002 across two curation
+passes, which is reassuring about the derivation method. The MI solution threshold
+remains the one outlier: the coded 0.8987 is **stricter** than its measured null p95
+of 0.8915, so it under-counts addressing solutions and makes MI gaps look more open
+than they are. Safe, but drifting, and still awaiting an advisor decision.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

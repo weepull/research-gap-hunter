@@ -31,6 +31,25 @@ PY = str(ROOT / ".venv" / "bin" / "python")
 PROGRESS = ROOT / "data" / "tranche_progress.jsonl"
 DOMAINS = ("computer_vision", "medical_imaging")
 
+# Measured end-to-end seconds per paper over a real tranche (arXiv candidate paging at
+# 3s per request, PDF download, Ollama extraction, SQLite + Neo4j write). Used only until
+# this run has completed a tranche of its own to measure from.
+_SECONDS_PER_PAPER = 160
+
+
+def _recorded_tranches() -> list[dict]:
+    if not PROGRESS.exists():
+        return []
+    out = []
+    for line in PROGRESS.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("status") == "ok":
+            out.append(entry)
+    return out
+
 
 def _run(args: list[str], label: str) -> tuple[int, str]:
     print(f"\n----- {label} -----", flush=True)
@@ -89,9 +108,28 @@ def main() -> int:
             print("\n=== both domains at target; stopping ===", flush=True)
             break
 
-        # A tranche is roughly size * 45s. Do not start one we cannot finish.
-        projected = args.size * 45
-        if remaining < projected * 0.6:
+        # Do not start a tranche we cannot finish inside the budget.
+        #
+        # The first estimate here was 45s per paper, taken from a 3-paper smoke test.
+        # Measured over 24 papers of a real tranche it is ~160s: the smoke test had
+        # already-warm arXiv pagination and happened to draw small PDFs, while a real
+        # tranche pays 3s per arXiv candidate page, a full PDF download per paper, and
+        # Ollama extraction. A 3.6x-optimistic estimate meant the driver would start a
+        # tranche it could not finish and then run far past its deadline, since
+        # ingest_tranche has no internal deadline of its own.
+        #
+        # Prefer the rate this run has actually observed; fall back to the measured
+        # default before any tranche has completed.
+        done = [t for t in (_recorded_tranches()) if t.get("minutes")]
+        if done:
+            per_paper = (sum(t["minutes"] for t in done) * 60
+                         / max(1, args.size * len(done)))
+        else:
+            per_paper = _SECONDS_PER_PAPER
+        projected = args.size * per_paper
+        print(f"  (projecting {per_paper:.0f}s/paper -> {projected/60:.0f} min per "
+              f"tranche, {remaining/60:.0f} min left)", flush=True)
+        if remaining < projected:
             print(f"\n=== {remaining/60:.0f} min left, a tranche needs about "
                   f"{projected/60:.0f} min; stopping cleanly rather than starting one "
                   f"we cannot finish ===", flush=True)

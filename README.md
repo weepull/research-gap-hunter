@@ -17,9 +17,96 @@ Academic literature is growing at a rate no researcher can track. A computer vis
 
 Research Gap Hunter inverts this. It ingests papers from arXiv, extracts structured limitation statements using a local LLM (Llama 3.1 8B via Ollama), and builds a graph + vector index over the ingested corpus. A scoring engine then ranks research gaps by three independent signals: how frequently a limitation appears across papers, how recently it has been reported, and how few future-work suggestions from those same papers address it. The result is a ranked list of candidate open problems, each shown with the number of papers supporting it.
 
-> **Scope — read this before interpreting any output.** This is a working research prototype over a **curated sample of 127 papers** (46 computer vision, 81 medical imaging), not a survey of either field. At this size many gaps are backed by a single paper, so the UI labels every gap with its supporting-paper count and every results page states the corpus size and date it was computed over. Treat the rankings as a demonstration of the method, not as findings about the state of computer vision.
+> **Scope — read this before interpreting any output.** This is a working research
+> prototype over a **curated sample of 149 papers** (64 computer vision, 85 medical
+> imaging), not a survey of either field. Treat the rankings as a demonstration of the
+> method, not as findings about the state of either field.
+>
+> **The quality of the output has not been measured.** The mechanism is extensively
+> tested — 489 unit tests and 37 integration tests against live Neo4j, Qdrant and Ollama —
+> but no one has yet judged whether the gaps it surfaces are real. `eval/` contains the
+> apparatus for that (a blinded label sheet, two baselines, precision@k with Wilson
+> intervals) and it is **awaiting human labels**. Running `eval/score.py` today prints
+> "NO LABELS PRESENT" rather than a number, deliberately.
+>
+> All figures in this README come from scripts you can re-run; see
+> [Measured state](#measured-state).
 
 The third dimension is the most novel: cross-domain hypothesis generation. Specter2 embeddings are used to match unresolved limitations in computer vision against proposed solutions in medical imaging. When a CV paper reports "our method fails under domain shift" and a medical imaging paper proposes "domain-adaptive registration via learned deformation fields," Research Gap Hunter surfaces that connection and uses Ollama to generate a natural-language explanation of why the transfer is scientifically plausible. Researchers get concrete, cited hypotheses — not keyword lists.
+
+---
+
+## Measured state
+
+Every number here is produced by a script in `scripts/` or `eval/`, not written by hand.
+Regenerate with `bash scripts/nightly_eval.sh`. Last measured 2026-09-29.
+
+### Corpus
+
+| | computer_vision | medical_imaging |
+|---|---:|---:|
+| papers | 64 | 85 |
+| papers contributing ≥1 limitation | **48** | **50** |
+| limitation nodes | 112 | 103 |
+| gap clusters | 57 | 53 |
+| largest cluster | 8 | 16 |
+
+`contributing` is the divisor of `frequency_score`. It is **not** the corpus size: a paper
+that extracted no limitations cannot corroborate a gap, and counting it made frequency the
+product of two unrelated things. `/corpus` reports both.
+
+### Ranking tiers and ties
+
+| | computer_vision | medical_imaging |
+|---|---:|---:|
+| gaps | 57 | 53 |
+| corroborated (≥2 papers) | 21 | 16 |
+| single source | 36 | 37 |
+| gaps sharing a score | **4** | **3** |
+| distinct scores | 55 | 51 |
+
+Corroborated gaps rank above all single-source gaps, so **scores are non-monotonic across
+the tier boundary** — the UI shows a heading at the boundary for that reason. Before the
+A9 Option F work, 17 of 24 CV gaps and 38 of 53 MI gaps shared a score.
+
+### Thresholds — all derived, none hand-picked
+
+Derived from measured null distributions by `scripts/derive_thresholds.py`; rewritten only
+when drift exceeds `DRIFT_TOLERANCE = 0.002`, and only by that script.
+`tests/integration/test_threshold_derivation.py` fails if any constant drifts further.
+
+| constant | computer_vision | medical_imaging |
+|---|---:|---:|
+| `_CLUSTER_THRESHOLDS` (limitation × limitation p95) | 0.8744 | 0.8954 |
+| `_SOLUTION_THRESHOLDS` (limitation × future-direction p95) | 0.8733 | 0.8915 |
+| `_DEFICIT_RESCALE_ANCHORS` (p50, p99) | (0.8235, 0.8959) | (0.8385, 0.9127) |
+| `_CROSS_DOMAIN_THRESHOLD` (pooled cross-domain p95) | 0.8764 | — |
+
+`_UNRESOLVED_DEFICIT_FLOOR = 0.3` is the **one threshold still not derived from anything**.
+It was harmless while the deficit term took four discrete values; now that the deficit is
+continuous it genuinely selects which gaps reach cross-domain matching, and it needs a
+decision. Recorded rather than quietly left.
+
+### Extraction quality
+
+| | value |
+|---|---:|
+| filter rejection rate on the pre-fix corpus (one-off backfill) | 4.3% (10 of 234) |
+| **filter rejection rate on papers ingested with the fixed prompt** | **0.0%** |
+| ingestion outcomes | 26 ok, 7 pdf_failed, 3 no_limitations, 3 extraction_failed |
+| candidates refused by the corpus rules | 17 |
+
+The 0% is the point: the extraction prompt used to quote its own cue phrases
+(`'remains challenging'`, `'future work includes'`) and the model echoed them back as
+findings. With those examples removed from the prompt, newly ingested papers produced no
+boilerplate for the filter to catch. The filter remains as a second line of defence.
+
+### Footprint
+
+`scripts/measure_footprint.py`: **472.3 MB** peak RSS with Specter2 resident, against a
+512 MB tier — **+39.7 MB headroom, fits without margin**. The corpus vectors are 0.66 MB
+and live in Qdrant, not in the API process, so corpus growth barely moves this. The
+binding constraint is the model, a fixed cost.
 
 ---
 
@@ -217,16 +304,35 @@ docker run -d -p 6333:6333 -p 6334:6334 \
 ### 4. Ingest papers
 
 ```bash
-# Ingest a batch of computer vision papers (arXiv IDs)
-python3.11 -m pipeline.batch \
-  --ids 2301.00234 2303.05499 2212.09748 \
-  --domain computer_vision
+# Ingest a tranche of candidates discovered through the arXiv API.
+# --domain is REQUIRED and validated; there is deliberately no default.
+python -m scripts.ingest_tranche --domain computer_vision --size 50
+python -m scripts.ingest_tranche --domain medical_imaging --size 50
 
-# Or ingest medical imaging papers
-python3.11 -m pipeline.batch \
-  --ids 2106.08589 2206.07890 \
-  --domain medical_imaging
+# Quality report for what was ingested
+python scripts/ingest_tranche.py --domain computer_vision --report-only
+
+# Many tranches with threshold re-derivation after each
+python scripts/run_tranches.py --hours 3 --size 50 --target-per-domain 300
 ```
+
+Candidates are gated at ingest by `pipeline/corpus_rules.py`, on arXiv's own **primary
+category**:
+
+- `computer_vision` — primary must be `cs.CV`. Cross-listing to `cs.CV` is not enough.
+- `medical_imaging` — primary in `{eess.IV, physics.med-ph}`, **or** primary `cs.CV` with a
+  medical keyword match.
+- anything else is logged as `rule_rejected`, unless the id is in `data/mi_allowlist.txt`.
+
+Measured acceptance: of 50 `eess.IV` candidates, 34 are accepted for medical imaging; of 50
+`cs.CV` candidates, 6 are (the medical ones). Ingestion runs at **~160 s per paper** —
+arXiv paging, PDF download, Ollama extraction — so a 50-paper tranche is roughly 2 hours.
+It checkpoints after every paper and skips already-ingested ids, so it resumes safely.
+
+> The previous version of this section documented
+> `python3.11 -m pipeline.batch --ids ... --domain ...`. That command **silently did
+> nothing**: `pipeline/batch.py` has no `__main__` block, so `-m` merely imported it and
+> exited. The arXiv ids it listed were also never verified against arXiv.
 
 ### 5. Start the API
 
@@ -311,14 +417,25 @@ research-gap-hunter/
 ## Test Suite
 
 ```bash
-python3.11 -m pytest tests/ -v
+pytest                  # unit tier: hermetic, no services needed
+pytest -m integration   # integration tier: real Neo4j, Qdrant, Ollama
+pytest -m ''            # both
 ```
 
 ```
-176 passed, 0 failed, 1 warning
+489 passed, 40 deselected in 0.73s
+37 passed, 3 skipped, 489 deselected in 39.23s
 ```
 
-All external dependencies (Ollama, Neo4j, Qdrant, SQLite, Semantic Scholar) are mocked at the module level. The suite runs in < 1 second on first invocation and has no network or service dependencies.
+**Two tiers, and the split matters.** The unit tier mocks every external dependency and
+runs in under a second, which is what makes it usable on every change. It is also
+*structurally incapable* of catching the defects that mattered most here — a cluster
+swallowing half a domain, a threshold below its own noise floor, a `/health` endpoint
+reporting `ok` with Neo4j down all look fine to a mock. The integration tier exists for
+those, runs against live services, and **skips rather than fails** when they are absent.
+
+Integration tests use an isolated Neo4j database (`rghintegration`), separate Qdrant
+collections, and a `tmp_path` SQLite, so a run can never touch the real corpus.
 
 | Test file | Coverage |
 |---|---|
@@ -328,7 +445,12 @@ All external dependencies (Ollama, Neo4j, Qdrant, SQLite, Semantic Scholar) are 
 | `test_vectors.py` | Qdrant collection init, batch upsert, cosine search, payload filtering |
 | `test_gap_scorer.py` | Scoring formula, seed-anchored clustering (non-transitive, batch-embedded), threshold edge cases |
 | `test_cross_domain.py` | Domain ingestion, gap filtering, cross-domain match ranking, Ollama explanation |
-| `test_api.py` | All 7 endpoints, lifespan warming, CORS headers, 422/404/500 error paths |
+| `test_api.py` | All 7 endpoints, per-service health probes, 503-on-degraded, lifespan resilience, CORS, 422/404/500 paths |
+| `test_domains.py` | Required-domain validation, the keyword verifier, and that it never assigns a domain |
+| `test_extraction_filter.py` | Prompt-echo / hedging / length / duplicate gates, the echo-list guards, audit logging |
+| `test_corpus_rules.py` | arXiv feed parsing, the CV primary-category rule, the MI two-primary rule, the allowlist |
+| `test_eval_harness.py` | Wilson intervals, sheet round-trip, and the scorer's refusal to read LLM triage |
+| `tests/integration/` | Domain ground truth, cluster caps, frequency denominator, tier ordering, `/explain` grounding, per-service health, threshold derivation |
 
 ---
 

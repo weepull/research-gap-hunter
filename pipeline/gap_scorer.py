@@ -72,7 +72,7 @@ _CLUSTER_THRESHOLDS = {
     # Derived 2026-09-28 on the 116-paper corpus; re-checked after curation pass 2 on
     # 113 papers, where CV is 0.8771 over n=946 (drift 0.0002) and MI is unchanged at
     # 0.8954 over n=5,565. Both inside DRIFT_TOLERANCE, so neither is rewritten.
-    "computer_vision": 0.8769,
+    "computer_vision": 0.8744,  # null p95 over n=6,216 pairs, derived 2026-09-29
     "medical_imaging": 0.8954,
 }
 
@@ -123,7 +123,7 @@ _SOLUTION_THRESHOLDS = {
     # n=968 pairs, a drift of 0.0016 — inside DRIFT_TOLERANCE, so the constant is not
     # rewritten. The guard test in tests/integration/test_threshold_derivation.py
     # fails if that drift ever exceeds 0.002.
-    "computer_vision": 0.8773,
+    "computer_vision": 0.8733,  # null p95 over n=5,264 pairs, derived 2026-09-29
     "medical_imaging": 0.8915,  # null p95 over n=6,572 pairs, derived 2026-09-28
 }
 
@@ -156,7 +156,7 @@ def _solution_threshold(domain: str) -> float:
 # Always rewritten as a PAIR: rescaling between a fresh p50 and a stale p99 would
 # anchor the measure to two different corpora.
 _DEFICIT_RESCALE_ANCHORS: dict[str, tuple[float, float]] = {
-    "computer_vision": (0.8281, 0.8996),  # null p50/p99 over n=968 pairs, derived 2026-09-29
+    "computer_vision": (0.8235, 0.8959),  # null p50/p99 over n=5,264 pairs, derived 2026-09-29
     "medical_imaging": (0.8385, 0.9127),  # null p50/p99 over n=6,572 pairs, derived 2026-09-29
 }
 

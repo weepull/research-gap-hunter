@@ -210,6 +210,25 @@ def drift_report() -> list[dict]:
     return rows
 
 
+def _find_dict_block(text: str, section: str) -> tuple[int, int] | None:
+    """Locate a constant dict's assignment block, tolerating a type annotation.
+
+    Anchoring on the literal string f"{section} = {{" silently failed on
+    `_DEFICIT_RESCALE_ANCHORS: dict[str, tuple[float, float]] = {`, so the anchors were
+    reported as applied-then-FAILED while the other constants were rewritten — leaving
+    the derivation guard red for a reason the log made look like a missing literal.
+    Matching the assignment with a regex covers both annotated and bare forms.
+    """
+    match = re.search(
+        rf"^{re.escape(section)}\s*(?::[^=\n]*)?=\s*\{{", text, re.M
+    )
+    if match is None:
+        return None
+    start = match.start()
+    stop = text.index("}", start)
+    return (start, stop)
+
+
 def _replace_dict_entry(path: str, section: str, domain: str, old: float,
                         new: float, n: int) -> bool:
     """Rewrite one `"domain": value,  # n=...` line inside a constant dict.
@@ -224,11 +243,10 @@ def _replace_dict_entry(path: str, section: str, domain: str, old: float,
     measured, which is exactly what this script exists to prevent.
     """
     text = open(path).read()
-    anchor = f"{section} = {{"
-    if anchor not in text:
+    located = _find_dict_block(text, section)
+    if located is None:
         return False
-    start = text.index(anchor)
-    stop = text.index("}", start)
+    start, stop = located
     block = text[start:stop]
 
     pattern = re.compile(
@@ -274,11 +292,10 @@ def _replace_anchor_pair(path: str, domain: str, pair: tuple[float, float],
     are always written together even when only one drifted.
     """
     text = open(path).read()
-    anchor = "_DEFICIT_RESCALE_ANCHORS = {"
-    if anchor not in text:
+    located = _find_dict_block(text, "_DEFICIT_RESCALE_ANCHORS")
+    if located is None:
         return False
-    start = text.index(anchor)
-    stop = text.index("}", start)
+    start, stop = located
     block = text[start:stop]
     pattern = re.compile(
         rf'(^[ \t]*"{re.escape(domain)}"[ \t]*:[ \t]*)\([^)]*\)([ \t]*,)'

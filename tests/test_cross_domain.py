@@ -231,8 +231,20 @@ def test_cross_domain_threshold_sits_at_the_measured_noise_floor():
         cd.find_cross_domain_matches
     ).parameters["similarity_threshold"].default
 
-    assert default == 0.8792
-    assert default > 0.8294, "must sit above the measured null median"
+    # Deliberately NOT pinned to a literal. This constant is owned by
+    # scripts/derive_thresholds.py and is rewritten whenever its drift from the measured
+    # null exceeds DRIFT_TOLERANCE — corpus growth from 31 to 64 CV papers moved it from
+    # 0.8792 to 0.8764, and a literal here would turn that legitimate re-derivation into
+    # a unit-test failure whose only "fix" is copying whatever the code now says. The
+    # exact value is guarded against the live null distribution by
+    # tests/integration/test_threshold_derivation.py.
+    assert default == cd._CROSS_DOMAIN_THRESHOLD, (
+        "the default must be the module constant, not a second copy of the literal"
+    )
+    # What must hold regardless of the measured value: it sits above the null MEDIAN,
+    # which is the error the 0.82 value made (61.6% of random pairs cleared it).
+    assert default > 0.83, "must sit above the measured null median"
+    assert 0.83 < default < 1.0, "must be a plausible cosine floor"
 
 
 def test_cross_domain_rejects_pairs_below_the_noise_floor(monkeypatch):

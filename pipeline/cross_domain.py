@@ -68,7 +68,7 @@ _MAX_FD_CANDIDATES = 20
 # ingestion. Re-derived on the curated 116-paper corpus it comes to 0.8793 — a
 # 0.0001 difference, left alone because changing it is an advisor decision. See
 # PROJECT_HARDENING_PLAN.md item A2.
-_CROSS_DOMAIN_THRESHOLD = 0.8792
+_CROSS_DOMAIN_THRESHOLD = 0.8764  # null p95 over n=11,785 pairs, derived 2026-09-29
 
 _EXPLAIN_PROMPT = """\
 You are a scientific research strategist evaluating a cross-domain research hypothesis.

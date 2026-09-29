@@ -1045,6 +1045,64 @@ Measured on the trial tranche: **~44 s per paper** end to end.
 limitations section, fall back to the abstract and still yield limitations at the
 `inferred` tier.
 
+### Phase 3d · corpus growth by tranche — PARTIAL, stopped on budget 2026-09-29
+
+| | before | after |
+|---|---:|---:|
+| computer_vision papers | 28 | **64** |
+| medical_imaging papers | 85 | 85 (no MI tranche ran) |
+| total | 113 | **149** |
+| Limitation nodes | 141 | **215** |
+| FutureDirection nodes | 83 | **109** |
+
+**The ~300-per-domain target was not reachable and the measured rate says why.** End-to-end
+ingestion is **~160 s per paper** (arXiv candidate paging at 3 s per request, a full PDF
+download, Ollama extraction, SQLite + Neo4j writes). 600 papers is therefore ~27 hours, not
+the ~7 the initial 45 s/paper estimate implied. That 45 s came from a 3-paper smoke test
+with warm pagination and small PDFs — a 3.6× optimistic figure, now corrected in the driver,
+which projects from the rate the current run has actually observed.
+
+Tranche 1 (CV) was stopped at 36 of 50 papers when the budget ran out. Ingestion checkpoints
+per paper, so a later run resumes rather than restarting.
+
+**The post-tranche cycle was completed by hand after stopping**, because the rule that a
+tranche must not reach scoring before its derivation passes applies to a partial tranche too:
+re-embed (215 / 109 points) → re-derive → apply stale constants → guard green.
+
+**Corpus growth moved four CV constants past `DRIFT_TOLERANCE`, all downward:**
+
+| constant | old | new | drift |
+|---|---:|---:|---:|
+| `_CLUSTER_THRESHOLDS["computer_vision"]` | 0.8769 | **0.8744** | 0.0025 |
+| `_SOLUTION_THRESHOLDS["computer_vision"]` | 0.8773 | **0.8733** | 0.0040 |
+| `_CROSS_DOMAIN_THRESHOLD` | 0.8792 | **0.8764** | 0.0028 |
+| `_DEFICIT_RESCALE_ANCHORS["computer_vision"]` | (0.8281, 0.8996) | **(0.8235, 0.8959)** | 0.0046 / 0.0037 |
+
+Every MI constant was unchanged, which is the expected control: no MI papers were added.
+
+**Worth understanding, because it is counter-intuitive: a larger corpus *lowered* the CV
+noise floor.** More papers means more diverse limitation statements, so the average
+similarity of an arbitrary pair falls and the p95 falls with it. The thresholds become
+slightly *less* strict as the corpus grows, not more. Anyone assuming the opposite will
+misread the drift table.
+
+**Two bugs this phase surfaced, both fixed:**
+
+- **`derive_thresholds.py --apply` silently failed on the anchors.** Its locator matched the
+  literal `"_DEFICIT_RESCALE_ANCHORS = {"`, but that dict carries a type annotation, so the
+  regex never matched and the log said "could not locate the literal" while the other three
+  constants were rewritten — leaving the guard red for a reason that read like a missing
+  value. All locators now tolerate an annotation.
+- **Two unit tests pinned threshold literals** (`== 0.8792`), which turns a legitimate
+  re-derivation into a failure whose only fix is copying whatever the code now says. Both
+  now assert structure and defer the exact value to the derivation guard.
+
+**Known transient during ingestion:** new papers land in Neo4j immediately but not in Qdrant
+until the re-embed, so `get_all_limitations` sees them while `cluster_limitations` cannot
+find them as neighbours. A `/gaps` call mid-tranche therefore returns partially stale
+clustering. This is why the driver re-embeds and re-derives at each tranche boundary and why
+that cycle was completed manually after stopping early.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

@@ -827,6 +827,72 @@ fixture corpus, because a 13-paper fixture cannot produce a meaningful null. A c
 unit test asserts the *inventory* of threshold families matches the derivation script, so
 a new threshold cannot be added without becoming checkable.
 
+### Phase 1b · deterministic extraction-quality gates — DONE 2026-09-29
+
+Closes `PROJECT_HARDENING_PLAN.md` item **A3** without re-extraction, which stays
+blocked by B4. New module `pipeline/extraction_filter.py`, applied in
+`extract_paper` before anything reaches SQLite or the graph.
+
+**Four gates, all deterministic, no LLM anywhere in them.** Domain assignment,
+scoring and thresholds are all LLM-free in this project; a model deciding what counts
+as a real limitation would put model judgment directly upstream of every score.
+
+- **(a) prompt echo** — `PROMPT_ECHO_PHRASES`, matched against the **whole**
+  normalised string.
+- **(b) hedging** — a short `HEDGING_SUBSTRINGS` list for phrases that are
+  contentless wherever they appear, plus `HEDGING_WHOLE` for framings that are only
+  boilerplate when they *are* the whole string.
+- **(c) minimum informative length** — `MIN_WORDS`, the **5th percentile of the
+  measured word-count distribution** per field (both come out at 3 words;
+  `scripts/derive_length_cutoffs.py` reports the distribution). p5 rather than p10
+  because p10 for future directions is 5 words, which would discard terse but
+  specific solutions like "contrast-agnostic, pathology-encoded representations".
+- **(d) duplicates** — exact-after-normalisation and containment, **parameter-free on
+  purpose**. No Jaccard or cosine cutoff, because that would mean inventing an
+  unmeasured constant; a parameter-free rule was available so it is used.
+
+**Whole-string matching is load-bearing, not a detail.** `"remains challenging"` alone
+is worthless; `"remains challenging to process high-resolution images"` is a genuine
+two-paper gap in the live corpus. A substring rule deletes both.
+
+**The echo list is an explicit constant and must stay one.** It was briefly written to
+parse the quoted phrases out of the prompt at runtime, which is circular: the
+accompanying prompt fix removes those quotes, so a parsed list silently goes empty and
+the gate stops rejecting anything while still appearing to work. Three tests hold it
+in place — the list is non-empty and contains the known echoes; any phrase quoted in
+the prompt is covered by the list; and the prompt quotes no cue phrases at all.
+
+**A dry run caught my own over-reach, which is why the two hedging lists are split.**
+The first `HEDGING_SUBSTRINGS` included "further research is needed", "beyond the scope
+of this" and "left for future work". Those routinely appear in sentences that *do* name
+something — "Further research is needed to improve robustness and generalizability" —
+and were being silently discarded. They moved to `HEDGING_WHOLE`. Deleting signal
+quietly is worse than leaving a little boilerplate in.
+
+**Backfill (`scripts/filter_backfill.py`) re-filters stored strings and never
+re-extracts**, for the CLAUDE.md reason: re-extraction on a paper that already has
+graph relationships attaches new `Limitation` nodes while the old ones remain.
+
+| | before | after |
+|---|---:|---:|
+| extracted strings | 234 | **224** |
+| Limitation nodes | 148 | **141** |
+| FutureDirection nodes | 84 | **83** |
+| CV contributing papers | 16 | **15** |
+| MI contributing papers | 51 | **50** |
+
+**10 of 234 strings rejected (4.3%)** — 5 `too_short` (`Overfitting`, `Dataset bias`,
+`Training instabilities`, `domain shift`, `hallucinations`), 4 `prompt_echo`
+(`remains challenging` and `future work includes`, from `2405.14458` and `2309.17264` —
+both papers lost *every* limitation they had), 1 `hedging`
+(`overcome current limitations`). Every rejected string is logged to
+`data/rejected_extractions.jsonl` (gitignored, runtime artifact) so filtering is
+auditable — a silent filter is indistinguishable from an extraction failure.
+`raw_json` still stores the **unfiltered** model output, so the filter is reversible.
+
+**Thresholds re-derived afterwards; all five within `DRIFT_TOLERANCE`, none changed**
+(max drift 0.0010 on the cross-domain default).
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously
@@ -924,20 +990,31 @@ Paper text:
 {paper_text}
 ```
 
+The base prompt also carries an explicit anti-boilerplate constraint (added
+2026-09-29): every item must be a self-contained statement naming a specific problem
+or step, and section headings, connective words and hedging about the paper's own
+completeness are excluded.
+
 Tier guidance (`_TIER_INSTRUCTIONS`, injected by `_build_prompt()` immediately
-before `Paper text:`). The `explicit` tier renders the base prompt unchanged:
+before `Paper text:`). The `explicit` tier renders the base prompt unchanged.
 
-- **conclusion** — "This text is from the conclusion section. Extract implied
-  limitations — look for phrases like 'however', 'despite', 'remains
-  challenging', 'future work includes', 'we leave X for future'. Be specific."
-- **inferred** — "Limitations are not explicitly stated. Infer them from what the
-  paper claims to solve and what it does not address. Be conservative — only
-  infer clear limitations, not speculative ones."
+> **These deliberately quote NO example phrases, and must not start doing so again.**
+> The previous version listed cue words verbatim — "look for phrases like 'however',
+> 'despite', 'remains challenging', 'future work includes'" — and `llama3.1:8b` echoed
+> them straight back. The corpus ended up with `Limitation` nodes whose entire text was
+> one of those cues, and because `Limitation` is UNIQUE on `text` a single boilerplate
+> node was shared by every paper that emitted the same string, then became a cluster
+> seed, a gap description and a cross-domain match source.
+>
+> The instructions now describe the *kind* of clause to look for (where authors qualify
+> a result, contrast it with what they did not achieve, or defer work) and state that
+> the connective or hedging wording itself must never be reported. A test asserts no
+> cue phrase is quoted in the prompt, and a second asserts that any quoted phrase which
+> *is* present is covered by the filter's echo list.
 
-> Prompt quality is an **open issue**: half the extracted future directions are
-> contentless boilerplate that corrupts solution-deficit scoring. See item A3 in
-> `PROJECT_HARDENING_PLAN.md` — changing this prompt needs an advisor decision,
-> since re-extraction changes rankings.
+Prompt quality was `PROJECT_HARDENING_PLAN.md` item **A3** and is now addressed by the
+deterministic gates in Phase 1b below rather than by re-extraction — which remains
+blocked by B4.
 
 ---
 

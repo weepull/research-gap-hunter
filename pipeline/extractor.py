@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 from pipeline.domains import validate_domain, verify_declared_domain
+from pipeline.extraction_filter import filter_and_log
 
 load_dotenv()
 
@@ -91,6 +92,10 @@ Return ONLY valid JSON with these exact keys. No explanation, no markdown, no pr
 If limitations are not explicitly stated, return an empty list [] — do not invent limitations.
 If future_directions are not explicitly stated, return an empty list [] — do not invent future_directions.
 
+Every item must be a self-contained statement naming a specific problem or a specific
+proposed step. Do not return section headings, connective words, or hedging about how
+complete this paper is. If an item would not be understandable on its own, omit it.
+
 Paper text:
 {paper_text}"""
 
@@ -107,16 +112,26 @@ class ExtractionTier(str, Enum):
 
 # Extra prompt guidance appended for the weaker tiers. EXPLICIT keeps the base
 # prompt unchanged (see CLAUDE.md — the explicit prompt structure is fixed).
+# These deliberately contain NO quoted example phrases. The previous version listed
+# cue words verbatim ("look for phrases like 'remains challenging', 'future work
+# includes'"), and llama3.1:8b echoed them straight back: the corpus ended up with
+# Limitation nodes whose entire text was one of those cues, which then became cluster
+# seeds, gap descriptions and cross-domain match sources. Describing the *kind* of
+# clause to look for cannot leak the same way. pipeline/extraction_filter.py rejects
+# the known echoes as a second line of defence, since a future prompt edit could
+# reintroduce the problem.
 _TIER_INSTRUCTIONS = {
     ExtractionTier.CONCLUSION.value: (
-        "This text is from the conclusion section. Extract implied limitations — "
-        "look for phrases like 'however', 'despite', 'remains challenging', "
-        "'future work includes', 'we leave X for future'. Be specific."
+        "This text is from the conclusion section, so limitations are usually implied "
+        "rather than stated outright. Look for clauses where the authors qualify a "
+        "result, contrast it with something they did not achieve, or defer work to a "
+        "later paper. Report the substance of each such clause as a self-contained "
+        "statement — never the connective or hedging wording itself."
     ),
     ExtractionTier.INFERRED.value: (
-        "Limitations are not explicitly stated. Infer them from what the paper "
-        "claims to solve and what it does not address. Be conservative — only "
-        "infer clear limitations, not speculative ones."
+        "Limitations are not explicitly stated. Infer them from what the paper claims "
+        "to solve and what it does not address. Be conservative — only infer clear "
+        "limitations, not speculative ones. Each one must name a specific problem."
     ),
 }
 
@@ -467,7 +482,19 @@ def extract_paper(arxiv_id: str, domain: str) -> PaperExtract:
     prompt = _build_prompt(paper_text, tier)
 
     raw_dict = call_ollama(prompt)
+    # raw_json preserves the UNFILTERED model output, so the filter is always
+    # reversible from what is stored and an audit can see what was discarded.
     raw_json_str = json.dumps(raw_dict)
+
+    # Deterministic quality gates (Phase 1b). Applied before anything reaches
+    # SQLite or the graph, because Limitation is UNIQUE on text and a boilerplate
+    # node, once created, is shared by every paper that emits the same string.
+    limitations = filter_and_log(
+        raw_dict.get("limitations", []), "limitations", arxiv_id
+    )
+    future_directions = filter_and_log(
+        raw_dict.get("future_directions", []), "future_directions", arxiv_id
+    )
 
     try:
         result = PaperExtract(
@@ -479,8 +506,8 @@ def extract_paper(arxiv_id: str, domain: str) -> PaperExtract:
             methods=raw_dict.get("methods", []),
             datasets=raw_dict.get("datasets", []),
             evaluation_metrics=raw_dict.get("evaluation_metrics", []),
-            limitations=raw_dict.get("limitations", []),
-            future_directions=raw_dict.get("future_directions", []),
+            limitations=limitations,
+            future_directions=future_directions,
             raw_json=raw_json_str,
             ingested_at=datetime.now(timezone.utc).isoformat(),
             extraction_tier=tier,

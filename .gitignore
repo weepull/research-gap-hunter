@@ -19,3 +19,4 @@ uv.lock
 *.egg-info/
 build/
 dist/
+data/rejected_extractions.jsonl

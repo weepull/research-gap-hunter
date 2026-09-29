@@ -657,10 +657,18 @@ def test_build_prompt_explicit_is_unchanged():
 
 
 def test_build_prompt_conclusion_adds_instruction():
-    """The conclusion tier injects the conclusion-specific guidance."""
+    """The conclusion tier injects the conclusion-specific guidance.
+
+    No longer asserts the literal cue phrase "remains challenging" appears in the
+    prompt — the whole point of the Phase 1b prompt fix is that it does not. The
+    model echoed those quoted examples back as findings, and the corpus ended up with
+    Limitation nodes whose entire text was one of them. See
+    test_prompt_contains_no_quotable_cue_phrases for the guard that keeps it out.
+    """
     prompt = _build_prompt("Title: X\n\nConclusion\nwe conclude.", "conclusion")
     assert "conclusion section" in prompt
-    assert "remains challenging" in prompt
+    assert "qualify a result" in prompt
+    assert "self-contained statement" in prompt
     assert "Paper text:" in prompt
 
 

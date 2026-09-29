@@ -66,6 +66,10 @@ def _make_qdrant_mock(existing_collections: list[str] | None = None) -> MagicMoc
     # SimpleNamespace gives a plain .name attribute that ensure_collection can read.
     coll_objects = [types.SimpleNamespace(name=n) for n in names]
     client.get_collections.return_value = MagicMock(collections=coll_objects)
+    # _upsert_records now prunes stale points, which scrolls the collection. A bare
+    # MagicMock returns something that cannot unpack into (batch, offset), so model an
+    # empty collection by default; tests that care about pruning override this.
+    client.scroll.return_value = ([], None)
     return client
 
 
@@ -587,3 +591,96 @@ def test_indexed_payload_fields_covers_every_filtered_field():
     from vectors.embed import _INDEXED_PAYLOAD_FIELDS
 
     assert "domain" in _INDEXED_PAYLOAD_FIELDS
+
+
+# ---------------------------------------------------------------------------
+# Deterministic point ids and stale-point pruning — Phase 3a
+# ---------------------------------------------------------------------------
+
+
+def test_point_id_is_stable_for_the_same_content():
+    """Re-embedding an unchanged corpus must reuse the same ids.
+
+    Fails against pre-fix code, where the id was the enumeration index of an
+    unordered Cypher result — so the same limitation could land on a different id on
+    every re-embed.
+    """
+    from vectors.embed import point_id
+
+    first = point_id("computer_vision", "convergence is slow on long sequences")
+    second = point_id("computer_vision", "convergence is slow on long sequences")
+    assert first == second
+
+
+def test_point_id_separates_domains():
+    """The same limitation text in two domains is two points with different payloads."""
+    from vectors.embed import point_id
+
+    assert point_id("computer_vision", "domain shift hurts accuracy") != point_id(
+        "medical_imaging", "domain shift hurts accuracy"
+    )
+
+
+def test_point_id_separates_different_texts():
+    from vectors.embed import point_id
+
+    assert point_id("computer_vision", "a") != point_id("computer_vision", "b")
+
+
+def test_upsert_uses_content_derived_ids_not_positions(monkeypatch):
+    """The ids written to Qdrant must be the deterministic ones."""
+    from vectors.embed import _upsert_records, point_id
+
+    records = [
+        {"text": "first limitation text", "paper_ids": ["a"], "domain": "computer_vision",
+         "year": 2024},
+        {"text": "second limitation text", "paper_ids": ["b"], "domain": "computer_vision",
+         "year": 2025},
+    ]
+    client = _make_qdrant_mock(existing_collections=["limitations"])
+    _upsert_records(records, client, _make_model_mock(), "limitations", prune=False)
+
+    points = client.upsert.call_args.kwargs["points"]
+    assert [p.id for p in points] == [
+        point_id("computer_vision", "first limitation text"),
+        point_id("computer_vision", "second limitation text"),
+    ]
+    assert 0 not in [p.id for p in points], "positional ids must be gone"
+
+
+def test_upsert_prunes_points_whose_content_is_gone(monkeypatch):
+    """A shrinking corpus must not leave orphaned points behind.
+
+    Fails against pre-fix code: _upsert_records only ever upserted, so points holding
+    text no paper reported any more stayed in the collection and kept matching
+    queries. Every curation pass so far had to drop and rebuild both collections to
+    work around it.
+    """
+    from vectors.embed import _upsert_records, point_id
+
+    live = {"text": "surviving limitation text", "paper_ids": ["a"],
+            "domain": "computer_vision", "year": 2024}
+    stale_id = point_id("computer_vision", "deleted limitation text")
+    live_id = point_id("computer_vision", "surviving limitation text")
+
+    client = _make_qdrant_mock(existing_collections=["limitations"])
+    client.scroll.side_effect = [
+        ([types.SimpleNamespace(id=stale_id), types.SimpleNamespace(id=live_id)], None),
+    ]
+
+    _upsert_records([live], client, _make_model_mock(), "limitations", prune=True)
+
+    client.delete.assert_called_once()
+    removed = client.delete.call_args.kwargs["points_selector"]
+    assert list(removed) == [stale_id]
+
+
+def test_upsert_with_prune_disabled_deletes_nothing(monkeypatch):
+    """Incremental tranche ingestion passes only a slice, so pruning would be wrong."""
+    from vectors.embed import _upsert_records
+
+    records = [{"text": "one new limitation text", "paper_ids": ["a"],
+                "domain": "computer_vision", "year": 2024}]
+    client = _make_qdrant_mock(existing_collections=["limitations"])
+    _upsert_records(records, client, _make_model_mock(), "limitations", prune=False)
+    client.delete.assert_not_called()

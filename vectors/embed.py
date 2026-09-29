@@ -1,7 +1,8 @@
 """Generates Specter2 embeddings and upserts them into Qdrant collections."""
 
-import os
 import logging
+import os
+import uuid
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -216,13 +217,90 @@ def _query_neo4j_future_directions() -> list[dict]:
     return records
 
 
+# Namespace for deterministic point ids. Fixed forever: changing it re-ids every point
+# in both collections, which would orphan everything already stored.
+_POINT_ID_NAMESPACE = uuid.UUID("6f1c3b6e-8a2d-5c41-9f3a-1d2e4b5a6c7d")
+
+
+def point_id(domain: str, text: str) -> str:
+    """A stable id for one (domain, text) pair.
+
+    Point ids used to be the enumeration index of an unordered Cypher result
+    (``id=i``), which had two consequences. Ids were not stable across runs, so the
+    same limitation could land on a different id each re-embed; and because
+    `_upsert_records` only ever upserted and never deleted, a corpus that *shrank*
+    left orphaned points behind — holding stale text and a stale `domain` payload, and
+    still matching queries. That is why every curation pass so far has had to drop and
+    rebuild both collections wholesale.
+
+    Deriving the id from the content makes a re-embed idempotent: the same limitation
+    always occupies the same point, and points whose content no longer exists can be
+    identified and removed (see `_delete_stale_points`).
+
+    `domain` is part of the key because the same limitation text can legitimately be
+    reported by papers in both domains, and those are two separate points with
+    different payloads.
+    """
+    return str(uuid.uuid5(_POINT_ID_NAMESPACE, f"{domain}\u0000{text}"))
+
+
+def _existing_point_ids(client: QdrantClient, collection_name: str) -> set[str]:
+    """Every point id currently in a collection."""
+    ids: set[str] = set()
+    offset = None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=collection_name,
+            limit=500,
+            offset=offset,
+            with_payload=False,
+            with_vectors=False,
+        )
+        ids.update(str(p.id) for p in batch)
+        if offset is None:
+            return ids
+
+
+def _delete_stale_points(
+    client: QdrantClient, collection_name: str, live_ids: set[str]
+) -> int:
+    """Remove points whose content is no longer in the graph. Returns the count.
+
+    This is the half that was missing. Without it a re-embed after any removal leaves
+    points that still answer queries with text no paper reports any more.
+    """
+    try:
+        existing = _existing_point_ids(client, collection_name)
+    except UnexpectedResponse:
+        return 0
+    stale = existing - live_ids
+    if not stale:
+        return 0
+    client.delete(collection_name=collection_name, points_selector=list(stale), wait=True)
+    logger.warning(
+        "Deleted %d stale point(s) from '%s' — content no longer present in the graph",
+        len(stale), collection_name,
+    )
+    return len(stale)
+
+
 def _upsert_records(
     records: list[dict],
     client: QdrantClient,
     model,
     collection_name: str,
+    prune: bool = True,
 ) -> int:
-    """Embed texts and upsert all records into the given Qdrant collection. Returns count."""
+    """Embed texts and upsert records into a Qdrant collection. Returns the count.
+
+    Ids are deterministic (see `point_id`), so this is idempotent: re-running over an
+    unchanged corpus rewrites the same points rather than accumulating new ones. With
+    `prune=True` (the default) any point not in `records` is deleted afterwards, so the
+    collection ends up an exact mirror of the graph.
+
+    `prune=False` is for incremental tranche ingestion, where `records` is deliberately
+    only the new slice and pruning would delete everything else.
+    """
     if not records:
         return 0
 
@@ -231,10 +309,13 @@ def _upsert_records(
     vectors = _embed_texts(model, texts)
 
     points = []
-    for i, (record, vector) in enumerate(zip(records, vectors)):
+    live_ids: set[str] = set()
+    for record, vector in zip(records, vectors):
+        pid = point_id(record["domain"], record["text"])
+        live_ids.add(pid)
         points.append(
             PointStruct(
-                id=i,
+                id=pid,
                 vector=vector,
                 payload={
                     "limitation_text": record["text"],
@@ -247,6 +328,8 @@ def _upsert_records(
 
     client.upsert(collection_name=collection_name, points=points)
     logger.info("Upserted %d points into '%s'", len(points), collection_name)
+    if prune:
+        _delete_stale_points(client, collection_name, live_ids)
     return len(points)
 
 

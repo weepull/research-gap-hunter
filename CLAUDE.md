@@ -964,6 +964,29 @@ all N papers wrote. Frequency hints in `GapCard` and `GapDetailSheet` now name t
 denominator (papers that contributed ≥1 limitation), and the deficit explanation
 describes the continuous measure.
 
+### Phase 3a · stable Qdrant point ids — DONE 2026-09-29
+
+Point ids were `id=i`, the enumeration index of a Cypher result with **no `ORDER BY`**,
+and `_upsert_records` only ever upserted. Two consequences: ids were not stable across
+re-embeds, and a corpus that *shrank* left orphaned points holding stale text and a
+stale `domain` payload that still matched queries. Every curation pass so far has had
+to drop and rebuild both collections wholesale to work around it.
+
+Ids are now `uuid5(namespace, f"{domain}\0{text}")` via `vectors.embed.point_id`, and
+`_upsert_records` prunes any point whose content is no longer in the graph.
+
+- **`domain` is part of the key** because the same limitation text can legitimately be
+  reported in both domains, and those are two points with different payloads.
+- **`_POINT_ID_NAMESPACE` is fixed forever.** Changing it re-ids every point in both
+  collections and orphans everything already stored.
+- **`prune=False`** exists for incremental tranche ingestion, where `records` is only
+  the new slice and pruning would delete the rest of the corpus.
+
+Collections rebuilt once so every point carries a content-derived id: 141 limitations,
+83 future directions, unchanged counts. **Re-embedding twice more left both counts
+identical**, which is the property that was missing — a re-embed is now idempotent
+rather than additive.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

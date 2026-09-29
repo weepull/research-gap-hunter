@@ -714,3 +714,50 @@ def test_extract_paper_conclusion_tier_shapes_prompt(monkeypatch):
 
     extract_paper("2301.00234", domain="computer_vision")
     assert "conclusion section" in captured["prompt"]
+
+
+def test_extract_paper_uses_supplied_metadata_and_skips_semantic_scholar(monkeypatch):
+    """Bulk ingestion passes arXiv's metadata, so no Semantic Scholar call is made.
+
+    Found while running the first live tranche: Semantic Scholar returns 404 for
+    brand-new arXiv papers, so every paper in a newest-first tranche failed extraction
+    even though arXiv had already supplied title, abstract and year.
+    """
+    import pipeline.extractor as extractor
+
+    def must_not_run(*a, **k):
+        raise AssertionError("Semantic Scholar must not be called when metadata is given")
+
+    monkeypatch.setattr(extractor, "fetch_paper_text", must_not_run)
+    captured = {}
+
+    def fake_full_text(arxiv_id, abstract=""):
+        captured["abstract"] = abstract
+        return ("body text", "explicit")
+
+    monkeypatch.setattr(extractor, "fetch_full_text", fake_full_text)
+    monkeypatch.setattr(extractor, "call_ollama", lambda prompt: {
+        "objectives": [], "methods": [], "datasets": [], "evaluation_metrics": [],
+        "limitations": ["Detection degrades on small distant objects"],
+        "future_directions": [],
+    })
+
+    paper = extractor.extract_paper(
+        "2609.32846", domain="computer_vision",
+        metadata={"title": "A Detector", "year": 2026, "abstract": "we detect things"},
+    )
+
+    assert paper.title == "A Detector"
+    assert paper.year == 2026
+    assert captured["abstract"] == "we detect things"
+
+
+def test_extract_paper_rejects_incomplete_metadata(monkeypatch):
+    """A partial metadata dict must fail loudly rather than store empty fields."""
+    import pipeline.extractor as extractor
+
+    monkeypatch.setattr(extractor, "fetch_paper_text",
+                        lambda a: (_ for _ in ()).throw(AssertionError("not reached")))
+    with pytest.raises(ValueError, match="missing required keys"):
+        extractor.extract_paper("2609.32846", domain="computer_vision",
+                                metadata={"title": "A Detector"})

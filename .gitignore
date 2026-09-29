@@ -20,3 +20,5 @@ uv.lock
 build/
 dist/
 data/rejected_extractions.jsonl
+data/ingest_log.jsonl
+data/ingest_checkpoint.json

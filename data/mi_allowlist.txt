@@ -1,0 +1,15 @@
+# arXiv ids exempt from the primary-category rule in pipeline/corpus_rules.py.
+# One id per line; "#" starts a comment.
+#
+# An explicit file of ids rather than a broadened rule, so every exemption is visible
+# and attributable. Seeded 2026-09-29 with the six medical-imaging papers already in
+# the corpus whose arXiv primary category is none of {eess.IV, physics.med-ph, cs.CV}
+# — each verified clinical on inspection. Without these the rules would reject papers
+# already judged in scope.
+
+2402.14815  # cs.CY  — demographic bias of vision-language foundation models in medical imaging
+2404.15692  # cs.LG  — deep learning for accelerated and robust MRI reconstruction (review)
+2405.00241  # physics.med-ph — MRI reconstruction via deep learning + compressed sensing
+2501.04614  # cs.AI  — XGeM, multi-prompt foundation model for multimodal medical data
+2505.03785  # cs.LG  — mAIstro, multi-agentic system for radiomics workflows
+2506.07044  # cs.CL  — Lingshu, generalist foundation model for medical understanding

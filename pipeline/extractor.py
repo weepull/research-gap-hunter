@@ -453,7 +453,9 @@ def _build_prompt(paper_text: str, tier: str) -> str:
     return prompt
 
 
-def extract_paper(arxiv_id: str, domain: str) -> PaperExtract:
+def extract_paper(
+    arxiv_id: str, domain: str, metadata: dict | None = None
+) -> PaperExtract:
     """Fetch paper, run LLM extraction, validate with Pydantic, and return PaperExtract.
 
     ``domain`` is **required** and validated against pipeline.domains —
@@ -470,10 +472,33 @@ def extract_paper(arxiv_id: str, domain: str) -> PaperExtract:
     Segmentation" is a medical paper thick with CV vocabulary), so letting it
     overrule a human declaration would swap a loud failure mode for a quiet one.
 
+    ``metadata`` optionally supplies ``{"title", "year", "abstract"}`` that the caller
+    already has, skipping the Semantic Scholar lookup entirely. Bulk ingestion from the
+    arXiv API passes it, for two reasons found while running the first tranche:
+
+    - **Semantic Scholar does not index brand-new arXiv papers.** Every paper in a
+      newest-first tranche returned 404, so extraction failed for all of them even
+      though arXiv had already given us title, abstract and year.
+    - **It removes a rate limit from the bulk path.** The free tier is 1 req/sec and
+      the retry schedule waits up to 60s per 429, which dominated the run.
+
+    Left as the default for single-paper use (`/ingest`), where Semantic Scholar's
+    metadata is richer and the quota cost is one request.
+
     On validation failure, logs to data/failed_extractions.log and re-raises.
     """
     domain = validate_domain(domain)
-    paper_meta = fetch_paper_text(arxiv_id)
+    if metadata is None:
+        paper_meta = fetch_paper_text(arxiv_id)
+    else:
+        missing = {"title", "year", "abstract"} - set(metadata)
+        if missing:
+            raise ValueError(f"metadata is missing required keys: {sorted(missing)}")
+        paper_meta = {
+            "title": metadata["title"],
+            "year": metadata["year"],
+            "abstract": metadata["abstract"],
+        }
     # Semantic Scholar supplies metadata (title, year); the body text comes from the
     # PDF's limitations/future-work/conclusion section, falling back to the abstract.
     # The tier records where the text came from and shapes the extraction prompt.

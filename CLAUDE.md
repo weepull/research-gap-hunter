@@ -987,6 +987,64 @@ Collections rebuilt once so every point carries a content-derived id: 141 limita
 identical**, which is the property that was missing — a re-embed is now idempotent
 rather than additive.
 
+### Phase 3b/3c · rule-gated resumable ingestion — DONE 2026-09-29
+
+**Corpus rules are now enforced at ingest time** (`pipeline/corpus_rules.py`), based on
+arXiv's own **primary category** rather than on anyone's reading of a title. All
+fourteen papers removed across the two curation passes got in because ingestion accepted
+whatever a keyword search returned.
+
+```
+computer_vision: primary in {cs.CV}
+medical_imaging: primary in {eess.IV, physics.med-ph}, or primary in {cs.CV}
+                 with a medical keyword match
+```
+
+Anything else is `rule_rejected` unless its id is in `data/mi_allowlist.txt`.
+
+- **Cross-listing to `cs.CV` is not sufficient for CV.** Every paper removed in
+  curation pass 2 was cross-listed `cs.CV` with a `cs.CL` primary.
+- **The CV rule is deliberately not applied to MI.** Medical imaging legitimately spans
+  two primaries (44 `cs.CV`, 35 `eess.IV`), so a single-category rule would delete real
+  papers.
+- **The keyword list gates, it never assigns.** It only decides whether a `cs.CV`-primary
+  paper may enter medical imaging; the caller always declares the domain. Same restraint
+  as `verify_declared_domain`, same reason.
+- **`data/mi_allowlist.txt`** is an explicit file of ids, not a broadened rule, so each
+  exemption is visible and attributable. Seeded with the six MI papers whose primaries
+  are `cs.CY` / `cs.LG` / `physics.med-ph` / `cs.AI` / `cs.CL`.
+
+`pipeline/arxiv_source.py` queries `cat:<category>` rather than keywords — a category is
+a claim arXiv itself makes about the paper. One request every three seconds per arXiv's
+terms, exponential backoff, version suffixes stripped so ids match what is stored.
+
+`scripts/ingest_tranche.py` requires `--domain`, skips already-ingested ids,
+**checkpoints after every paper**, retries twice then logs and continues, and records one
+line per paper in `data/ingest_log.jsonl` with outcome `ok` / `no_limitations` /
+`pdf_failed` / `extraction_failed` / `rule_rejected`. One paper at a time, model loaded
+once, no parallel extraction. Skipping already-ingested papers is a **correctness**
+requirement, not an optimisation: `Limitation` is UNIQUE on `text` and
+`_upsert_paper_counting` only MERGEs, so re-ingesting attaches a second set of nodes.
+
+**Two things the first live tranche taught, both fixed:**
+
+- **Semantic Scholar 404s on brand-new arXiv papers.** All three papers in the first
+  trial failed extraction, because `extract_paper` fetched metadata from Semantic
+  Scholar that arXiv had *already provided*. `extract_paper` now takes an optional
+  `metadata` dict; the ingest job passes arXiv's title/abstract/year and skips the
+  lookup. That also removed the 1 req/sec limit and its up-to-60s 429 retries from the
+  bulk path. Single-paper `/ingest` still uses Semantic Scholar, where the metadata is
+  richer and the quota cost is one request.
+- **PDF failure was observable but not recorded.** The extractor already logs a
+  distinctive warning on PDF fallback, so the ingest job listens for it with a log
+  handler rather than changing `fetch_full_text`'s signature and its tests.
+
+Measured on the trial tranche: **~44 s per paper** end to end.
+
+`pdf_failed` is common and is not an error — papers over the 30MB cap, or with no
+limitations section, fall back to the abstract and still yield limitations at the
+`inferred` tier.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

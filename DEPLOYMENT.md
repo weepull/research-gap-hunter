@@ -136,6 +136,42 @@ relationships created.
 **Option B — dump and restore.** Aura Free does not accept `neo4j-admin`
 database dumps. Use Option A.
 
+### Footprint on a 512MB tier — measured 2026-09-29
+
+Run `python scripts/measure_footprint.py` to reproduce. These are measured values, not
+estimates:
+
+| | measured |
+|---|---:|
+| process RSS before loading the model | 92.8 MB |
+| process RSS with Specter2 resident | **472.3 MB** |
+| attributable to the model | +379.5 MB |
+| headroom against a 512MB cap | **+39.7 MB** |
+| Qdrant vectors (224 points × 768 × float32) | 0.66 MB |
+| HuggingFace model cache on disk | 948.6 MB |
+
+**Verdict: it fits, but without margin.** Under 100MB of headroom a concurrent request or
+a larger encode batch can still push it over, and the process is killed rather than
+degraded.
+
+**The binding constraint is a fixed cost, which changes what questions are worth asking.**
+The embedding model is ~380MB resident for the life of the process, because every query
+embeds text. The corpus vectors are **0.66 MB** and live in Qdrant, not in the API
+process. So:
+
+- **"Will a bigger corpus fit?" is the wrong question.** Corpus growth barely moves the
+  API's memory at all — it moves Qdrant's, which is a separate service and three orders of
+  magnitude below the cap. Ten thousand limitations would be ~30MB of vectors.
+- **What would actually change the answer** is the model: a smaller embedding model, or
+  moving embedding out of the API process behind a queue. Neither is a corpus decision.
+- **The 948MB HuggingFace cache is a disk and image-size concern, not a memory one.** It is
+  baked into the image (see the offline-load section above); only the loaded weights are
+  resident.
+
+If the tier is ever exceeded, the symptom will be an OOM kill on a request that happened to
+arrive during an encode, not a gradual slowdown — so treat the 39.7MB as a real operating
+limit rather than a comfortable buffer.
+
 ### Verify
 
 In the Aura console's **Query** tab:

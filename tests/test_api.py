@@ -372,6 +372,10 @@ def test_score_gaps_divides_by_contributing_papers_not_domain_size(monkeypatch):
     )
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [lims])
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda *a, **k: [])
+    # The continuous deficit (A9 Option F) embeds the representative text, so the
+    # real Specter2 weights load unless _addressing_hits is stubbed too. Without
+    # this the hermetic unit suite jumps from 0.7s to 6s.
+    monkeypatch.setattr(gs, "_addressing_hits", lambda *a, **k: [])
 
     def must_not_be_the_denominator(domain):
         raise AssertionError("score_gaps must not divide by the domain's total paper count")

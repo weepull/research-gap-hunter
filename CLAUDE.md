@@ -224,9 +224,12 @@ score = (0.40 × frequency_score) + (0.35 × recency_score) + (0.25 × solution_
   **papers_in_domain_reporting_any_limitation** (`_count_contributing_papers`).
   Not `total_papers_in_domain` — changed 2026-09-28, see Phase 3 below.
 - `recency_score` = papers_last_2yr_reporting / papers_all_time_reporting
-- `solution_deficit_score` = 1 - (future_directions_addressing / papers_reporting),
-  where "addressing" means same-domain **and** not authored by a paper that reports
-  the limitation — see the decision below
+- `solution_deficit_score` = 1 - addressedness, where
+  `addressedness = clamp((nearest_similarity - null_p50) / (null_p99 - null_p50), 0, 1)`
+  over the *eligible* future directions (same-domain **and** not authored by a paper
+  that reports the limitation). **Changed 2026-09-29 (A9 Option F)** from the previous
+  `1 - (count_addressing / papers_reporting)`, which was dimensionally incoherent and
+  saturated to four distinct values per domain. See Phase 2 below.
 
 > ### The coefficients are not the influence — read this before citing "40/35/25"
 >
@@ -892,6 +895,74 @@ auditable — a silent filter is indistinguishable from an extraction failure.
 
 **Thresholds re-derived afterwards; all five within `DRIFT_TOLERANCE`, none changed**
 (max drift 0.0010 on the cross-domain default).
+
+### Phase 2 · A9 resolved — Option F — DONE 2026-09-29
+
+Closes `PROJECT_HARDENING_PLAN.md` item **A9**. Full measurements in
+`A9_F_MEASURED.md`. Two independent changes; **the 0.40/0.35/0.25 weights and the
+recency term are untouched.**
+
+**1 · `solution_deficit` is continuous.** Was
+`1 - (count_addressing / papers_reporting)` — a corpus-wide count over a cluster-local
+count, so not a proportion, with only **4 distinct values per domain** and 18 of 28 CV
+/ 38 of 54 MI gaps at exactly 1.0. Now `1 - addressedness`, rescaling the **nearest**
+eligible future direction's similarity between the domain null's p50 and p99.
+Dimensionally coherent (a cosine rescaled by two cosine percentiles) and still
+deterministic (the anchors are corpus-derived constants, not per-result-set values).
+
+**2 · Two-tier ranking.** Gaps with ≥2 supporting papers rank above *all*
+single-source gaps; each tier then orders by (score desc, papers desc, newest year
+desc, description asc). A tier rather than a formula change because recency and
+deficit are both maximal in the *absence* of evidence, and no reweighting fixes that
+without asserting a precision the corpus cannot support — at 15 contributing CV papers
+the Wilson intervals for a one- and a three-paper gap overlap heavily.
+
+| | CV before | CV after | MI before | MI after |
+|---|---:|---:|---:|---:|
+| exact-score ties | 17 of 24 | **0** | 38 of 53 | **3** |
+| distinct scores | 11 | **24 of 24** | 25 | **51** |
+| distinct deficit values | 4 | **24** | 4 | **46** |
+| deficit at exactly 1.0 | 18 | **1** | 38 | **0** |
+| Spearman vs previous | — | 0.7287 | — | 0.5939 |
+| corroborated / single-source | — | 5 / 19 | — | 16 / 37 |
+
+Frequency's measured influence is still ~8–10% against a nominal 40% — unchanged
+conclusion, and still documented rather than normalised away. But **deleting the
+frequency term now changes the top-10 order in both domains**, where before it did
+not: with ties gone, the term finally discriminates.
+
+**Anchor choice, per the stated rule.** Keep p50/p99 unless p50/p95 gives strictly
+fewer ties *and* higher Spearman. It gives neither, in either domain — CV ties 3 vs 0,
+MI ties 15 vs 3, Spearman lower in both. p95 sits only ~0.05 above p50, so the narrow
+span re-saturates at the *other* end (MI deficits at exactly 0.0 go from 7 to 24) and
+collapses `/cross-domain` to zero matches both ways. **p50/p99 kept.**
+
+**`_UNRESOLVED_DEFICIT_FLOOR = 0.3` is now load-bearing, and that is new.** Item A5
+called it "effectively a binary switch, not a tunable dial" — true when deficits took
+four values. Now that they are continuous it genuinely selects: gaps above the floor
+went 18→16 (CV) and 33→27 (MI), and `/cross-domain` went 10→7 (CV→MI) and 10→4
+(MI→CV). It has never been derived from anything. **Flagged, not changed** — out of
+Phase 2's scope.
+
+**One policy genuinely changed.** The 2026-08-21 rule was "the solutions shown are
+exactly the ones counted against the score". The score is now set by the *nearest*
+eligible future direction. When any hit clears `_solution_threshold` that nearest one
+is the first item of `proposed_solutions`, so the score is still set by something the
+reader can see — but when none clears it, the list is empty and the deficit may still
+be below 1.0, because the nearest hit can sit above the null median without reaching
+p95. Intentional: a weak-but-real neighbour should not read as "nobody proposed
+anything". An empty solution list no longer implies deficit exactly 1.0.
+
+**Frontend.** `GapResult.tier` is sent by the backend rather than derived client-side,
+so ranking and label cannot disagree. `/gaps` shows a heading at each tier boundary —
+necessary, because scores are deliberately **non-monotonic across it** and without the
+divider a higher score below a lower one reads as a broken sort. `SupportBadge` now
+says "Corroborated — N papers report similar limitations"; the previous "N papers
+report this limitation" was **false for every multi-member cluster**, since a gap is a
+cluster of similar statements labelled by its centroid-nearest member, not a sentence
+all N papers wrote. Frequency hints in `GapCard` and `GapDetailSheet` now name the real
+denominator (papers that contributed ≥1 limitation), and the deficit explanation
+describes the continuous measure.
 
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 

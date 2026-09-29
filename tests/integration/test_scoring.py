@@ -98,10 +98,19 @@ def test_ranking_follows_the_documented_tiebreak_policy(which, request):
     if len(gaps) < 2:
         pytest.skip("need at least two gaps to check ordering")
 
-    scores = [g.score for g in gaps]
-    assert scores == sorted(scores, reverse=True), "gaps must be sorted by score descending"
+    # Score-descending holds WITHIN a tier, not across the whole list. Since A9
+    # Option F every corroborated gap ranks above every single-source one, so a
+    # single-source gap further down may carry a higher score. Asserting global
+    # monotonicity here would be asserting the absence of the tier rule.
+    for tier in ("corroborated", "single_source"):
+        scores = [g.score for g in gaps if g.tier == tier]
+        assert scores == sorted(scores, reverse=True), (
+            f"{tier} gaps must be sorted by score descending within their tier"
+        )
 
     for earlier, later in zip(gaps, gaps[1:]):
+        if earlier.tier != later.tier:
+            continue
         if earlier.score != later.score:
             continue
         assert len(earlier.supporting_papers) >= len(later.supporting_papers), (
@@ -217,3 +226,89 @@ def test_scoring_is_deterministic(loaded_corpus):
 
     assert [g.gap_description for g in first] == [g.gap_description for g in second]
     assert [g.score for g in first] == [g.score for g in second]
+
+
+# ---------------------------------------------------------------------------
+# A9 Option F — continuous deficit and two-tier ranking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("which", ["cv_gaps", "mi_gaps"])
+def test_deficit_is_continuous_not_saturated(which, request):
+    """The deficit must take many distinct values, not four.
+
+    Fails against pre-Option-F code, where the count-based deficit had exactly 4
+    distinct values per domain on the live corpus, with 18 of 28 CV and 38 of 54 MI
+    gaps at exactly 1.0 — the direct cause of two thirds of gaps sharing a score.
+    """
+    gaps = request.getfixturevalue(which)
+    if len(gaps) < 6:
+        pytest.skip("need a handful of gaps for a distribution to mean anything")
+
+    values = {round(g.solution_deficit_score, 4) for g in gaps}
+    saturated = sum(1 for g in gaps if g.solution_deficit_score == 1.0)
+    assert len(values) > 4, f"deficit still takes only {len(values)} distinct values"
+    assert saturated < len(gaps) / 2, (
+        f"{saturated} of {len(gaps)} gaps sit at exactly 1.0 — the term is still saturating"
+    )
+
+
+@pytest.mark.parametrize("which", ["cv_gaps", "mi_gaps"])
+def test_every_corroborated_gap_ranks_above_every_single_source_gap(which, request):
+    """The tier rule, end to end.
+
+    Fails against pre-Option-F code: eleven single-paper CV gaps outranked the
+    four-paper gap, which sat at rank 12.
+    """
+    gaps = request.getfixturevalue(which)
+    tiers = [g.tier for g in gaps]
+    assert set(tiers) <= {"corroborated", "single_source"}
+    # No corroborated gap may appear after a single-source one.
+    seen_single = False
+    for gap in gaps:
+        if gap.tier == "single_source":
+            seen_single = True
+        elif seen_single:
+            pytest.fail(
+                f"corroborated gap {gap.gap_description[:50]!r} ranks below a "
+                "single-source gap"
+            )
+
+
+@pytest.mark.parametrize("which", ["cv_gaps", "mi_gaps"])
+def test_tier_label_agrees_with_the_evidence(which, request):
+    """The label the reader sees must match the paper count it claims."""
+    gaps = request.getfixturevalue(which)
+    for gap in gaps:
+        expected = "corroborated" if len(gap.supporting_papers) >= 2 else "single_source"
+        assert gap.tier == expected, (
+            f"{gap.gap_description[:50]!r} is labelled {gap.tier} with "
+            f"{len(gap.supporting_papers)} paper(s)"
+        )
+
+
+def test_deficit_of_one_means_nothing_beats_chance(loaded_corpus):
+    """A deficit of exactly 1.0 must mean the nearest hit is at or below the null median."""
+    from pipeline.gap_scorer import (
+        _addressing_hits, _cluster_representative_text, _deficit_anchors,
+        cluster_limitations, get_all_limitations,
+    )
+
+    domain = "medical_imaging"
+    lims = get_all_limitations(domain)
+    if not lims:
+        pytest.skip("no limitations in the fixture for this domain")
+    low, _high = _deficit_anchors(domain)
+
+    for cluster in cluster_limitations(lims, domain=domain):
+        papers = {p for m in cluster for p in m.get("paper_ids", [])}
+        rep = _cluster_representative_text(cluster)
+        hits = _addressing_hits(rep, domain=domain, exclude_paper_ids=papers)
+        from pipeline.gap_scorer import compute_solution_deficit_score
+
+        deficit = compute_solution_deficit_score(cluster, domain=domain)
+        if deficit == 1.0 and hits:
+            assert hits[0][0] <= low + 1e-9, (
+                f"deficit 1.0 but the nearest hit scores {hits[0][0]:.4f}, above the "
+                f"null median {low:.4f}"
+            )

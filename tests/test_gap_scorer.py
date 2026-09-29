@@ -33,9 +33,16 @@ def _make_model_mock(dim: int = 768) -> MagicMock:
     return model
 
 
-def _make_hit(text: str, score: float) -> types.SimpleNamespace:
-    """A single Qdrant point with .score and .payload (payload key per embed.py)."""
-    return types.SimpleNamespace(score=score, payload={"limitation_text": text})
+def _make_hit(text: str, score: float, paper_ids: list[str] | None = None):
+    """A single Qdrant point with .score and .payload (payload key per embed.py).
+
+    `paper_ids` matters for the self-authorship exclusion: a future direction whose
+    paper also reports the limitation is not evidence anyone solved it.
+    """
+    return types.SimpleNamespace(
+        score=score,
+        payload={"limitation_text": text, "paper_ids": paper_ids or []},
+    )
 
 
 def _make_qdrant_query_mock(points: list) -> MagicMock:
@@ -285,6 +292,9 @@ def test_score_gaps_anchors_recency_to_corpus_not_wall_clock(monkeypatch):
         gs, "cluster_limitations", lambda lims, domain=None: [recent, mid, stale]
     )
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
+    # Option F's deficit embeds the representative text, so stub the hit lookup too or
+    # the hermetic suite loads real Specter2 weights.
+    monkeypatch.setattr(gs, "_addressing_hits", lambda *a, **kw: [])
 
     results = {r.gap_description: r for r in score_gaps()}
 
@@ -307,6 +317,9 @@ def test_score_gaps_recency_baseline_is_corpus_wide_not_per_cluster(monkeypatch)
         gs, "cluster_limitations", lambda lims, domain=None: [recent, stale]
     )
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
+    # Option F's deficit embeds the representative text, so stub the hit lookup too or
+    # the hermetic suite loads real Specter2 weights.
+    monkeypatch.setattr(gs, "_addressing_hits", lambda *a, **kw: [])
 
     results = {r.gap_description: r for r in score_gaps()}
 
@@ -329,15 +342,58 @@ def test_compute_solution_deficit_no_future_directions(monkeypatch):
     assert compute_solution_deficit_score(cluster) == 1.0
 
 
-def test_compute_solution_deficit_partial_coverage(monkeypatch):
-    """One of two reporting papers addressed => deficit 1 - 1/2 = 0.5."""
+def test_compute_solution_deficit_is_continuous_in_the_nearest_similarity(monkeypatch):
+    """Deficit rescales the NEAREST eligible similarity between the null p50 and p99.
+
+    Replaces test_compute_solution_deficit_partial_coverage, which asserted the
+    count-based semantics A9 Option F removes: `1 - matches/papers_reporting` was
+    dimensionally incoherent (a corpus-wide count over a cluster-local count) and had
+    only four distinct values per domain.
+    """
+    low, high = gs._deficit_anchors("computer_vision")
     cluster = [{"text": "slow training", "paper_ids": ["a", "b"], "years": [2024, 2024]}]
-    # One hit above 0.85, one below — only the first counts. The 0.80 hit would have
-    # counted under the old 0.75 threshold but no longer does.
-    hits = [_make_hit("use adamw", 0.90), _make_hit("close but weak", 0.80)]
+    midpoint = (low + high) / 2
+    hits = [_make_hit("use adamw", midpoint), _make_hit("weaker", low - 0.05)]
     client = _make_qdrant_query_mock(hits)
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
-    assert compute_solution_deficit_score(cluster) == 0.5
+
+    # Halfway between the anchors -> half addressed -> deficit 0.5.
+    assert compute_solution_deficit_score(cluster) == pytest.approx(0.5, abs=1e-6)
+
+
+def test_deficit_is_one_when_the_nearest_hit_is_pure_noise(monkeypatch):
+    """At or below the null median, the nearest "solution" tells you nothing."""
+    low, _ = gs._deficit_anchors("computer_vision")
+    cluster = [{"text": "slow training", "paper_ids": ["a"], "years": [2024]}]
+    client = _make_qdrant_query_mock([_make_hit("unrelated", low - 0.02)])
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+    assert compute_solution_deficit_score(cluster) == 1.0
+
+
+def test_deficit_is_zero_when_the_nearest_hit_is_near_certain(monkeypatch):
+    """At or above the null p99 the gap counts as fully addressed."""
+    _, high = gs._deficit_anchors("computer_vision")
+    cluster = [{"text": "slow training", "paper_ids": ["a"], "years": [2024]}]
+    client = _make_qdrant_query_mock([_make_hit("exactly this", high + 0.05)])
+    _patch_vector_backends(monkeypatch, client, _make_model_mock())
+    assert compute_solution_deficit_score(cluster) == 0.0
+
+
+def test_deficit_anchors_are_per_domain_and_ordered():
+    for domain, (low, high) in gs._DEFICIT_RESCALE_ANCHORS.items():
+        assert 0.5 < low < high < 1.0, f"{domain}: implausible anchors {(low, high)}"
+
+
+def test_deficit_anchor_fallback_is_the_widest_span():
+    """An unmeasured domain gets the conservative (widest) rescaling.
+
+    A wider span maps a given similarity to LOWER addressedness, so gaps look more
+    open rather than more solved — under-counting solutions is visible and
+    recoverable, over-counting is not.
+    """
+    spans = {d: hi - lo for d, (lo, hi) in gs._DEFICIT_RESCALE_ANCHORS.items()}
+    widest = max(spans, key=spans.get)
+    assert gs._deficit_anchors("robotics") == gs._DEFICIT_RESCALE_ANCHORS[widest]
 
 
 def test_compute_solution_deficit_clamped_to_zero(monkeypatch):
@@ -535,18 +591,22 @@ def test_compute_solution_deficit_ignores_self_authored_solution(monkeypatch):
     assert compute_solution_deficit_score(cluster) == 1.0
 
 
-def test_compute_solution_deficit_counts_only_independent_solutions(monkeypatch):
-    """With two reporting papers, only the outside proposal reduces the deficit."""
-    cluster = [{"text": "an open problem", "paper_ids": ["p1", "p2"], "years": [2025, 2025]}]
-    hits = [
-        _make_fd_hit("p1's own future work", 0.95, paper_ids=["p1"]),
-        _make_fd_hit("outside proposal", 0.95, paper_ids=["p9"]),
-    ]
+def test_compute_solution_deficit_ignores_self_authored_future_directions(monkeypatch):
+    """A paper restating its own open problem as future work is not a solution to it.
+
+    The 2026-08-21 exclusion rule is unchanged by Option F — it now applies before the
+    continuous rescaling rather than before a count. Renamed from
+    ..._counts_only_independent_solutions since nothing is counted any more.
+    """
+    _, high = gs._deficit_anchors("computer_vision")
+    cluster = [{"text": "slow training", "paper_ids": ["a"], "years": [2024]}]
+    # A near-perfect match, but authored by the very paper reporting the limitation.
+    hits = [_make_hit("use adamw", high + 0.05, paper_ids=["a"])]
     client = _make_qdrant_query_mock(hits)
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
 
-    # 1 independent match against 2 reporting papers => 1 - 1/2
-    assert compute_solution_deficit_score(cluster) == 0.5
+    # Excluded, so there is no eligible hit at all -> fully unaddressed.
+    assert compute_solution_deficit_score(cluster) == 1.0
 
 
 def test_compute_solution_deficit_threads_domain_to_query(monkeypatch):
@@ -776,6 +836,9 @@ def test_score_gaps_formula_weights(monkeypatch):
     monkeypatch.setattr(gs, "compute_recency_score", lambda c, current_year=2024: 0.4)
     monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.8)
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
+    # Option F's deficit embeds the representative text, so stub the hit lookup too or
+    # the hermetic suite loads real Specter2 weights.
+    monkeypatch.setattr(gs, "_addressing_hits", lambda *a, **kw: [])
 
     results = score_gaps()
 
@@ -799,6 +862,9 @@ def test_score_gaps_returns_sorted_list(monkeypatch):
     monkeypatch.setattr(gs, "compute_recency_score", lambda c, current_year=2024: 0.5)
     monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.5)
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
+    # Option F's deficit embeds the representative text, so stub the hit lookup too or
+    # the hermetic suite loads real Specter2 weights.
+    monkeypatch.setattr(gs, "_addressing_hits", lambda *a, **kw: [])
 
     results = score_gaps()
 
@@ -818,6 +884,9 @@ def test_score_gaps_respects_top_n(monkeypatch):
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: clusters)
     # avoid Qdrant: no addressing solutions => deficit computed without network
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
+    # Option F's deficit embeds the representative text, so stub the hit lookup too or
+    # the hermetic suite loads real Specter2 weights.
+    monkeypatch.setattr(gs, "_addressing_hits", lambda *a, **kw: [])
 
     results = score_gaps(top_n=2)
 
@@ -856,6 +925,9 @@ def test_score_gaps_uses_the_centroid_nearest_text_as_description(monkeypatch):
     monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 3)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
+    # Option F's deficit embeds the representative text, so stub the hit lookup too or
+    # the hermetic suite loads real Specter2 weights.
+    monkeypatch.setattr(gs, "_addressing_hits", lambda *a, **kw: [])
     monkeypatch.setattr(gs, "load_embedding_model", lambda: model)
     monkeypatch.setattr(gs, "_embed_texts", lambda m, texts: m.encode(texts).tolist())
     gs._representative_cache.clear()
@@ -1157,9 +1229,33 @@ def _gap(score, papers, description):
     )
 
 
-def test_ranking_key_orders_by_score_first():
-    entries = [(_gap(0.4, 9, "a"), 2025), (_gap(0.6, 1, "b"), 2019)]
+def test_ranking_key_orders_by_score_first_within_a_tier():
+    """Within one tier the documented composite still decides."""
+    entries = [(_gap(0.4, 9, "a"), 2025), (_gap(0.6, 3, "b"), 2019)]
     assert [g.score for g, _ in sorted(entries, key=gs._ranking_key)] == [0.6, 0.4]
+
+
+def test_corroborated_gaps_rank_above_single_source_gaps_regardless_of_score():
+    """A9 Option F tier rule: two or more papers beats one, whatever the composite.
+
+    Fails against pre-Option-F code, where a single-paper gap scoring 0.6222 outranked
+    a four-paper gap scoring 0.6000 — and eleven of them did exactly that.
+    """
+    single_high = _gap(0.99, 1, "a lone paper with a maximal score")
+    corroborated_low = _gap(0.10, 2, "two papers with a weak score")
+    ordered = [
+        g.gap_description
+        for g, _ in sorted([(single_high, 2025), (corroborated_low, 2019)],
+                           key=gs._ranking_key)
+    ]
+    assert ordered[0] == "two papers with a weak score"
+
+
+def test_tier_boundary_is_two_papers():
+    assert gs._CORROBORATED_MIN_PAPERS == 2
+    assert gs._ranking_tier(_gap(0.5, 1, "x")) == 1
+    assert gs._ranking_tier(_gap(0.5, 2, "x")) == 0
+    assert gs._ranking_tier(_gap(0.5, 9, "x")) == 0
 
 
 def test_ranking_key_breaks_a_tie_by_supporting_paper_count():
@@ -1216,8 +1312,12 @@ def test_threshold_constants_are_not_hand_editable_without_a_guard():
     import derive_thresholds
 
     coded = derive_thresholds.coded_constants()
-    assert set(coded) == {"cluster", "solution", "cross_domain"}, (
+    assert set(coded) == {"cluster", "solution", "cross_domain", "deficit_anchors"}, (
         "a threshold family was added or renamed without updating the derivation script"
+    )
+    assert set(coded["deficit_anchors"]) == set(coded["solution"]), (
+        "the deficit rescaling anchors must cover the same domains as the solution "
+        "thresholds — they are derived from the same pair population"
     )
     assert set(coded["cluster"]) == set(coded["solution"]), (
         "cluster and solution thresholds must cover the same domains"

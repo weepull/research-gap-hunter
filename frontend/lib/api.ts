@@ -58,6 +58,16 @@ export interface GapResult {
   solution_deficit_score: number;
   supporting_papers: string[];
   proposed_solutions: string[];
+  /**
+   * "corroborated" (>= 2 papers) or "single_source". Every corroborated gap ranks
+   * above every single-source one, so **scores are non-monotonic across the tier
+   * boundary** — a single-source gap lower down the list can carry a higher score.
+   * Showing the tier is what stops that reading as a bug.
+   *
+   * Sent by the backend rather than derived from supporting_papers.length here, so
+   * the ranking and the label can never disagree.
+   */
+  tier: "corroborated" | "single_source";
 }
 
 export interface LimitationResult {

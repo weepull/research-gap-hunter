@@ -112,7 +112,8 @@ def derive_all() -> dict:
     than a reimplementation that could drift from it.
     """
     client = get_qdrant_client()
-    out = {"cluster": {}, "solution": {}, "cross_domain": None, "raw": {}}
+    out = {"cluster": {}, "solution": {}, "cross_domain": None,
+           "deficit_anchors": {}, "raw": {}}
 
     for domain in RESEARCH_DOMAINS:
         vecs = _fetch(client, _COLLECTION_LIMITATIONS, domain)
@@ -129,6 +130,13 @@ def derive_all() -> dict:
         if len(vecs) and len(fut):
             pairs = (vecs @ fut.T).ravel()
             out["solution"][domain] = float(np.percentile(pairs, 95))
+            # Anchors for the continuous solution-deficit rescaling (A9 Option F).
+            # p50 is the centre of pure noise, p99 the point at which a match is
+            # near-certainly real; between them the measure is informative.
+            out["deficit_anchors"][domain] = (
+                float(np.percentile(pairs, 50)),
+                float(np.percentile(pairs, 99)),
+            )
             out["raw"][f"solution:{domain}"] = {
                 "n": int(pairs.size),
                 **{f"p{p}": float(np.percentile(pairs, p)) for p in _PERCENTILES},
@@ -156,10 +164,13 @@ def coded_constants() -> dict:
     from pipeline.cross_domain import _CROSS_DOMAIN_THRESHOLD
     from pipeline.gap_scorer import _CLUSTER_THRESHOLDS, _SOLUTION_THRESHOLDS
 
+    from pipeline.gap_scorer import _DEFICIT_RESCALE_ANCHORS
+
     return {
         "cluster": dict(_CLUSTER_THRESHOLDS),
         "solution": dict(_SOLUTION_THRESHOLDS),
         "cross_domain": _CROSS_DOMAIN_THRESHOLD,
+        "deficit_anchors": {k: tuple(v) for k, v in _DEFICIT_RESCALE_ANCHORS.items()},
     }
 
 
@@ -176,6 +187,19 @@ def drift_report() -> list[dict]:
                 "drift": None if d is None else abs(d - value),
                 "stale": d is not None and abs(d - value) > DRIFT_TOLERANCE,
             })
+    for domain, coded_pair in sorted(coded.get("deficit_anchors", {}).items()):
+        derived_pair = derived["deficit_anchors"].get(domain)
+        for i, label in enumerate(("p50", "p99")):
+            dv = None if derived_pair is None else derived_pair[i]
+            cv = coded_pair[i]
+            rows.append({
+                "name": f'_DEFICIT_RESCALE_ANCHORS["{domain}"][{label}]',
+                "kind": "deficit_anchors", "domain": domain, "index": i,
+                "coded": cv, "derived": dv,
+                "drift": None if dv is None else abs(dv - cv),
+                "stale": dv is not None and abs(dv - cv) > DRIFT_TOLERANCE,
+            })
+
     d = derived["cross_domain"]
     rows.append({
         "name": "_CROSS_DOMAIN_THRESHOLD", "kind": "cross_domain", "domain": None,
@@ -241,6 +265,37 @@ def _replace_scalar(path: str, marker: str, old: float, new: float, n: int) -> b
     return True
 
 
+def _replace_anchor_pair(path: str, domain: str, pair: tuple[float, float],
+                         n: int) -> bool:
+    """Rewrite both numbers of one _DEFICIT_RESCALE_ANCHORS entry together.
+
+    The two anchors are only meaningful as a pair — rescaling between a fresh p50 and
+    a stale p99 would produce a measure anchored to two different corpora — so they
+    are always written together even when only one drifted.
+    """
+    text = open(path).read()
+    anchor = "_DEFICIT_RESCALE_ANCHORS = {"
+    if anchor not in text:
+        return False
+    start = text.index(anchor)
+    stop = text.index("}", start)
+    block = text[start:stop]
+    pattern = re.compile(
+        rf'(^[ \t]*"{re.escape(domain)}"[ \t]*:[ \t]*)\([^)]*\)([ \t]*,)'
+        r'(?:[ \t]*#[^\n]*)?',
+        re.M,
+    )
+    replacement = (
+        rf'\g<1>({pair[0]:.4f}, {pair[1]:.4f})\g<2>'
+        f'  # null p50/p99 over n={n:,} pairs, derived {_TODAY}'
+    )
+    updated, count = pattern.subn(replacement, block, count=1)
+    if count != 1:
+        return False
+    open(path, "w").write(text[:start] + updated + text[stop:])
+    return True
+
+
 def apply_stale(rows: list[dict]) -> list[dict]:
     """Write derived values for constants whose drift exceeds DRIFT_TOLERANCE.
 
@@ -253,10 +308,16 @@ def apply_stale(rows: list[dict]) -> list[dict]:
         if not row["stale"]:
             continue
         new = round(row["derived"], 4)
-        key = row["kind"] if row["domain"] is None else f'{row["kind"]}:{row["domain"]}'
+        kind_for_n = "solution" if row["kind"] == "deficit_anchors" else row["kind"]
+        key = kind_for_n if row["domain"] is None else f'{kind_for_n}:{row["domain"]}'
         n = raw.get(key, {}).get("n", 0)
 
-        if row["kind"] in ("cluster", "solution"):
+        if row["kind"] == "deficit_anchors":
+            ok = _replace_anchor_pair(
+                "pipeline/gap_scorer.py", row["domain"],
+                derive_all()["deficit_anchors"][row["domain"]], n,
+            )
+        elif row["kind"] in ("cluster", "solution"):
             section = "_CLUSTER_THRESHOLDS" if row["kind"] == "cluster" else "_SOLUTION_THRESHOLDS"
             ok = _replace_dict_entry(
                 "pipeline/gap_scorer.py", section, row["domain"], row["coded"], new, n

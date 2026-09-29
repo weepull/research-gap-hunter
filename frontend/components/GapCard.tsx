@@ -60,7 +60,10 @@ export default function GapCard({
             {/* Directly under the title: a reader cannot see the gap without
                 also seeing how much evidence stands behind it. */}
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <SupportBadge count={gap.supporting_papers.length} />
+              <SupportBadge
+                count={gap.supporting_papers.length}
+                tier={gap.tier}
+              />
               <span className="text-caption text-label-3">
                 {gap.proposed_solutions.length} proposed{" "}
                 {gap.proposed_solutions.length === 1 ? "solution" : "solutions"}
@@ -81,7 +84,7 @@ export default function GapCard({
             colorVar="--meter-frequency"
             scaleMax={maxFrequency}
             relative
-            hint="Of the papers in this domain that reported any limitation at all, the share reporting this one, weighted by how explicitly each stated it. A corroboration signal rather than a driver of the ranking — at this corpus size it spans a narrow range, so recency and solution deficit dominate the score. The bar is scaled to the highest frequency on screen so gaps can be compared; the number is the true score."
+            hint="Of the papers in this domain that contributed at least one limitation — not all papers in the domain — the share reporting a limitation like this one, weighted by how explicitly each stated it. Papers that extracted nothing are excluded from the divisor, since they cannot corroborate anything. A corroboration signal rather than a driver of the ranking: at this corpus size it spans a narrow range, so recency and solution deficit dominate the score. The bar is scaled to the highest frequency on screen so gaps can be compared; the number is the true score."
           />
           <Meter
             label="Recency"

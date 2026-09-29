@@ -1,28 +1,35 @@
 /**
- * How many papers back this gap — the single most important qualifier on it.
+ * How many papers back this gap, and which ranking tier it therefore sits in.
  *
- * A one-paper gap can out-rank a well-attested one because recency and
- * solution-deficit both saturate at 1.0 for it, so support count has to be
- * impossible to miss. Single-source gaps are called out in amber rather than
- * hidden: the fix for over-stated confidence is showing the evidence, not
- * filtering the list. Nothing here filters anything.
+ * The wording is deliberately "report similar limitations", not "report this
+ * limitation". A gap is a *cluster* of semantically similar limitation statements, and
+ * the label shown is one representative member — the one nearest the cluster centroid.
+ * The papers did not write the same sentence, and claiming they did overstated the
+ * evidence. For a multi-member cluster the old text was simply false.
  *
- * Three things are load-bearing and must survive any restyle: the badge sits
- * directly under the gap title, single-source is visually distinct and carries
- * a warning glyph, and the count is stated in words rather than implied.
+ * Since A9 Option F, corroborated gaps (>= 2 papers) rank above every single-source
+ * gap, so **scores are non-monotonic across the tier boundary**: a single-source gap
+ * further down the list may show a higher score. The badge carries the tier so that
+ * reads as intended rather than as a broken sort.
  *
- * The explanatory sentence used to live only in a `title` attribute, which is
- * hover-only — invisible to keyboard and touch users entirely. It is now also
- * rendered as visually-hidden text so assistive tech reads it, and stated in
- * full, visibly, in the gap's detail sheet. The `title` is kept for pointer
- * users who have learned to hover it.
+ * Three things are load-bearing and must survive any restyle: the badge sits directly
+ * under the gap title, single-source is visually distinct and carries a warning glyph,
+ * and the count is stated in words rather than implied.
  */
-export default function SupportBadge({ count }: { count: number }) {
-  const single = count === 1;
+export default function SupportBadge({
+  count,
+  tier,
+}: {
+  count: number;
+  tier?: "corroborated" | "single_source";
+}) {
+  // Fall back to the count if the tier is absent, so an older cached response still
+  // renders sensibly rather than mislabelling.
+  const single = tier ? tier === "single_source" : count === 1;
 
   const explanation = single
-    ? "Only one paper reports this limitation — treat as a single-source signal, not a corroborated trend."
-    : `${count} papers independently report this limitation.`;
+    ? "Only one paper reports a limitation like this — treat it as a single-source signal, not a corroborated trend. Single-source gaps are ranked below every corroborated gap regardless of score."
+    : `${count} papers report similar limitations, which were grouped into one gap. The wording shown is the cluster member closest to the centroid, not a sentence all ${count} papers wrote.`;
 
   return (
     <span
@@ -34,7 +41,9 @@ export default function SupportBadge({ count }: { count: number }) {
       title={explanation}
     >
       {single && <span aria-hidden="true">⚠</span>}
-      Supported by {count} {count === 1 ? "paper" : "papers"}
+      {single
+        ? "Single source — 1 paper"
+        : `Corroborated — ${count} papers report similar limitations`}
       <span className="sr-only">. {explanation}</span>
     </span>
   );

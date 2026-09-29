@@ -139,6 +139,42 @@ def _solution_threshold(domain: str) -> float:
     return _SOLUTION_THRESHOLDS.get(domain, max(_SOLUTION_THRESHOLDS.values()))
 
 
+# Rescaling anchors for the continuous solution-deficit measure (A9 Option F,
+# decided 2026-09-29). Per domain: (null p50, null p99) of the limitation x
+# future-direction similarity distribution — the same population _SOLUTION_THRESHOLDS
+# is derived from.
+#
+# p50 is the centre of pure noise: a "nearest solution" no closer than that tells you
+# nothing, so the gap counts as fully unaddressed. p99 is the point at which a match is
+# near-certainly real, so the gap counts as fully addressed. Between them the measure
+# is informative and continuous, which is the whole point — the previous count-based
+# deficit had only four distinct values per domain and saturated at 1.0 for two thirds
+# of gaps.
+#
+# Owned by scripts/derive_thresholds.py and guarded by
+# tests/integration/test_threshold_derivation.py, like every other threshold here.
+# Always rewritten as a PAIR: rescaling between a fresh p50 and a stale p99 would
+# anchor the measure to two different corpora.
+_DEFICIT_RESCALE_ANCHORS: dict[str, tuple[float, float]] = {
+    "computer_vision": (0.8281, 0.8996),  # null p50/p99 over n=968 pairs, derived 2026-09-29
+    "medical_imaging": (0.8385, 0.9127),  # null p50/p99 over n=6,572 pairs, derived 2026-09-29
+}
+
+
+def _deficit_anchors(domain: str) -> tuple[float, float]:
+    """Rescaling anchors for a domain, falling back to the widest known span.
+
+    An unmeasured domain gets the widest (p50, p99) span available, which makes the
+    rescaling *conservative*: a given similarity maps to a lower addressedness, so gaps
+    look more open rather than more solved. Consistent with _solution_threshold's
+    reasoning — under-counting solutions is visible and recoverable, over-counting is
+    not.
+    """
+    if domain in _DEFICIT_RESCALE_ANCHORS:
+        return _DEFICIT_RESCALE_ANCHORS[domain]
+    return max(_DEFICIT_RESCALE_ANCHORS.values(), key=lambda pair: pair[1] - pair[0])
+
+
 # Upper bound on how many future-direction hits we inspect per cluster.
 _MAX_FD_RESULTS = 100
 # How much each paper's report counts toward frequency, by extraction tier.
@@ -148,6 +184,16 @@ _DEFAULT_TIER_WEIGHT = 1.0
 
 
 class GapResult(BaseModel):
+    """One ranked gap.
+
+    `tier` is part of the response rather than something the client re-derives from
+    `supporting_papers`, so the backend's ranking and the label a reader sees can never
+    disagree. "corroborated" means >= _CORROBORATED_MIN_PAPERS papers report a
+    limitation in this cluster; every corroborated gap ranks above every single-source
+    one (A9 Option F). Scores are therefore **non-monotonic across the tier boundary**,
+    which is why the tier has to be visible.
+    """
+
     gap_description: str
     score: float
     frequency_score: float
@@ -155,6 +201,7 @@ class GapResult(BaseModel):
     solution_deficit_score: float
     supporting_papers: list[str]
     proposed_solutions: list[str]
+    tier: str = "single_source"
 
 
 def get_all_limitations(domain: str = "computer_vision") -> list[dict]:
@@ -461,14 +508,34 @@ def compute_recency_score(cluster: list[dict], current_year: int | None = None) 
 def compute_solution_deficit_score(
     cluster: list[dict], domain: str = "computer_vision"
 ) -> float:
-    """How unaddressed this cluster is by the corpus's future directions.
+    """How unaddressed this cluster is, as a continuous value in [0, 1].
 
-    solution_deficit = 1 - (future_directions_addressing / papers_reporting), where
-    an addressing future direction is any FutureDirection that scores at or above
-    the domain's noise floor (_solution_threshold) against the cluster's centroid
-    text, is in the same domain, and does not come from a paper that reports it
-    (see _find_addressing_solutions). Clamped to [0.0, 1.0]. A cluster nobody has
-    proposed solutions for scores near 1.0.
+    **A9 Option F, 2026-09-29.** Previously
+    ``1 - (count_of_addressing_future_directions / papers_reporting)``, which was
+    dimensionally incoherent — a corpus-wide count over a cluster-local count, so not a
+    proportion — and saturated badly: only **4 distinct values per domain**, with 18 of
+    28 CV and 38 of 54 MI gaps sitting at exactly 1.0. That saturation was the direct
+    cause of two thirds of gaps sharing a score, and of a four-paper gap ranking below
+    eleven single-paper ones.
+
+    Now::
+
+        addressedness = clamp((nearest_similarity - null_p50) / (null_p99 - null_p50), 0, 1)
+        deficit       = 1 - addressedness
+
+    where ``nearest_similarity`` is the highest similarity to any *eligible* future
+    direction (same domain, not authored by a paper reporting this limitation — see
+    _addressing_hits) and the anchors come from the measured null distribution for that
+    domain.
+
+    Both properties that mattered are preserved. It is **dimensionally coherent**: a
+    cosine similarity rescaled by two cosine percentiles, no count divided by an
+    unrelated count. And it is **deterministic**: the anchors are corpus-derived
+    constants that change only through the derivation script's drift rule, not
+    per-result-set quantities — so the same corpus still ranks the same way, which is
+    the property `_corpus_reference_year` exists to protect.
+
+    A cluster with no eligible future direction at all scores 1.0.
     """
     if not cluster:
         return 1.0
@@ -476,22 +543,20 @@ def compute_solution_deficit_score(
     unique_papers: set[str] = set()
     for lim in cluster:
         unique_papers.update(lim.get("paper_ids", []))
-    papers_reporting = len(unique_papers)
-    if papers_reporting == 0:
+    if not unique_papers:
         return 1.0
 
     centroid_text = _cluster_representative_text(cluster)
-    matches = len(
-        _find_addressing_solutions(
-            centroid_text, domain=domain, exclude_paper_ids=unique_papers
-        )
-    )
+    hits = _addressing_hits(centroid_text, domain=domain, exclude_paper_ids=unique_papers)
+    if not hits:
+        return 1.0
 
-    # No min(matches, papers_reporting) here: it was dead code. The clamp below
-    # already floors any ratio above 1.0 at zero, and capping was verified to
-    # produce identical scores on every cluster in the corpus.
-    score = 1.0 - (matches / papers_reporting)
-    return max(0.0, min(1.0, score))
+    nearest = hits[0][0]
+    low, high = _deficit_anchors(domain)
+    if high <= low:
+        return 1.0
+    addressedness = (nearest - low) / (high - low)
+    return float(max(0.0, min(1.0, 1.0 - addressedness)))
 
 
 def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResult]:
@@ -541,6 +606,12 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
             default=0,
         )
 
+        tier = (
+            "corroborated"
+            if len(supporting_papers) >= _CORROBORATED_MIN_PAPERS
+            else "single_source"
+        )
+
         scored.append((
             GapResult(
                 gap_description=centroid_text,
@@ -550,6 +621,7 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
                 solution_deficit_score=round(deficit, 4),
                 supporting_papers=supporting_papers,
                 proposed_solutions=proposed_solutions,
+                tier=tier,
             ),
             newest_year,
         ))
@@ -563,37 +635,59 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
 # ---------------------------------------------------------------------------
 
 
+# A gap backed by this many papers or more is "corroborated" and ranks in the first
+# tier. Two is not a tuned parameter: it is the smallest number that makes the word
+# mean anything, i.e. the boundary between one source and more than one.
+_CORROBORATED_MIN_PAPERS = 2
+
+
+def _ranking_tier(gap: GapResult) -> int:
+    """0 for corroborated gaps, 1 for single-source. Lower sorts first.
+
+    Derived from the paper count rather than from `gap.tier`, so the sort cannot be
+    fooled by a hand-constructed GapResult whose label disagrees with its evidence.
+    """
+    return 0 if len(gap.supporting_papers) >= _CORROBORATED_MIN_PAPERS else 1
+
+
 def _ranking_key(entry: tuple[GapResult, int]) -> tuple:
-    """Total ordering for the gap list: score, then corroboration, then recency, then text.
+    """Total ordering: tier first, then score, corroboration, recency, text.
 
-    Sorting by score alone left ties to the stable sort, which preserved cluster
-    creation order — and clusters are created longest-seed-text-first, so **rank
-    within a tie block tracked description length**. That was not a subtle bias:
-    on the pre-fix corpus, ranks 1-3 tied at 0.6065 had descriptions of 72, 70 and
-    64 characters and ranks 4-7 tied at 0.6043 had 50, 44, 41 and 34, monotonically
-    descending. A copyright-law paper held rank 1 because its sentence was the
-    longest in its tie group.
+    **Two-tier ranking, A9 Option F, 2026-09-29.** Every gap backed by two or more
+    papers ranks above every single-source gap, and each tier is then ordered by
+    (score desc, supporting-paper count desc, newest year desc, description asc).
 
-    Ties remain common because recency and solution-deficit both saturate — a
-    single recent paper with no addressing future direction scores 1.0 on both — so
-    after fixing the denominator in #4 there are still 15 of 28 CV gaps and 27 of 54
-    MI gaps sharing a score with another gap. The keys, in order:
+    Why a tier rather than a formula change. Recency and solution-deficit are both
+    *maximal in the absence of evidence*: a lone recent paper with no nearby future
+    direction scores 1.0 on both, not because it is well-supported but because there is
+    nothing to contradict it. Continuous deficit (above) removes the tie pile-up but
+    does not fix that asymmetry — measured, it made it slightly worse, pushing the
+    four-paper CV gap from rank 12 to 17. No reweighting fixes it either without
+    asserting a precision the corpus cannot support: at n=15 contributing CV papers the
+    Wilson intervals for a one-paper and a three-paper gap overlap heavily.
 
-    1. **score**, descending — the formula still decides.
-    2. **supporting-paper count**, descending. Among equally-scored gaps the
-       better-corroborated one ranks higher. This is the qualifier `SupportBadge`
-       already foregrounds in the UI, whose own comment notes that a one-paper gap
-       can out-rank a well-attested one.
-    3. **newest supporting paper's year**, descending — a live concern before a
-       dormant one.
-    4. **description**, ascending lexicographic. Not meaningful, but it guarantees
-       a *total* order, so the output is reproducible across runs and processes
-       rather than depending on dict or set iteration order.
+    Making corroboration a *tier* states the epistemic difference outright instead of
+    trying to express it as a score increment. It also leaves the formula alone, so
+    within-tier ordering is still the documented 0.40/0.35/0.25 composite and a score
+    remains comparable across runs.
 
-    Deliberately NOT a key: description length, in either direction.
+    Deliberately NOT a key: description length. Before 2026-09-28 ties were left to the
+    stable sort, which preserved cluster creation order — longest-seed-first — so rank
+    inside a tie block tracked character count. Ranks 1-3 tied at 0.6065 had
+    descriptions of 72, 70 and 64 characters.
+
+    The final lexicographic key is not meaningful in itself; it guarantees a *total*
+    order so output is reproducible across processes rather than depending on set or
+    dict iteration order.
     """
     gap, newest_year = entry
-    return (-gap.score, -len(gap.supporting_papers), -newest_year, gap.gap_description)
+    return (
+        _ranking_tier(gap),
+        -gap.score,
+        -len(gap.supporting_papers),
+        -newest_year,
+        gap.gap_description,
+    )
 
 
 def _current_year() -> int:
@@ -714,31 +808,27 @@ def _cluster_representative_text(cluster: list[dict]) -> str:
     return representative
 
 
-def _find_addressing_solutions(
+def _addressing_hits(
     centroid_text: str,
     domain: str = "computer_vision",
     exclude_paper_ids: set[str] | None = None,
-) -> list[str]:
-    """Return future-direction texts that genuinely address a limitation.
+) -> list[tuple[float, str]]:
+    """(similarity, text) for every future direction eligible to address a limitation.
 
-    A future direction counts only if all three hold:
+    Eligibility is unchanged from the 2026-08-21 decision, and is applied *before* any
+    threshold so the continuous measure in compute_solution_deficit_score sees the same
+    candidate set the displayed solutions come from:
 
-    1. It scores >= the domain's noise floor (_solution_threshold: 0.8773 for CV,
-       0.8987 for medical imaging) against the centroid embedding. Below that a
-       match is statistically indistinguishable from a random pairing.
-    2. It belongs to `domain`. Without this filter a medical-imaging suggestion
-       could mark a CV gap as solved. Note that pipeline/cross_domain.py treats
-       exactly that pairing as a *discovery* — so counting it here as a solution
-       would demote the very gaps the cross-domain feature exists to surface.
-    3. It comes from a paper outside `exclude_paper_ids` — the papers reporting
-       this limitation. A paper restating its own open problem as future work is
-       the definition of an unsolved gap, not evidence that anyone solved it;
-       counting it inverted the signal.
+    1. It belongs to `domain`, filtered server-side by Qdrant. Without this a
+       medical-imaging suggestion could mark a CV gap as solved — and
+       pipeline/cross_domain.py treats exactly that pairing as a *discovery*, so
+       counting it here would demote the very gaps that feature exists to surface.
+    2. It comes from a paper outside `exclude_paper_ids`. A paper restating its own
+       open problem as future work is the definition of an unsolved gap.
 
-    The domain filter is applied server-side by Qdrant, mirroring the pattern in
-    vectors/search.py's find_similar_future_directions(). The query is kept here
-    rather than delegated so the threshold and self-exclusion happen in one pass
-    over the hits, and so this module's Qdrant client stays a single test seam.
+    Returned sorted by descending similarity. No threshold is applied here: callers
+    decide, because the deficit score and the displayed list now use the same hits in
+    two different ways.
     """
     if not centroid_text:
         return []
@@ -756,21 +846,47 @@ def _find_addressing_solutions(
         limit=_MAX_FD_RESULTS,
     )
 
-    threshold = _solution_threshold(domain)
     excluded = exclude_paper_ids or set()
-    solutions: list[str] = []
+    hits: list[tuple[float, str]] = []
     for hit in results.points:
-        if hit.score < threshold:
-            continue
-        # A future direction can be attached to several papers; if any of them
-        # reports this limitation, it is self-referential and does not count.
         if excluded and set(hit.payload.get("paper_ids") or []) & excluded:
             continue
         # embed.py stores future-direction payloads under the 'limitation_text' key.
         text = hit.payload.get("limitation_text", "")
         if text:
-            solutions.append(text)
-    return solutions
+            hits.append((float(hit.score), text))
+    hits.sort(key=lambda pair: pair[0], reverse=True)
+    return hits
+
+
+def _find_addressing_solutions(
+    centroid_text: str,
+    domain: str = "computer_vision",
+    exclude_paper_ids: set[str] | None = None,
+) -> list[str]:
+    """Future-direction texts at or above the domain's noise floor.
+
+    This is what users see as `proposed_solutions`. It remains threshold-gated so the
+    list contains only defensible candidates — below `_solution_threshold` a match is
+    statistically indistinguishable from a random pairing.
+
+    **The relationship to the score changed in Option F and is worth stating.** Under
+    the old count-based deficit, the displayed list *was* the scored quantity
+    (2026-08-21: "the solutions shown are exactly the ones counted"). The deficit is now
+    driven by the similarity of the single *nearest* eligible future direction. When any
+    hit clears the threshold, that nearest one is the first item of this list, so the
+    score is still set by something the reader can see. When none clears it, this list
+    is empty and yet the deficit may still be below 1.0, because the nearest hit can sit
+    above the null median without reaching the 95th percentile. That is intentional — a
+    weak-but-real neighbour should not read as "nobody has proposed anything" — but it
+    does mean an empty solution list no longer implies a deficit of exactly 1.0.
+    """
+    threshold = _solution_threshold(domain)
+    return [
+        text
+        for score, text in _addressing_hits(centroid_text, domain, exclude_paper_ids)
+        if score >= threshold
+    ]
 
 
 def _count_contributing_papers(domain: str) -> int:

@@ -79,9 +79,10 @@ export default function GapDetailSheet({
                   Frequency &mdash; weighted 40%, but it moves the ranking far less
                 </dt>
                 <dd className="text-label-2">
-                  Of the papers in this domain that reported any limitation at
-                  all, the share reporting this one, weighted by how explicitly
-                  each stated it. Papers that extracted no limitations are
+                  Of the papers in this domain that contributed at least one
+                  limitation &mdash; not all papers in the domain &mdash; the
+                  share reporting a limitation like this one, weighted by how
+                  explicitly each stated it. Papers that extracted nothing are
                   excluded from the divisor, since they cannot corroborate
                   anything.
                   <br />
@@ -114,15 +115,16 @@ export default function GapDetailSheet({
                   Solution deficit &mdash; weighted 25%
                 </dt>
                 <dd className="text-label-2">
-                  How little of the same domain proposes anything addressing it.
-                  Future directions from the paper that raised the limitation
-                  are excluded, since restating your own open problem is not a
-                  solution to it.
+                  How far the nearest proposed solution in the same domain is
+                  from addressing it. Future directions from the paper that
+                  raised the limitation are excluded, since restating your own
+                  open problem is not a solution to it.
                   <br />
                   <span className="text-label-3">
-                    Also spans its full range, and is frequently at 0 or 1 rather
-                    than in between, so it separates gaps in blocks rather than
-                    finely.
+                    Measured continuously: the closest eligible future direction
+                    is rescaled between the similarity random pairs reach by
+                    chance and the similarity at which a match is near-certain.
+                    1.0 means nothing in the corpus comes closer than chance.
                   </span>
                 </dd>
               </div>

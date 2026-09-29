@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import Container from "@/components/ui/Container";
 import Eyebrow from "@/components/ui/Eyebrow";
 import Skeleton from "@/components/ui/Skeleton";
@@ -86,6 +86,11 @@ export default function GapsPage() {
 
   // Hoisted out of the render map: it was previously recomputed once per card,
   // making an O(n) reduction O(n²) for no reason.
+  const corroboratedCount = useMemo(
+    () => (gaps ?? []).filter((g) => g.tier === "corroborated").length,
+    [gaps],
+  );
+
   const maxFrequency = useMemo(
     () => (gaps && gaps.length > 0 ? Math.max(...gaps.map((g) => g.frequency_score)) : 0),
     [gaps],
@@ -148,18 +153,42 @@ export default function GapsPage() {
         {!loading && !error && gaps && gaps.length > 0 && (
           <>
             <p className="sr-only" aria-live="polite">
-              {gaps.length} gaps shown.
+              {gaps.length} gaps shown, {corroboratedCount} corroborated by two or
+              more papers and {gaps.length - corroboratedCount} from a single
+              source.
             </p>
             <div className="space-y-4">
               {gaps.map((gap, i) => (
-                <GapCard
-                  key={gap.gap_description}
-                  gap={gap}
-                  rank={i + 1}
-                  index={i}
-                  maxFrequency={maxFrequency}
-                  onOpen={() => setSelected(gap)}
-                />
+                <Fragment key={gap.gap_description}>
+                  {/* A heading at each tier boundary. Corroborated gaps rank above
+                      every single-source gap, so the score column is deliberately
+                      non-monotonic here — without this divider a reader sees a
+                      higher score below a lower one and concludes the sort is
+                      broken. */}
+                  {(i === 0 || gaps[i - 1].tier !== gap.tier) && (
+                    <h2
+                      className={`text-eyebrow uppercase text-label-3 ${
+                        i === 0 ? "" : "pt-6"
+                      }`}
+                    >
+                      {gap.tier === "corroborated" ? (
+                        <>Corroborated &mdash; two or more papers</>
+                      ) : (
+                        <>
+                          Single source &mdash; one paper each, ranked below every
+                          corroborated gap
+                        </>
+                      )}
+                    </h2>
+                  )}
+                  <GapCard
+                    gap={gap}
+                    rank={i + 1}
+                    index={i}
+                    maxFrequency={maxFrequency}
+                    onOpen={() => setSelected(gap)}
+                  />
+                </Fragment>
               ))}
             </div>
           </>

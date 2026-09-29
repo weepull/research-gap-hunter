@@ -22,3 +22,4 @@ dist/
 data/rejected_extractions.jsonl
 data/ingest_log.jsonl
 data/ingest_checkpoint.json
+data/tranche_progress.jsonl

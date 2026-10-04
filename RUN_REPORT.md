@@ -63,9 +63,17 @@ Other coded constants: `_UNRESOLVED_DEFICIT_FLOOR` = 0.3 (**still undrived — s
 ## Tests — raw summary lines
 
 ```
-pytest -q               489 passed, 40 deselected in 0.73s
-pytest -m integration   37 passed, 3 skipped, 489 deselected in 39.23s
+pytest -q               489 passed, 40 deselected, 1 warning in 0.90s
+pytest -m integration   37 passed, 3 skipped, 489 deselected, 1 warning in 47.49s
 ```
+
+**Corrected by hand 2026-10-04, not by `collect_run_facts.py`.** The figures originally
+recorded here (`489 passed … in 0.73s`, `37 passed, 3 skipped … in 39.23s`) were measured
+while eight unit tests were leaking a live Neo4j connection: they passed only because the
+production database was running, and fail with it stopped (8 failed, 481 passed). The lines
+above were measured after `tests/conftest.py` began refusing live services in the unit tier,
+and the unit line is identical with Neo4j stopped and running. The integration line was
+measured with Ollama down; one of its 3 skips is the Ollama test.
 
 ## Ties and tiers
 

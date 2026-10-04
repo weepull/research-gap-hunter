@@ -287,7 +287,7 @@ def test_score_gaps_anchors_recency_to_corpus_not_wall_clock(monkeypatch):
         "get_all_limitations",
         lambda domain="computer_vision": recent + mid + stale,
     )
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 3)
     monkeypatch.setattr(
         gs, "cluster_limitations", lambda lims, domain=None: [recent, mid, stale]
     )
@@ -312,7 +312,7 @@ def test_score_gaps_recency_baseline_is_corpus_wide_not_per_cluster(monkeypatch)
     monkeypatch.setattr(
         gs, "get_all_limitations", lambda domain="computer_vision": recent + stale
     )
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 3)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 3)
     monkeypatch.setattr(
         gs, "cluster_limitations", lambda lims, domain=None: [recent, stale]
     )
@@ -629,7 +629,7 @@ def test_score_gaps_display_solutions_match_scored_solutions(monkeypatch):
     """
     cluster = [{"text": "an open gap", "paper_ids": ["p1"], "years": [2025]}]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 1)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
 
     hits = [
@@ -649,7 +649,7 @@ def test_score_gaps_threads_domain_into_solution_search(monkeypatch):
     """score_gaps(domain=...) reaches the future-direction filter."""
     cluster = [{"text": "an open gap", "paper_ids": ["p1"], "years": [2025]}]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 1)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     client = _make_qdrant_query_mock([])
     _patch_vector_backends(monkeypatch, client, _make_model_mock())
@@ -830,7 +830,7 @@ def test_score_gaps_formula_weights(monkeypatch):
     """Composite score equals 0.40*freq + 0.35*recency + 0.25*deficit."""
     cluster = [{"text": "slow training", "paper_ids": ["a"], "years": [2024]}]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 5)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 5)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     monkeypatch.setattr(gs, "compute_frequency_score", lambda c, t: 0.6)
     monkeypatch.setattr(gs, "compute_recency_score", lambda c, current_year=2024: 0.4)
@@ -856,7 +856,7 @@ def test_score_gaps_returns_sorted_list(monkeypatch):
     c_high = [{"text": "high gap", "paper_ids": ["b"], "years": [2024]}]
 
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": c_low + c_high)
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 4)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 4)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [c_low, c_high])
     monkeypatch.setattr(gs, "compute_frequency_score", lambda c, t: 0.9 if c is c_high else 0.1)
     monkeypatch.setattr(gs, "compute_recency_score", lambda c, current_year=2024: 0.5)
@@ -880,7 +880,7 @@ def test_score_gaps_respects_top_n(monkeypatch):
     ]
     flat = [c[0] for c in clusters]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": flat)
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 5)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 5)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: clusters)
     # avoid Qdrant: no addressing solutions => deficit computed without network
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: [])
@@ -945,7 +945,7 @@ def test_score_gaps_collects_proposed_solutions(monkeypatch):
     """proposed_solutions come from addressing future directions for the cluster."""
     cluster = [{"text": "needs solving", "paper_ids": ["a"], "years": [2024]}]
     monkeypatch.setattr(gs, "get_all_limitations", lambda domain="computer_vision": cluster)
-    monkeypatch.setattr(gs, "_count_papers_in_domain", lambda domain: 1)
+    monkeypatch.setattr(gs, "_count_contributing_papers", lambda domain: 1)
     monkeypatch.setattr(gs, "cluster_limitations", lambda lims, domain=None: [cluster])
     monkeypatch.setattr(gs, "compute_solution_deficit_score", lambda c, **kw: 0.0)
     monkeypatch.setattr(gs, "_find_addressing_solutions", lambda text, **kw: ["try approach X"])

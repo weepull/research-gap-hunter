@@ -1103,6 +1103,26 @@ find them as neighbours. A `/gaps` call mid-tranche therefore returns partially 
 clustering. This is why the driver re-embeds and re-derives at each tranche boundary and why
 that cycle was completed manually after stopping early.
 
+### Audit-fix P1 · hermetic unit tier, enforced — DONE 2026-10-04
+
+The unit tier claimed to be hermetic but nothing enforced it. Commit `ad34741` switched
+`score_gaps` to `_count_contributing_papers`, and 8 tests still stubbed the old
+`_count_papers_in_domain`, so they read the **production** Neo4j. They passed while it ran
+and failed when it did not. The reported `489 passed` was therefore conditional on service
+state.
+
+`tests/conftest.py` now has an autouse guard. For every test *not* marked `integration`, it
+makes these raise `LiveServiceInUnitTest`:
+- `graph.populate.GraphDatabase.driver`
+- `vectors.embed.QdrantClient`
+- the lazily imported `sentence_transformers` module
+
+These are the same bindings the unit tests already patch, so a test's own stub still wins.
+The unit result is now identical with Neo4j up and down. **When you add a function that
+reaches a store, stub it in its unit tests. The guard will tell you if you forget.** Still
+open, and not covered by the guard: `tests/test_api.py` opens the real `data/papers.db`
+through startup self-heal. See `PLAN_AUDIT_FIX.md` P1.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

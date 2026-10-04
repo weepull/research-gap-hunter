@@ -195,7 +195,7 @@ binding constraint is the model, a fixed cost.
 | API | FastAPI + Uvicorn | 7 endpoints; Pydantic response models; lifespan model warming; CORS |
 | Frontend | Next.js 16 + TypeScript + Tailwind CSS v4 | 3 pages; dark theme; server + client components; Inter font |
 | Paper source | Semantic Scholar API | arXiv metadata, PDF URLs, open access links |
-| Tests | pytest | 255 tests, 0 failures; all backends mocked at module level |
+| Tests | pytest | 489 unit tests (hermetic, enforced by a guard in `tests/conftest.py`) + 40 opt-in integration tests against real services |
 | Python version | 3.11+ | `requires-python = ">=3.11"`; developed on 3.14; type hints throughout |
 
 ---
@@ -423,9 +423,16 @@ pytest -m ''            # both
 ```
 
 ```
-489 passed, 40 deselected in 0.73s
-37 passed, 3 skipped, 489 deselected in 39.23s
+489 passed, 40 deselected, 1 warning in 0.90s
+37 passed, 3 skipped, 489 deselected, 1 warning in 47.49s
 ```
+
+The unit figure is identical with Neo4j stopped and running, which is the point: an
+autouse guard in `tests/conftest.py` makes any real Neo4j driver, Qdrant client or
+embedding-model load raise in the unit tier. Before it existed (2026-10-04), eight
+`score_gaps` tests silently queried the production Neo4j, so the earlier `489 passed`
+held only while Neo4j was up — with it down the same suite was 8 failed, 481 passed.
+The integration line was measured with Ollama down; one of its 3 skips is the Ollama test.
 
 **Two tiers, and the split matters.** The unit tier mocks every external dependency and
 runs in under a second, which is what makes it usable on every change. It is also

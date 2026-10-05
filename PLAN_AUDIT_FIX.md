@@ -327,6 +327,153 @@ calls). No unit test imports `scripts/`. `tests/test_eval_harness.py` imports `e
 
 ### P5 · Live re-verification of (b)–(f), with no code changes
 
+> **Status: MEASURED 2026-10-05. Report only: nothing was changed and nothing is acted on.**
+> All runs used Neo4j, Qdrant and Ollama up, at HEAD `4c4c5ad`. `data/papers.db` mtime
+> stayed `29 Sep 07:03:40 2026`, and the working tree was clean after every script.
+
+**1 · Integration tier:** `37 passed, 3 skipped, 522 deselected, 1 warning in 39.07s`. The
+skips: 2 because the fixture has no cross-domain match above the noise floor (correct
+output), and 1 because the MI fixture has no multi-member cluster. The unit tier was
+`522 passed`.
+
+**2 · `scripts/derive_thresholds.py` (no `--apply`):** "All constants within tolerance.
+Nothing to do."
+
+| constant | coded | derived | drift |
+|---|---:|---:|---:|
+| `_CLUSTER_THRESHOLDS["computer_vision"]` | 0.8744 | 0.8744 | 0.0000 |
+| `_CLUSTER_THRESHOLDS["medical_imaging"]` | 0.8954 | 0.8959 | 0.0005 |
+| `_CROSS_DOMAIN_THRESHOLD` | 0.8764 | 0.8764 | 0.0000 |
+| `_DEFICIT_RESCALE_ANCHORS` (4 values) | — | — | 0.0000 each |
+| `_SOLUTION_THRESHOLDS["computer_vision"]` | 0.8733 | 0.8733 | 0.0000 |
+| `_SOLUTION_THRESHOLDS["medical_imaging"]` | 0.8915 | 0.8917 | 0.0002 |
+
+Null sample sizes: cluster CV n=6,216 and MI n=5,253; solution CV n=5,264 and MI n=6,386;
+cross-domain n=11,785.
+
+**3 · `scripts/measure_weight_influence.py`** (CV 57 gaps, MI 53 gaps):
+
+| term | coefficient | CV by spread / by sd | MI by spread / by sd |
+|---|---:|---:|---:|
+| frequency | 0.40 | 8.3% / 4.4% | 10.3% / 4.3% |
+| recency | 0.35 | 53.5% / 66.4% | 52.8% / 68.5% |
+| solution_deficit | 0.25 | 38.2% / 29.2% | 37.0% / 27.2% |
+
+- Deleting the frequency term changes the top-10 order in both domains.
+- **Docs drift, not fixed:** the table in CLAUDE.md's *Gap Scoring Formula* section still shows
+  the pre-Option-F figures (CV frequency 9.2% / 5.7%, and so on).
+
+**4 · Exact-score ties,** counted directly from `score_gaps(top_n=all)`:
+- **CV:** 4 of 57 gaps, in 2 groups. Only 2 of those gaps share a score *and* a tier: 0.4391,
+  both single-source. The other group, 0.4949, spans the tier boundary, so the tier orders it.
+- **MI:** 3 of 53 gaps in 1 group (0.362, all corroborated).
+- This matches RUN_REPORT (4 and 3).
+- **Tool defect, not fixed:** `measure_weight_influence.py` prints "2 of 57" and "2 of 53
+  gaps share a score". It appears to count adjacent equal pairs while labelling them gaps.
+
+**5 · `/health` with one service stopped.** The API was run on port 8765 with
+`SELFHEAL_ON_STARTUP=false`.
+
+| state | `/health` | `/corpus?domain=computer_vision` |
+|---|---|---|
+| all up | 200 `ok`; papers 149, limitations 215, future_directions 109 | 200; papers 64, papers_reporting_limitations 48, limitations 112, future_directions 47 |
+| Qdrant stopped | **503** `degraded`, `qdrant: unreachable`, limitations/future_directions `null` | 200, `vectors_available: false`, vector counts `null` |
+| Neo4j stopped | **503** `degraded`, `neo4j: unreachable` | 200, `graph_available: false`, papers/papers_reporting `null` |
+| each restarted | 200 `ok` | 200, both available |
+
+With Neo4j down, `/health` still reports `papers: 149` because it counts SQLite. That is
+existing item B5, not new.
+
+**6 · The three underived constants. Numbers only, no recommendation.**
+
+- `_CORROBORATED_MIN_PAPERS = 2`:
+
+  | | supporting-paper counts | corroborated / single-source | corroborated at ≥3 instead |
+  |---|---|---|---|
+  | CV | `{1: 36, 2: 9, 3: 7, 4: 3, 5: 1, 8: 1}` | 21 / 36 | 12 |
+  | MI | `{1: 37, 2: 8, 3: 4, 4: 2, 5: 1, 13: 1}` | 16 / 37 | 8 |
+
+- `_MAX_CLUSTER_SHARE = 0.20` (cap floor `_MIN_CLUSTER_CAP = 2`). **The cap does not bind in
+  either domain.** No split was logged, and clustering with the cap disabled in memory is
+  identical.
+
+  | | limitations | cap | clusters | largest | size distribution |
+  |---|---:|---:|---:|---|---|
+  | CV | 112 | 23 | 57 | 8 (7.1%) | `{1: 34, 2: 11, 3: 5, 4: 1, 5: 2, 6: 2, 7: 1, 8: 1}` |
+  | MI | 103 | 21 | 53 | 16 (15.5%) | `{1: 33, 2: 10, 3: 5, 4: 2, 5: 1, 6: 1, 16: 1}` |
+
+- `_UNRESOLVED_DEFICIT_FLOOR = 0.3`. It is applied in `get_unresolved_gaps`
+  (`pipeline/cross_domain.py:196`) to **only the top 20 gaps**, since
+  `score_gaps(top_n=20)` is the default there.
+  - Deficit distribution: CV has 52 distinct values, 5 at exactly 0.0 and 2 at exactly 1.0.
+    MI has 46 distinct values, 7 at 0.0 and none at 1.0.
+  - Gaps above each floor:
+
+    | floor | CV all | CV top-20 | MI all | MI top-20 |
+    |---:|---:|---:|---:|---:|
+    | 0.0 | 52/57 | 16 | 46/53 | 13 |
+    | 0.2 | 38 | 8 | 37 | 10 |
+    | **0.3** | **32** | **7** | **27** | **7** |
+    | 0.4 | 20 | 3 | 19 | 6 |
+    | 0.5 | 15 | 3 | 13 | 6 |
+
+  - Cross-domain match count, with the floor patched in memory only:
+
+    | floor | CV→MI | MI→CV |
+    |---:|---:|---:|
+    | 0.0 | 36 | 22 |
+    | 0.2 | 9 | 14 |
+    | **0.3** | **9** | **8** |
+    | 0.4 | 1 | 0 |
+    | 0.5 | 1 | 0 |
+
+### A · Dry-run: would `admit()` accept the papers already in the corpus? (report only)
+
+**The corpus is 149 papers, not 127.** 127 was the 2026-08-23 size, before curation passes 1
+and 2 (127 → 116 → 113) and the Phase 3d CV tranche (→ 149). SQLite and Neo4j both hold 149:
+64 CV and 85 MI. All 149 were audited.
+
+The audit used SQLite read-only, `corpus_rules.admit` per domain with live arXiv lookups, and
+the shipped allowlist. Nothing was written.
+
+| | papers | accepted | rejected |
+|---|---:|---:|---:|
+| computer_vision | 64 | **64** | 0 |
+| medical_imaging | 85 | **81** (6 via the allowlist) | **4** |
+| total | 149 | **145** | **4** |
+
+All 4 rejections are MI papers with primary `cs.CV` where the medical keyword verifier did not
+fire. **None comes from judgement call 3** (no arXiv record), and none from a failed lookup:
+
+| arXiv id | title | verifier |
+|---|---|---|
+| 2303.08446 | Task-Specific Fine-Tuning via Variational Information Bottleneck for Weakly-Supervised Pathology… | cv=7 mi=6, not confident |
+| 2406.11026 | Boosting Medical Image Classification with Segmentation Foundation Model | cv=7 mi=3, confident CV |
+| 2408.08058 | Navigating Data Scarcity using Foundation Models: A Benchmark of Few-Shot and Zero-Shot Learning… | cv=6 mi=6, not confident |
+| 2501.16469 | Object Detection for Medical Image Analysis: Insights from the RT-DETR Model | cv=7 mi=6, not confident |
+
+`2501.16469` is one of the four papers relabelled CV → MI in curation pass 1.
+
+### B · Can one arXiv timeout abort a whole tranche run? (report only)
+
+**Yes, at candidate discovery. Per-paper extraction failures are isolated.**
+- **Discovery is not isolated.** `_gather_candidates` calls `search_category` with no handler
+  (`scripts/ingest_tranche.py:188`). `arxiv_source._get` retries `_MAX_ATTEMPTS = 4` times,
+  backing off from `_BACKOFF_BASE = 5` s (`pipeline/arxiv_source.py:29-30`, loop at `:69`),
+  then raises `RuntimeError` (`:85`).
+  - `run()` calls `_gather_candidates` at `:240`, outside the `try` that starts at `:257`.
+    `main()` (`:345`) has no handler either, so the process exits non-zero.
+  - `scripts/run_tranches.py:144-149` then prints "ingest failed; stopping" and **breaks out of
+    the whole multi-tranche loop**.
+  - It takes four consecutive failures of one page request; a single transient timeout is
+    absorbed by the retries.
+  - The resume state survives: the cursor is checkpointed after every page (`:192`).
+- **Per-paper extraction failures are isolated.** Extraction retries and then logs and
+  continues (`:272-295`). Store failures are logged and the loop continues (`:302-314`).
+- **P2 did not change this.** The tranche passes its listing candidate as `known`
+  (`scripts/ingest_tranche.py:200`), so `admit()` makes no arXiv request on this path. That
+  is pinned by `test_admit_with_known_candidates_makes_no_request`.
+
 None of these could be checked live this run. With Neo4j, Qdrant and Ollama up:
 
 1. `pytest -m integration -q`. `RUN_REPORT.md` claims 37 passed and 3 skipped, which has not

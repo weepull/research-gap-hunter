@@ -492,3 +492,210 @@ None of these could be checked live this run. With Neo4j, Qdrant and Ollama up:
   `_CORROBORATED_MIN_PAPERS = 2` are not derived from any measurement. CLAUDE.md already
   flags the first as load-bearing since Option F. Any change is an advisor decision.
 - **Not touched:** any threshold drift that P5 step 2 reports.
+
+---
+
+## Investigations, 2026-10-05: report only, nothing changed
+
+### INV-1 · Why the MI keyword check rejected four medical papers
+
+**The check.** `corpus_rules.accept` (`pipeline/corpus_rules.py:99-116`) applies it only to a
+`cs.CV`-primary paper declared `medical_imaging`. It calls
+`classify_text(" ".join((title, abstract)))` (`pipeline/domains.py`) and accepts **only if
+`verdict.best == "medical_imaging"`**. For `admit()` the text is arXiv's title and abstract.
+- **Fields read:** title and abstract, in full. There is no truncation.
+- **Normalisation (`_normalise`):** NFKD accent stripping, lowercasing, whitespace
+  collapsing, and padding with one space at each end.
+  - Hyphens are not normalised: `"x-ray"` and `"x ray"` are different strings.
+  - No stemming beyond the term stems themselves (`"radiolog"`, `"diagnos"`).
+- **Matching:** plain **substring** containment. Only `" ct "` is space-delimited.
+  - Each term counts **once**, however often it occurs.
+  - Weights are summed per domain.
+- **Lists:** `_MEDICAL_TERMS` (46 entries) and `_VISION_TERMS` (40 entries), quoted in full
+  in `pipeline/domains.py` (the two dicts at the top of the module).
+- **Verdict:**
+  - `best` is the higher-scoring domain, from a stable sort over
+    `RESEARCH_DOMAINS = ("computer_vision", "medical_imaging")`, so **a tie goes to
+    computer_vision**.
+  - `best` is `None` below `_MIN_EVIDENCE = 3`.
+  - The verdict is "confident" if the margin is at least `_MIN_MARGIN = 2`.
+
+**Trace.** Text is arXiv title + abstract, exactly what `admit()` saw.
+
+| arXiv id | medical hits | vision hits | result |
+|---|---|---|---|
+| 2303.08446 (pathology WSI classification) | `patholog` 3, `whole slide` 3 → **6** | `frame` 1 (from "**frame**work"), `image classification` 3 (inside "whole slide **image classification**"), `imagenet` 3 → **7** | 6 < 7 → best=CV |
+| 2406.11026 (Boosting **Medical Image** Classification…) | `medical imag` 3 → **3** (3 occurrences, counted once) | `frame` 1 ("framework"), `image classification` 3 (inside "medical **image classification**", ×3), `natural image` 3 (in a contrast sentence) → **7** | 3 < 7 → best=CV, confident |
+| 2408.08058 (…Learning Approaches in **Medical Imaging**) | `clinical` 3, `medical imag` 3 → **6** | `imagenet` 3, `laion` 3 (pretraining sources) → **6** | **tie 6 = 6 → CV by tuple order** |
+| 2501.16469 (Object Detection for **Medical Image** Analysis) | `lesion` 3, `medical imag` 3 → **6** | `frame` 1 ("framework"), `map` 1 (the "mAP50" metric), `object detection` 3, `visual` 2 → **7** | 6 < 7 → best=CV |
+
+**Classification: (i), a bug.** Precisely, it's a mismatch between the specification and the
+implementation, plus a scoring design biased against medical papers that use CV task
+vocabulary. It is not (ii) and not (iii).
+- **Spec ≠ code.** The rule is documented in four places as accepting a `cs.CV` paper "if the
+  medical keyword verifier fires" / "with a medical keyword match"
+  (`pipeline/corpus_rules.py:20`, `:56`, `:217`; CLAUDE.md Phase 3b/3c).
+  - The code requires medical to *outscore* vision.
+  - Under the documented reading, all four pass: medical evidence is 6, 3, 6 and 6, all
+    ≥ `_MIN_EVIDENCE`.
+  - The tests (`test_mi_accepts_cs_cv_when_the_keyword_verifier_fires` and
+    `test_mi_rejects_cs_cv_when_the_verifier_does_not_fire`) use an all-clinical text and a
+    zero-medical text, so they don't tell the two readings apart.
+  - Both arrived together in `3ca9814` (2026-09-29).
+- **Not (ii).** The medical list did fire on all four. What sinks them is the comparison,
+  and these contributing mechanics:
+  - Vision *task* terms match inside medical phrases ("medical **image classification**").
+  - Presence-only counting: three occurrences of "medical imag" are worth 3.
+  - Substring false hits: `frame` in "framework" (in 3 of the 4), `map` in "mAP50".
+  - The tie rule hands 2408.08058 to CV for no chosen reason.
+- **Not (iii).** All four titles name medical imaging. 2303.08446 is computational pathology.
+  2501.16469 was **relabelled CV → MI by human review** in curation pass 1. All four are in
+  the human-curated MI corpus.
+
+**The documented reading would not be safe either**, so "make the code match the docs" is
+not the fix. Over the 64 `cs.CV`-primary papers in the CV corpus:
+
+| reading | CV-corpus papers that would pass the MI conditional | MI `cs.CV` papers accepted |
+|---|---:|---:|
+| current (mi > cv, ties → CV) | 6 / 64 | 40 / 44 |
+| documented "fires" (mi ≥ 3) | 12 / 64 | 44 / 44 |
+| current with whole-word matching | 6 / 64 | 40 / 44 |
+
+"Fires" would admit general CV papers to MI on a single clinical substring: FCOS, SAM-Adapter,
+Paxion, TrafficImag, and The Shape of Events. Whole-word matching changes nothing in
+aggregate, because ties still go to CV.
+
+**HIGH-PRIORITY question: has this check rejected papers during tranche ingestion?**
+**No, zero, because it has never run live.**
+- The logs *do* retain rejections. `data/ingest_log.jsonl` (56 entries, 2026-09-29
+  01:12–01:33 UTC, gitignored, local only) records every `rule_rejected` entry with its
+  reason. All 17 are `computer_vision`, by primary: cs.RO 6, eess.IV 4, cs.CL 3, cs.LG 2,
+  eess.AS 1, eess.SP 1.
+- **All 56 entries are `computer_vision`.** The CV rule never consults the keyword check.
+  `data/ingest_checkpoint.json` holds only a `computer_vision` cursor (cs.CV: 300).
+  `data/tranche_progress.jsonl`, which `scripts/run_tranches.py:31` would write, does not
+  exist.
+- **No medical-imaging tranche has ever run**, so the check had no live effect before P2.
+  Since P2 (2026-10-05) it also gates `/ingest`, `ingest_from_query` and
+  `ingest_domain_papers` for medical_imaging. None of those has been called on the live
+  corpus since.
+
+**Found while investigating (out of INV-1's scope, report only): medical papers inside the CV
+corpus.**
+- The CV rule (`cs.CV` primary only) cannot separate CV from MI, because 44 of the 85
+  curated MI papers also have `cs.CV` primaries.
+- Phase 3d's CV tranche admitted clinically medical papers into `computer_vision`. The
+  keyword verifier confidently calls each of these medical:
+
+| arXiv id | title | medical / vision |
+|---|---|---|
+| `2609.30708` | Brain MR image segmentation (multiple sclerosis lesions) | 14 / 1 |
+| `2609.31788` | 3D CT report generation | 5 / 0 |
+| `2609.30566` | population atlases from diffusion models (brain MRI, chest X-ray) | 14 / 3 |
+| `2609.30223` | lesion-aware segmentation loss ("clinically critical lesions") | 8 / 0 |
+| `2609.30613` | dermoscopic lesion classification | 6 / 7, which the current rule would *reject* from MI |
+
+`2609.30682` (gigapixel scientific images, with whole-slide and X-ray terms) is borderline.
+These papers feed CV gaps, the CV frequency denominator and the CV nulls.
+
+**Proposed fix: not applied, needs an advisor decision.** Any rule should be measured on both
+populations above: the 44 MI `cs.CV` papers and the 64 CV `cs.CV` papers.
+1. **Stop treating a non-confident verdict as a rejection.** Make the MI conditional
+   three-way:
+   - accept on a confident medical win;
+   - reject on a confident vision win, or when medical evidence is below
+     `_MIN_EVIDENCE`;
+   - otherwise log `rule_review` for a human or the allowlist.
+
+   Measured: the MI corpus becomes 40 accept, 3 review, 1 reject (2406.11026). The CV corpus
+   becomes 52 no-evidence, 4 vision-confident, 3 review, 5 accept.
+2. **Stop CV task terms matching inside medical phrases.** For example, don't score
+   `image classification` or `object detection` when they're preceded by "medical". This is
+   what keeps 2406.11026 out. It would need its own measurement on both populations.
+3. **Fix the substring hits** (`frame` and `framework`, `map` and `mAP`, `gan` and
+   `organ`) with word boundaries. That's cosmetic in aggregate (measured: no count
+   changes) but removes misleading evidence.
+4. **Separately, a policy question:** should the CV rule reject `cs.CV` papers the verifier
+   confidently calls medical? That's the mirror image of the MI conditional, and it would
+   catch the five papers above. It changes what CV admits, so it needs the advisor.
+5. **For the four existing papers:** adding them to `data/mi_allowlist.txt` would make
+   `admit()` agree with the human curation without touching the rule. That's a data
+   decision, also for the advisor.
+
+### INV-2 · Sensitivity of the cross-domain output
+
+Measured with constants patched in memory only (restored and asserted), live stores, HEAD
+`0a11a50`. Counts use `find_cross_domain_matches(top_n=1000)`; the API's default `top_n`
+is 10. "Unresolved" is the number of the top 20 gaps above the floor.
+
+**`_UNRESOLVED_DEFICIT_FLOOR`** (`_CORROBORATED_MIN_PAPERS = 2`):
+
+| floor | CV→MI | MI→CV | unresolved CV (of top 20) | unresolved MI (of top 20) | Jaccard vs previous step (CV→MI, MI→CV) |
+|---:|---:|---:|---:|---:|---|
+| 0.15 | 10 | 14 | 9 | 10 | — |
+| 0.20 | 9 | 14 | 8 | 10 | 0.90, 1.00 |
+| 0.25 | 9 | 13 | 7 | 8 | 1.00, 0.93 |
+| **0.30** | **9** | **8** | **7** | **7** | 1.00, **0.62** |
+| 0.35 | 9 | 0 | 6 | 6 | 1.00, **0.00** |
+| 0.40 | 1 | 0 | 3 | 6 | **0.11**, 1.00 |
+| 0.45 | 1 | 0 | 3 | 6 | 1.00, 1.00 |
+| 0.50 | 1 | 0 | 3 | 6 | 1.00, 1.00 |
+
+**Is there a principled basis? Partly. The coded 0.3 is arbitrary in origin.**
+- **A null-derived value exists.** Since Option F,
+  `deficit = 1 − (s − p50)/(p99 − p50)`, where `s` is the nearest eligible future
+  direction's similarity. So a floor is a similarity cut in disguise.
+  - The floor that means exactly "no eligible future direction clears the solution noise
+    floor (null p95)" is `d* = 1 − (p95 − p50)/(p99 − p50)`.
+  - From the coded constants: **d\* = 0.3122 for CV and 0.2857 for MI.** The floor acts on
+    the *source* domain's deficits, so CV→MI uses CV's value and MI→CV uses MI's.
+  - The coded 0.3 corresponds to a nearest-FD similarity below 0.8742 (CV) and 0.8904 (MI),
+    against solution thresholds of 0.8733 and 0.8915.
+- **0.3 is not derived from this.** It was introduced on 2026-07-03 (`2bb9b58`), when the
+  deficit was still a count ratio, so its closeness to d\* is a coincidence.
+- **Plateaus:**
+  - CV→MI has a stable plateau from 0.20 to 0.35 (the same 9 matches, Jaccard 1.00), with a
+    cliff at 0.40. 0.3 sits inside it.
+  - **MI→CV has no plateau around 0.3.** It changes at every step from 0.25 to 0.35
+    (13 → 8 → 0), and 0.3 sits on that cliff. The MI→CV output is therefore highly sensitive
+    to this constant. The MI d\* (0.2857) falls between two measured steps whose counts
+    differ by 5.
+- **Another underived constant is involved.** `get_unresolved_gaps` applies the floor only
+  to `score_gaps(top_n=20)` (`pipeline/cross_domain.py:195`). So `20` also gates the
+  cross-domain output, and so does the ranking, including `_CORROBORATED_MIN_PAPERS` (below).
+
+**`_CORROBORATED_MIN_PAPERS`** (floor 0.3):
+
+| min papers | CV→MI | MI→CV | corroborated CV (in top 20) | corroborated MI (in top 20) |
+|---:|---:|---:|---|---|
+| **2** | **9** | **8** | 21/57 (20) | 16/53 (16) |
+| 3 | 8 | 18 | 12/57 (12) | 8/53 (8) |
+| 4 | 9 | 19 | 5/57 (5) | 4/53 (4) |
+
+- MI→CV more than doubles at 3 or 4.
+- The mechanism is the top-20 coupling: fewer corroborated gaps lets more single-source gaps,
+  which have higher deficits, into the top 20 that `get_unresolved_gaps` sees.
+- At 2, the CV top 20 is entirely corroborated (20 of 20).
+- No null or plateau applies to this constant. It is a count threshold whose effect on
+  cross-domain is indirect. There is no measured basis for 2, 3 or 4. (A Wilson-interval
+  argument about a one-paper versus multi-paper gap is the rationale recorded under Option F.)
+
+### INV-3.10 · `_MAX_CLUSTER_SHARE` is inactive at the current corpus size
+
+- **Mechanism.** `cap = max(_MIN_CLUSTER_CAP, ceil(0.20 × limitations_in_domain))`, counting
+  the seed. A cluster splits only when the seed plus its eligible candidates exceed `cap`
+  (`pipeline/gap_scorer.py:353`).
+- **Today it doesn't bind, so it is inactive rather than dead code.** No split was logged,
+  and clustering with the cap disabled in memory is identical.
+  - CV: 112 limitations, cap 23, largest cluster 8 (7.1%).
+  - MI: 103 limitations, cap 21, largest cluster 16 (15.5%).
+- **When it would begin to bind, at today's cluster structure:**
+  - MI (largest cluster 16) binds once `cap ≤ 15`, i.e. **≤ 75 MI limitations**
+    (`_cluster_cap(75) = 15`, `_cluster_cap(76) = 16`).
+  - CV (largest cluster 8) binds at **≤ 35 CV limitations** (`_cluster_cap(35) = 7`,
+    `_cluster_cap(36) = 8`).
+- **As the corpus grows, the cap grows with it.** It binds only if a domain's largest
+  cluster grows faster than 20% of that domain's limitations: from 15.5% (MI) or 7.1% (CV)
+  to above 20%.
+- **For comparison:** at the old underived 0.86 threshold, MI's largest cluster was 52 of
+  104 (50%). The cap would have split that.

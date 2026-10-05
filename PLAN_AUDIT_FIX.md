@@ -1195,3 +1195,38 @@ decision.
     (MI 0.2858) would close it; that's an advisor decision.
 - **Not changed:** `README.md:97` still calls the floor "the one threshold still not derived".
   That's now false, but left because README is frozen until the figures settle.
+
+### S2 · Evidence gate instead of the `top_n` rank cap — DRY RUN ONLY, nothing applied
+
+**Setup.** `get_unresolved_gaps` was replaced *in memory* (restored and asserted). The
+replacement drops the `top_n = 20` rank cap and instead lets a gap seed cross-domain matching
+only if it has **≥ N supporting papers** *and* its deficit exceeds its domain's floor (the S1
+floors: CV 0.3122, MI 0.2857). All gaps are considered. The cross-domain threshold is 0.8764.
+Corrected corpus, real stores.
+
+| rule | CV→MI | MI→CV | gaps eligible to seed (CV / MI) | non-single-source matches |
+|---|---|---|---|---:|
+| current: `top_n = 20` cap (control) | 4 from 2 gaps | 4 from 1 gap | 7 / 4 | 4 (all CV→MI) |
+| **gate ≥ 2 papers** | **4 from 2 gaps** | **0** | 7 / 2 | **4** |
+| **gate ≥ 3 papers** | **0** | **0** | 1 / 0 | **0** |
+
+**MI→CV is 0 under the evidence gate.** All 4 of its current matches come from one
+single-source gap ("Extensive hyperparameter tuning", 1 paper, MI rank 20). The 2 MI gaps that
+pass the ≥ 2 gate produce no pair above the cross-domain threshold.
+
+**Surviving matches under ≥ 2.** These are the same 4 CV→MI matches as the current rule.
+Margin is similarity minus the cross-domain threshold (0.8764).
+
+| margin | sim | source gap (CV rank, papers) | target future direction (MI paper) | note |
+|---:|---:|---|---|---|
+| +0.0151 | 0.8915 | "Deployment in high-stakes settings may amplify errors or unequal performance…" (rank 4, 2 papers) | "Whether demographic variables should be encoded as proxies for causal…" (2402.14815) | source includes **ambiguous 2609.30566** |
+| +0.0109 | 0.8873 | same gap | "Complete ten-budget sweeps, curriculum ablation, stratified re-splits…" (2609.30613, relabelled in R1) | source includes ambiguous 2609.30566 |
+| +0.0028 | 0.8792 | same gap | "A deeper understanding of how these powerful models process and utilize…" (2402.14815) | source includes ambiguous 2609.30566 |
+| +0.0002 | 0.8766 | "Behavior labels derived from short trajectories remain ambiguous…" (rank 3, 2 papers) | "Improving zero-shot experiences by developing smarter methods…" (2406.05285) | margin 0.0002 |
+
+**Plainly:** **4 matches survive that are not single-source**, all CV→MI, from **2** source gaps,
+each with exactly 2 supporting papers.
+- **3 of the 4** come from a gap whose two papers are 2609.30434 and the **ambiguous** 2609.30566.
+  If that paper were treated as medical, the gap would be single-source on the CV side.
+- **The 4th** clears the threshold by **0.0002**.
+- **At ≥ 3 papers nothing survives in either direction.**

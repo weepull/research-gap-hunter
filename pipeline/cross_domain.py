@@ -10,6 +10,7 @@ target domain's future directions in Qdrant.
 import logging
 import os
 import time
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel
@@ -236,8 +237,12 @@ def get_unresolved_gaps(domain: str) -> list[GapResult]:
       (`_unresolved_deficit_floor`), i.e. no eligible future direction in the corpus
       clears the solution noise floor.
     """
+    return _seed_gaps(score_gaps(domain=domain, top_n=None), domain)
+
+
+def _seed_gaps(gaps: list[GapResult], domain: str) -> list[GapResult]:
+    """The evidence gate and the floor, shared by get_unresolved_gaps and the report."""
     floor = _unresolved_deficit_floor(domain)
-    gaps = score_gaps(domain=domain, top_n=None)
     return [
         gap for gap in gaps
         if len(gap.supporting_papers) >= _MIN_SEED_PAPERS and gap.solution_deficit_score > floor
@@ -261,13 +266,25 @@ def find_cross_domain_matches(
     domain. Pairs scoring at or above similarity_threshold become
     CrossDomainMatch objects, sorted by similarity_score descending, top_n kept.
 
-    **An empty list is a valid, expected result.** On a corpus where no pair
-    clears the noise floor, returning nothing is the honest answer — it means
-    there is no defensible cross-domain hypothesis in the data, not that
-    something failed. Callers must render the empty case rather than treat it as
-    an error; the frontend already shows a "No connections found" state.
+    **An empty list is a valid, expected result**, but on its own it does not say
+    *why* it is empty. The API serves `cross_domain_report` instead, which states
+    whether there were no seed gaps, no pair above the noise floor, or no data.
     """
     gaps = get_unresolved_gaps(source_domain)
+    return _match_gaps(gaps, source_domain, target_domain, top_n, similarity_threshold)
+
+
+def _match_gaps(
+    gaps: list[GapResult],
+    source_domain: str,
+    target_domain: str,
+    top_n: int | None,
+    similarity_threshold: float,
+) -> list[CrossDomainMatch]:
+    """Every (gap, target future direction) pair at or above the threshold, best first.
+
+    `top_n=None` returns them all, so a caller can report the total before truncating.
+    """
     if not gaps:
         return []
 
@@ -309,6 +326,104 @@ def find_cross_domain_matches(
 
     matches.sort(key=lambda match: match.similarity_score, reverse=True)
     return matches[:top_n]
+
+
+def _count_future_directions(domain: str) -> int:
+    """How many future directions the target domain holds (the matcher's search space)."""
+    client = get_qdrant_client()
+    result = client.count(
+        collection_name=_COLLECTION_FUTURE_DIRECTIONS,
+        count_filter=Filter(must=[FieldCondition(key="domain", match=MatchValue(value=domain))]),
+        exact=True,
+    )
+    return int(result.count)
+
+
+CrossDomainStatus = Literal["matches_found", "none_above_threshold", "no_corroborated_gaps", "no_data"]
+
+
+class CrossDomainReport(BaseModel):
+    """A cross-domain result that states what it found and why (T2, 2026-10-05).
+
+    A bare `[]` read as "no such connections exist". The four statuses say which kind of
+    result this is:
+
+    - `matches_found` — at least one pair clears the noise floor.
+    - `none_above_threshold` — corroborated, unresolved source gaps exist and were
+      matched, but no pair clears the threshold *at this corpus size*.
+    - `no_corroborated_gaps` — the source has gaps but none meets the evidence gate
+      (>= `min_seed_papers` papers and unresolved), so no matching was attempted.
+    - `no_data` — the source has no limitations, or the target has no future directions.
+    """
+
+    source_domain: str
+    target_domain: str
+    status: CrossDomainStatus
+    message: str
+    matches: list[CrossDomainMatch]
+    total_matches: int              # before top_n truncation
+    similarity_threshold: float
+    min_seed_papers: int
+    source_gaps: int                # every gap in the source domain
+    seed_gaps: int                  # gaps that met the evidence gate and the floor
+    target_future_directions: int   # the target domain's search space
+
+
+def _label(domain: str) -> str:
+    return domain.replace("_", " ")
+
+
+def cross_domain_report(
+    source_domain: str = "computer_vision",
+    target_domain: str = "medical_imaging",
+    top_n: int = 10,
+    similarity_threshold: float = _CROSS_DOMAIN_THRESHOLD,
+) -> CrossDomainReport:
+    """find_cross_domain_matches, plus a stated status and the evidence behind it."""
+    src, tgt = _label(source_domain), _label(target_domain)
+    gaps = score_gaps(domain=source_domain, top_n=None)
+    seeds = _seed_gaps(gaps, source_domain)
+    n_fd = _count_future_directions(target_domain)
+    matches: list[CrossDomainMatch] = []
+
+    if not gaps:
+        status = "no_data"
+        message = f"No data: the {src} corpus has no limitations to match from."
+    elif n_fd == 0:
+        status = "no_data"
+        message = f"No data: the {tgt} corpus has no future directions to match against."
+    elif not seeds:
+        status = "no_corroborated_gaps"
+        message = (
+            f"No {src} gap meets the evidence gate: none of its {len(gaps)} gaps is both "
+            f"supported by at least {_MIN_SEED_PAPERS} papers and unresolved. "
+            f"No matching was attempted."
+        )
+    else:
+        matches = _match_gaps(seeds, source_domain, target_domain, None, similarity_threshold)
+        if matches:
+            status = "matches_found"
+            message = (
+                f"{len(matches)} pairing(s) clear the cross-domain similarity threshold "
+                f"{similarity_threshold:.4f}, from {len({m.source_gap for m in matches})} "
+                f"corroborated {src} gap(s)."
+            )
+        else:
+            status = "none_above_threshold"
+            message = (
+                f"No corroborated {src} gap matches a {tgt} future direction above the "
+                f"similarity threshold {similarity_threshold:.4f}. {len(seeds)} gap(s) met the "
+                f"evidence gate (at least {_MIN_SEED_PAPERS} papers, unresolved) and were "
+                f"matched against {n_fd} {tgt} future directions; none produced a pair above "
+                f"the threshold at this corpus size."
+            )
+
+    return CrossDomainReport(
+        source_domain=source_domain, target_domain=target_domain, status=status,
+        message=message, matches=matches[:top_n], total_matches=len(matches),
+        similarity_threshold=similarity_threshold, min_seed_papers=_MIN_SEED_PAPERS,
+        source_gaps=len(gaps), seed_gaps=len(seeds), target_future_directions=n_fd,
+    )
 
 
 class UngroundedPairingError(ValueError):

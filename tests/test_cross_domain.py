@@ -768,3 +768,71 @@ def test_each_floor_is_the_solution_noise_floor_on_the_deficit_scale(monkeypatch
 def test_an_unknown_domain_gets_the_strictest_floor():
     """Same fallback rule as the other per-domain constants: the strictest known value."""
     assert cd._unresolved_deficit_floor("not_a_domain") == max(cd._UNRESOLVED_DEFICIT_FLOORS.values())
+
+
+# ---------------------------------------------------------------------------
+# T2 — cross_domain_report states why a result is empty
+# ---------------------------------------------------------------------------
+
+
+def _patch_report_backends(monkeypatch, gaps, future_directions=68, matches=()):
+    calls = {"match": 0}
+
+    def fake_match(seeds, source_domain, target_domain, top_n, similarity_threshold):
+        calls["match"] += 1
+        calls["seeds"] = len(seeds)
+        return list(matches)
+
+    monkeypatch.setattr(cd, "score_gaps", lambda domain, top_n: gaps)
+    monkeypatch.setattr(cd, "_count_future_directions", lambda domain: future_directions)
+    monkeypatch.setattr(cd, "_match_gaps", fake_match)
+    return calls
+
+
+def test_report_no_data_when_the_source_has_no_gaps(monkeypatch):
+    calls = _patch_report_backends(monkeypatch, gaps=[])
+    r = cd.cross_domain_report("computer_vision", "medical_imaging")
+    assert r.status == "no_data" and r.matches == [] and calls["match"] == 0
+    assert "no limitations" in r.message
+
+
+def test_report_no_data_when_the_target_has_no_future_directions(monkeypatch):
+    calls = _patch_report_backends(monkeypatch, gaps=[_make_gap()], future_directions=0)
+    r = cd.cross_domain_report("computer_vision", "medical_imaging")
+    assert r.status == "no_data" and calls["match"] == 0
+    assert "no future directions" in r.message
+
+
+def test_report_says_when_no_gap_meets_the_evidence_gate(monkeypatch):
+    """Gaps exist but none is corroborated and unresolved: matching is not attempted."""
+    gaps = [_make_gap(desc="single", deficit=0.9, papers=("p1",)),
+            _make_gap(desc="addressed", deficit=0.0)]
+    calls = _patch_report_backends(monkeypatch, gaps=gaps)
+    r = cd.cross_domain_report("medical_imaging", "computer_vision")
+    assert r.status == "no_corroborated_gaps" and r.seed_gaps == 0 and r.source_gaps == 2
+    assert calls["match"] == 0
+    assert "No matching was attempted" in r.message
+
+
+def test_report_says_none_above_threshold_at_this_corpus_size(monkeypatch):
+    """Seeds exist and were matched, but no pair clears the noise floor — MI->CV today."""
+    calls = _patch_report_backends(monkeypatch, gaps=[_make_gap(), _make_gap(desc="g2")])
+    r = cd.cross_domain_report("medical_imaging", "computer_vision")
+    assert r.status == "none_above_threshold" and r.matches == []
+    assert calls["match"] == 1 and r.seed_gaps == 2
+    assert "at this corpus size" in r.message and f"{r.similarity_threshold:.4f}" in r.message
+
+
+def test_report_matches_found_states_totals_before_truncation(monkeypatch):
+    found = [_make_match_for_report(i) for i in range(5)]
+    _patch_report_backends(monkeypatch, gaps=[_make_gap()], matches=found)
+    r = cd.cross_domain_report("computer_vision", "medical_imaging", top_n=3)
+    assert r.status == "matches_found" and len(r.matches) == 3 and r.total_matches == 5
+
+
+def _make_match_for_report(i: int) -> CrossDomainMatch:
+    return CrossDomainMatch(
+        source_gap=f"gap {i}", target_solution=f"fd {i}", similarity_score=0.9 - i / 100,
+        source_papers=["a", "b"], target_papers=["c"],
+        source_domain="computer_vision", target_domain="medical_imaging",
+    )

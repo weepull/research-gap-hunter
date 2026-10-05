@@ -1269,3 +1269,50 @@ each with exactly 2 supporting papers.
   After: `535 passed`. Integration: `37 passed, 3 skipped`.
 - **Gate: met.** CV→MI **4** (2 source gaps; 7 gaps eligible to seed). MI→CV **0** (2 gaps
   eligible, no pair above 0.8764).
+
+### T2 · The API and the frontend state why a cross-domain result is empty — DONE
+
+**Backend.** `pipeline/cross_domain.py` adds `CrossDomainReport` and `cross_domain_report`.
+`/cross-domain` returns the report instead of `list[CrossDomainMatch]`.
+- **Statuses:** `matches_found`, `none_above_threshold` (seeds were matched; none above the
+  threshold at this corpus size), `no_corroborated_gaps` (no gap met the evidence gate; no
+  matching attempted), and `no_data` (source has no limitations, or target has no future
+  directions).
+- Each status carries a plain `message` and its evidence counts.
+- `find_cross_domain_matches` keeps its list contract. The gate and matching loop are shared
+  through `_seed_gaps` and `_match_gaps`.
+
+**Frontend.**
+- `lib/crossDomainFinding.ts` is pure, with no imports.
+- `components/CrossDomainFinding.tsx` is a solid card with `role="status"` and an evidence
+  list; it is not `EmptyState`.
+- `app/cross-domain/page.tsx` renders the finding for every non-match status, and the match
+  count line states the total and the evidence gate.
+- `lib/api.ts` has a `CrossDomainReport` type and `fetchCrossDomainReport`.
+
+**Tests, failing first.**
+- **Backend: 13 failed** against the pre-T2 code. They were the 5 report-status tests and 3
+  API shape/status tests, plus 5 re-pointed at the new backend function: demo mode, 2 P3
+  unknown-domain cases, and passes-params. `test_cross_domain_returns_matches` and
+  `test_cross_domain_empty_result` (which asserted a bare `[]`) were replaced, with reasons
+  in their docstrings.
+- **Frontend: `npm test` (node:test, no new deps) 3 failed** before implementation (missing
+  modules), then **8 passed**: 6 logic and 2 render.
+  - The render test transpiles the component with the installed TypeScript and renders it with
+    `react-dom/server`. It asserts the statement and evidence are present, `role="status"`, and
+    no `border-dashed`.
+- **After:** backend `542 passed`, integration `37 passed, 3 skipped`. `tsc --noEmit` and
+  eslint are clean. A production `next build` succeeds.
+
+**Live (real stores, API on :8765 with self-heal off):**
+- CV→MI: `matches_found`, 4, "4 pairing(s) clear the cross-domain similarity threshold
+  0.8764, from 2 corroborated computer vision gap(s)."
+- MI→CV: `none_above_threshold`, 0, "… 2 gap(s) met the evidence gate … matched against 41
+  computer vision future directions; none produced a pair above the threshold at this corpus
+  size."
+- The page states: **"No corroborated Medical imaging gap has a Computer vision match above
+  the noise floor"**, with evidence "2 of 56" gaps met the gate and "41" future directions
+  were searched.
+
+**Not verified:** the page was not opened in a browser. Rendering is verified by the
+component render test and the build, not visually.

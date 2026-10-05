@@ -333,6 +333,9 @@ Two things this corrects:
 An **empty cross-domain result is correct output, not a bug** — it means no pair
 in the data clears the noise floor. `/cross-domain` and `/gaps` both return a
 clean `[]` with HTTP 200, and the frontend renders "No connections found".
+*(Superseded for `/cross-domain` by T2, 2026-10-05. It now returns a `CrossDomainReport`
+whose `status` states which kind of empty it is, and the frontend renders it as a stated
+finding. See* Audit-fix T2.*)*
 
 **These values are corpus-dependent.** Re-derive the nulls after any significant
 ingestion; the read-only analysis is described in PROJECT_HARDENING_PLAN.md
@@ -1246,6 +1249,35 @@ give 0 and 0 (`PLAN_AUDIT_FIX.md` S2).
   away), so no classification changed.
 - Written by the third authorised `--apply`, which touched nothing else.
 - `score_gaps` accepts `top_n=None` (all gaps).
+
+### Audit-fix T2 · the API states why a cross-domain result is empty — DONE 2026-10-05
+
+**Interface change.** `/cross-domain` returns a `CrossDomainReport`, not a bare list. A bare
+`[]` read as "no such connection exists". The report has:
+- `status`: `matches_found`, `none_above_threshold`, `no_corroborated_gaps` or `no_data`;
+- a plain `message`;
+- the evidence: `seed_gaps` of `source_gaps`, `target_future_directions` searched,
+  `similarity_threshold`, `min_seed_papers`, and `total_matches` before `top_n`.
+
+**What the statuses separate:**
+- `none_above_threshold`: corroborated, unresolved gaps were matched, and no pair cleared the
+  noise floor *at this corpus size*. This is MI→CV today: 2 seed gaps against 41 CV future
+  directions.
+- `no_corroborated_gaps`: no gap met the evidence gate, so nothing was matched.
+- `no_data`: one side is empty.
+
+`find_cross_domain_matches` keeps its list contract for `/explain` grounding, the integration
+tests and the run report; both functions share `_seed_gaps` and `_match_gaps`.
+
+**Frontend.** Every non-match status renders through `CrossDomainFinding`, a solid card with
+role `status`, the statement and the evidence, never the dashed `EmptyState` panel. The copy
+lives in `lib/crossDomainFinding.ts`.
+
+**Frontend tests exist now, with no new dependencies.**
+- `npm test` runs Node's built-in `node:test`. Node 25 strips TypeScript types natively.
+- `tests/_tsx.mjs` transpiles a component with the already-installed TypeScript and renders
+  it with `react-dom/server`.
+- Components under test must avoid `@/` aliases.
 
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 

@@ -582,51 +582,79 @@ def test_search_empty_q_returns_422(client):
 # ---------------------------------------------------------------------------
 
 
-def test_cross_domain_returns_matches(client, monkeypatch):
-    """GET /cross-domain returns CrossDomainMatch objects as JSON."""
+def _report(status="matches_found", matches=None, **kw):
+    """A CrossDomainReport as the pipeline would return it (imported lazily so a missing
+    class fails the test that needs it, not the whole module)."""
+    from pipeline.cross_domain import CrossDomainReport
+
+    matches = [] if matches is None else matches
+    base = dict(
+        source_domain="computer_vision", target_domain="medical_imaging", status=status,
+        message="m", matches=matches, total_matches=len(matches),
+        similarity_threshold=0.8764, min_seed_papers=2, source_gaps=54, seed_gaps=7,
+        target_future_directions=68,
+    )
+    base.update(kw)
+    return CrossDomainReport(**base)
+
+
+def test_cross_domain_returns_a_report_not_a_bare_list(client, monkeypatch):
+    """T2: the response states its own status and the evidence behind it.
+
+    Replaces the test that asserted a bare list of matches. Fails against pre-T2 code,
+    which returned `[]` or `[match, ...]` with nothing saying why.
+    """
     monkeypatch.setattr(
-        "api.main.find_cross_domain_matches",
-        lambda source_domain, target_domain, top_n: [_make_match()],
+        "api.main.cross_domain_report",
+        lambda source_domain, target_domain, top_n: _report(matches=[_make_match()]),
     )
 
     r = client.get("/cross-domain")
 
     assert r.status_code == 200
     body = r.json()
-    assert len(body) == 1
-    m = body[0]
-    assert m["source_domain"] == "computer_vision"
-    assert m["target_domain"] == "medical_imaging"
-    assert m["similarity_score"] == 0.85
-    assert "source_papers" in m
-    assert "target_papers" in m
+    assert isinstance(body, dict)
+    assert body["status"] == "matches_found"
+    assert body["similarity_threshold"] == 0.8764 and body["min_seed_papers"] == 2
+    m = body["matches"][0]
+    assert m["source_domain"] == "computer_vision" and m["similarity_score"] == 0.85
 
 
 def test_cross_domain_passes_params(client, monkeypatch):
-    """source, target, and top_n query params are forwarded to find_cross_domain_matches."""
+    """source, target, and top_n query params are forwarded to cross_domain_report."""
     captured = {}
 
     def fake(source_domain, target_domain, top_n):
         captured.update({"source": source_domain, "target": target_domain, "top_n": top_n})
-        return []
+        return _report(source_domain=source_domain, target_domain=target_domain,
+                       status="none_above_threshold")
 
-    monkeypatch.setattr("api.main.find_cross_domain_matches", fake)
+    monkeypatch.setattr("api.main.cross_domain_report", fake)
 
     client.get("/cross-domain?source=medical_imaging&target=computer_vision&top_n=3")
 
     assert captured == {"source": "medical_imaging", "target": "computer_vision", "top_n": 3}
 
 
-def test_cross_domain_empty_result(client, monkeypatch):
-    """No matches returns an empty list, not an error."""
+@pytest.mark.parametrize("status", ["none_above_threshold", "no_corroborated_gaps", "no_data"])
+def test_cross_domain_states_why_a_result_is_empty(client, monkeypatch, status):
+    """T2: an empty result says which kind of empty it is, with a message.
+
+    Replaces `test_cross_domain_empty_result`, which asserted a bare `[]`: an empty list
+    reads as "no such connections exist", when the honest statement is "none above the
+    noise floor at this corpus size", or "no gap met the evidence gate", or "no data".
+    """
     monkeypatch.setattr(
-        "api.main.find_cross_domain_matches",
-        lambda source_domain, target_domain, top_n: [],
+        "api.main.cross_domain_report",
+        lambda source_domain, target_domain, top_n: _report(status=status, message=f"why: {status}"),
     )
 
     r = client.get("/cross-domain")
+
     assert r.status_code == 200
-    assert r.json() == []
+    body = r.json()
+    assert body["status"] == status and body["matches"] == []
+    assert body["message"] == f"why: {status}"
 
 
 # ---------------------------------------------------------------------------
@@ -896,8 +924,8 @@ def test_read_endpoints_unaffected_by_demo_mode(client, monkeypatch):
     monkeypatch.setattr("api.main.is_demo_mode", lambda: True)
     monkeypatch.setattr("api.main.score_gaps", lambda domain, top_n: [])
     monkeypatch.setattr(
-        "api.main.find_cross_domain_matches",
-        lambda source_domain, target_domain, top_n: [],
+        "api.main.cross_domain_report",
+        lambda source_domain, target_domain, top_n: _report(status="none_above_threshold"),
     )
 
     assert client.get("/gaps").status_code == 200
@@ -1240,8 +1268,8 @@ _READ_ENDPOINT_DOMAIN_CASES = [
     # (path, query params with one misspelt domain, backend that must not be called)
     ("/gaps", {"domain": "computer_visoin"}, "score_gaps"),
     ("/search", {"q": "occlusion", "domain": "computer_visoin"}, "find_similar_limitations"),
-    ("/cross-domain", {"source": "computer_visoin"}, "find_cross_domain_matches"),
-    ("/cross-domain", {"target": "medical_imagng"}, "find_cross_domain_matches"),
+    ("/cross-domain", {"source": "computer_visoin"}, "cross_domain_report"),
+    ("/cross-domain", {"target": "medical_imagng"}, "cross_domain_report"),
     ("/corpus", {"domain": "computer_visoin"}, "_count_papers_in_domain"),
     ("/explain", {"source_gap": "g", "target_solution": "s", "source": "computer_visoin"},
      "verify_pairing"),

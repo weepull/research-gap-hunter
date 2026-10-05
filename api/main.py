@@ -48,9 +48,10 @@ from pipeline import corpus_rules  # noqa: E402
 from pipeline.domains import RESEARCH_DOMAINS, validate_domain  # noqa: E402
 from pipeline.cross_domain import (  # noqa: E402
     CrossDomainMatch,
+    CrossDomainReport,
     UngroundedPairingError,
+    cross_domain_report,
     explain_match,
-    find_cross_domain_matches,
     verify_pairing,
 )
 from pipeline.extractor import extract_paper, is_valid_arxiv_id  # noqa: E402
@@ -572,14 +573,20 @@ def search_limitations(
     ]
 
 
-@app.get("/cross-domain", response_model=list[CrossDomainMatch])
+@app.get("/cross-domain", response_model=CrossDomainReport)
 def get_cross_domain_matches(
     source: str = Query(default="computer_vision"),
     target: str = Query(default="medical_imaging"),
     top_n: int = Query(default=10, ge=1, le=50),
-) -> list[CrossDomainMatch]:
-    """Return ranked cross-domain research hypotheses above the similarity threshold."""
-    return find_cross_domain_matches(
+) -> CrossDomainReport:
+    """Cross-domain hypotheses above the similarity threshold, with a stated status.
+
+    **Behaviour change (T2, 2026-10-05):** this used to return a bare list, and an empty
+    list read as "no such connections exist". It now returns a `CrossDomainReport` whose
+    `status` says which kind of result it is (`matches_found`, `none_above_threshold`,
+    `no_corroborated_gaps`, `no_data`), with a plain `message` and the counts behind it.
+    """
+    return cross_domain_report(
         source_domain=_known_domain(source, "source"),
         target_domain=_known_domain(target, "target"),
         top_n=top_n,

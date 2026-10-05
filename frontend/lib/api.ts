@@ -8,6 +8,8 @@
 // "http://localhost:8000" baked in and every request fails in the browser with
 // no server-side error to notice. Fail the production build instead, so the
 // misconfiguration surfaces during deploy rather than in front of a user.
+import type { CrossDomainReportSummary } from "./crossDomainFinding";
+
 const CONFIGURED_API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 if (!CONFIGURED_API_URL && process.env.NODE_ENV === "production") {
@@ -85,6 +87,14 @@ export interface CrossDomainMatch {
   target_papers: string[];
   source_domain: string;
   target_domain: string;
+}
+
+/**
+ * GET /cross-domain (T2). `status` says which kind of result this is; an empty
+ * `matches` list is never left to speak for itself. See lib/crossDomainFinding.ts.
+ */
+export interface CrossDomainReport extends CrossDomainReportSummary {
+  matches: CrossDomainMatch[];
 }
 
 export interface CorpusInfo {
@@ -208,12 +218,12 @@ export function searchLimitations(
   return get<LimitationResult[]>("/search", { q, top_k: topK, domain });
 }
 
-export function fetchCrossDomainMatches(
+export function fetchCrossDomainReport(
   source: string,
   target: string,
   topN: number = 10,
-): Promise<CrossDomainMatch[]> {
-  return get<CrossDomainMatch[]>("/cross-domain", {
+): Promise<CrossDomainReport> {
+  return get<CrossDomainReport>("/cross-domain", {
     source,
     target,
     top_n: topN,

@@ -313,7 +313,10 @@ No test asserts pacing between ingestion iterations, backoff duration, or `alter
 assertions when fixing them, and confirm each fails against current code first.
 
 ### C4 · Frontend has no tests — MINOR
-**Status: OPEN — accepted, documented 2026-08-23.** Standing up a JS test runner is new infrastructure rather than a bounded fix, so it was not improvised. Stated explicitly here so a reviewer does not have to discover it: `frontend/` has no test runner configured and zero tests.
+**Status: PARTLY ADDRESSED 2026-10-05 (T2).** `npm test` now runs `node:test` over
+`frontend/tests/` with no new dependencies. It covers the cross-domain finding logic and
+renders `CrossDomainFinding` via `react-dom/server`; the rest of the frontend is still
+untested. *Previously:* **OPEN — accepted, documented 2026-08-23.** Standing up a JS test runner is new infrastructure rather than a bounded fix, so it was not improvised. Stated explicitly here so a reviewer does not have to discover it: `frontend/` has no test runner configured and zero tests.
 No test runner configured in `frontend/`. Acceptable for an MVP; worth stating explicitly
 rather than leaving a reviewer to discover it.
 

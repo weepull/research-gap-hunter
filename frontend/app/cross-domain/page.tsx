@@ -10,16 +10,20 @@ import Pressable from "@/components/ui/Pressable";
 import CorpusBanner from "@/components/CorpusBanner";
 import DomainPicker from "@/components/DomainPicker";
 import ConnectionCard from "@/components/ConnectionCard";
-import { CrossDomainMatch, domainLabel, fetchCrossDomainMatches } from "@/lib/api";
+import CrossDomainFinding from "@/components/CrossDomainFinding";
+import { CrossDomainReport, domainLabel, fetchCrossDomainReport } from "@/lib/api";
+import { describeCrossDomainFinding } from "@/lib/crossDomainFinding";
 
 export default function CrossDomainPage() {
   const [source, setSource] = useState("computer_vision");
   const [target, setTarget] = useState("medical_imaging");
-  const [matches, setMatches] = useState<CrossDomainMatch[] | null>(null);
+  const [report, setReport] = useState<CrossDomainReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const sameDomain = source === target;
+  const matches = report?.matches ?? null;
+  const finding = report ? describeCrossDomainFinding(report, domainLabel) : null;
 
   // Explicitly user-triggered, so this is an event handler rather than an
   // effect — nothing here runs on mount.
@@ -27,10 +31,10 @@ export default function CrossDomainPage() {
     setLoading(true);
     setError(null);
     try {
-      setMatches(await fetchCrossDomainMatches(source, target, 10));
+      setReport(await fetchCrossDomainReport(source, target, 10));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Discovery failed");
-      setMatches(null);
+      setReport(null);
     } finally {
       setLoading(false);
     }
@@ -94,7 +98,7 @@ export default function CrossDomainPage() {
 
         {!loading && error && <ErrorState title="Discovery failed" message={error} onRetry={discover} />}
 
-        {!loading && !error && matches === null && (
+        {!loading && !error && report === null && (
           <EmptyState eyebrow="Start" title="Pick two fields and look for overlap">
             The matcher compares unresolved limitations in the source field
             against future directions proposed in the target field, and reports
@@ -103,26 +107,18 @@ export default function CrossDomainPage() {
           </EmptyState>
         )}
 
-        {/* An empty result here is correct output, not a failure. Saying so is
-            the difference between an interface that looks broken and one that
-            is being precise. */}
-        {!loading && !error && matches && matches.length === 0 && (
-          <EmptyState
-            eyebrow="No matches above threshold"
-            title="Nothing here clears the noise floor"
-          >
-            No {domainLabel(source)} gap pairs with a {domainLabel(target)}{" "}
-            proposal closely enough to be distinguishable from a random pairing.
-            That is a real answer: the threshold is set at the 95th percentile of
-            similarity between unrelated pairs in this corpus, so anything below
-            it would be noise presented as a discovery.
-          </EmptyState>
-        )}
+        {/* No matches is a finding, stated with its reason and evidence (T2): the API
+            says whether no pair cleared the noise floor at this corpus size, no gap met
+            the evidence gate, or there was no data. Never an empty panel. */}
+        {!loading && !error && finding && <CrossDomainFinding finding={finding} />}
 
-        {!loading && !error && matches && matches.length > 0 && (
+        {!loading && !error && report && !finding && matches && matches.length > 0 && (
           <>
             <p aria-live="polite" className="mb-3 text-caption text-label-3">
-              {matches.length} {matches.length === 1 ? "connection" : "connections"} above threshold
+              {report.total_matches} {report.total_matches === 1 ? "connection" : "connections"} above
+              threshold
+              {report.total_matches > matches.length ? `, showing the top ${matches.length}` : ""}, from
+              gaps supported by at least {report.min_seed_papers} papers
             </p>
             <div className="space-y-4">
               {matches.map((m, i) => (

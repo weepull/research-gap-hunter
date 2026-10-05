@@ -145,7 +145,10 @@ reported gaps less well?); collapse to binary explicit/other; or document as a d
 prior and leave.
 
 ### A5 · `_UNRESOLVED_DEFICIT_FLOOR = 0.3` is arbitrary — IMPORTANT
-**Status: OPEN, needs an advisor decision.** It was *deferred 2026-08-23* on the grounds that
+**Status: DONE 2026-10-05 (S1).** Replaced by per-domain `_UNRESOLVED_DEFICIT_FLOORS`
+(CV 0.3122, MI 0.2857). Each is the solution noise floor on the deficit scale and is
+written by `scripts/derive_thresholds.py`. See CLAUDE.md *Audit-fix S1*. The history below
+is kept. *Previously:* **OPEN, needs an advisor decision.** It was *deferred 2026-08-23* on the grounds that
 "with deficits saturated at 0.0/1.0 this floor acts as a binary switch". That premise ended
 when A9 Option F (2026-09-29) made the deficit continuous, and the floor is now load-bearing.
 Sweep and measurements: `PLAN_AUDIT_FIX.md` (P5, INV-2). The original text below predates
@@ -652,6 +655,7 @@ follow the demo.
 | audit-fix P1, P1b | 2026-10-04 / 05 | *Audit-fix P1*, *Audit-fix P1b* |
 | audit-fix P2 (judgement calls 2 and 3 **still under advisor review**) | 2026-10-05 | *Audit-fix P2* |
 | audit-fix P3 | 2026-10-05 | *Audit-fix P3* |
+| A5 / audit-fix S1 (per-domain deficit floors) | 2026-10-05 | *Audit-fix S1* |
 
 ---
 

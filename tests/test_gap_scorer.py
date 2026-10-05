@@ -1312,8 +1312,13 @@ def test_threshold_constants_are_not_hand_editable_without_a_guard():
     import derive_thresholds
 
     coded = derive_thresholds.coded_constants()
-    assert set(coded) == {"cluster", "solution", "cross_domain", "deficit_anchors"}, (
+    assert set(coded) == {"cluster", "solution", "cross_domain", "deficit_anchors",
+                          "deficit_floor"}, (
         "a threshold family was added or renamed without updating the derivation script"
+    )
+    assert set(coded["deficit_floor"]) == set(coded["solution"]), (
+        "the unresolved-deficit floors are derived from the solution thresholds and the "
+        "deficit anchors, so they must cover the same domains"
     )
     assert set(coded["deficit_anchors"]) == set(coded["solution"]), (
         "the deficit rescaling anchors must cover the same domains as the solution "

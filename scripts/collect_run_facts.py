@@ -46,7 +46,7 @@ def _pytest(args: list[str]) -> str:
 
 def main() -> int:
     from pipeline.cross_domain import (_CROSS_DOMAIN_THRESHOLD, find_cross_domain_matches,
-                                       _UNRESOLVED_DEFICIT_FLOOR)
+                                       _UNRESOLVED_DEFICIT_FLOORS, _unresolved_deficit_floor)
     from pipeline.domains import RESEARCH_DOMAINS
     from pipeline.extraction_filter import MIN_WORDS
     from pipeline.gap_scorer import (_CLUSTER_THRESHOLDS, _DEFICIT_RESCALE_ANCHORS,
@@ -84,7 +84,7 @@ def main() -> int:
             "corroborated": sum(1 for g in gaps if g.tier == "corroborated"),
             "single_source": sum(1 for g in gaps if g.tier == "single_source"),
             "above_unresolved_floor": sum(
-                1 for g in gaps if g.solution_deficit_score > _UNRESOLVED_DEFICIT_FLOOR
+                1 for g in gaps if g.solution_deficit_score > _unresolved_deficit_floor(domain)
             ),
             "top15": [
                 {"rank": i, "tier": g.tier, "score": g.score,
@@ -118,7 +118,7 @@ def main() -> int:
             "solution": dict(_SOLUTION_THRESHOLDS),
             "cross_domain": _CROSS_DOMAIN_THRESHOLD,
             "deficit_anchors": {k: list(v) for k, v in _DEFICIT_RESCALE_ANCHORS.items()},
-            "unresolved_deficit_floor": _UNRESOLVED_DEFICIT_FLOOR,
+            "unresolved_deficit_floor": dict(_UNRESOLVED_DEFICIT_FLOORS),
             "min_words": dict(MIN_WORDS),
         },
         "drift": [

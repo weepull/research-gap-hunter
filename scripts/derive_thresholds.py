@@ -61,6 +61,11 @@ _PERCENTILES = (50, 90, 95, 99)
 # smaller drift is not distinguishable from resampling the same corpus.
 DRIFT_TOLERANCE = 0.002
 
+# The unresolved-deficit floors are not measured from a null of their own: each is a
+# deterministic function of two coded constants (see deficit_floor). With no sampling
+# noise, any difference beyond 4-dp rounding means a floor is out of step with its inputs.
+FLOOR_TOLERANCE = 0.0001
+
 _TODAY = datetime.now(timezone.utc).date().isoformat()
 
 
@@ -159,9 +164,19 @@ def derive_all() -> dict:
     return out
 
 
+def deficit_floor(solution_threshold: float, p50: float, p99: float) -> float:
+    """The solution noise floor expressed on the deficit scale.
+
+    The deficit is 1 - clamp((nearest - p50) / (p99 - p50)). At nearest == the solution
+    threshold (the null p95) that is 1 - (p95 - p50) / (p99 - p50), so a gap whose
+    deficit exceeds this has no eligible future direction above the noise floor.
+    """
+    return 1.0 - (solution_threshold - p50) / (p99 - p50)
+
+
 def coded_constants() -> dict:
     """The constants currently in the code, in the same shape as derive_all()."""
-    from pipeline.cross_domain import _CROSS_DOMAIN_THRESHOLD
+    from pipeline.cross_domain import _CROSS_DOMAIN_THRESHOLD, _UNRESOLVED_DEFICIT_FLOORS
     from pipeline.gap_scorer import _CLUSTER_THRESHOLDS, _SOLUTION_THRESHOLDS
 
     from pipeline.gap_scorer import _DEFICIT_RESCALE_ANCHORS
@@ -171,6 +186,7 @@ def coded_constants() -> dict:
         "solution": dict(_SOLUTION_THRESHOLDS),
         "cross_domain": _CROSS_DOMAIN_THRESHOLD,
         "deficit_anchors": {k: tuple(v) for k, v in _DEFICIT_RESCALE_ANCHORS.items()},
+        "deficit_floor": dict(_UNRESOLVED_DEFICIT_FLOORS),
     }
 
 
@@ -199,6 +215,25 @@ def drift_report() -> list[dict]:
                 "drift": None if dv is None else abs(dv - cv),
                 "stale": dv is not None and abs(dv - cv) > DRIFT_TOLERANCE,
             })
+
+    # Floors are derived from the values the code will hold AFTER this run's --apply:
+    # an input that is about to be rewritten contributes its derived value, one that is
+    # within tolerance contributes its coded value. Otherwise a floor would lag its own
+    # inputs by one --apply cycle.
+    stale_solution = {r["domain"] for r in rows if r["kind"] == "solution" and r["stale"]}
+    stale_anchors = {r["domain"] for r in rows if r["kind"] == "deficit_anchors" and r["stale"]}
+    for domain, coded_floor in sorted(coded.get("deficit_floor", {}).items()):
+        threshold = (derived["solution"][domain] if domain in stale_solution
+                     else coded["solution"].get(domain))
+        anchors = (derived["deficit_anchors"][domain] if domain in stale_anchors
+                   else coded["deficit_anchors"].get(domain))
+        df = None if threshold is None or anchors is None else deficit_floor(threshold, *anchors)
+        rows.append({
+            "name": f'_UNRESOLVED_DEFICIT_FLOORS["{domain}"]',
+            "kind": "deficit_floor", "domain": domain, "coded": coded_floor, "derived": df,
+            "drift": None if df is None else abs(df - coded_floor),
+            "stale": df is not None and abs(df - coded_floor) > FLOOR_TOLERANCE,
+        })
 
     d = derived["cross_domain"]
     rows.append({
@@ -230,7 +265,7 @@ def _find_dict_block(text: str, section: str) -> tuple[int, int] | None:
 
 
 def _replace_dict_entry(path: str, section: str, domain: str, old: float,
-                        new: float, n: int) -> bool:
+                        new: float, n: int, comment: str | None = None) -> bool:
     """Rewrite one `"domain": value,  # n=...` line inside a constant dict.
 
     Anchors on the ASSIGNMENT (`SECTION = {`) rather than the first mention of the
@@ -255,10 +290,8 @@ def _replace_dict_entry(path: str, section: str, domain: str, old: float,
         r'([ \t]*,)(?:[ \t]*#[^\n]*)?',
         re.M,
     )
-    replacement = (
-        rf'\g<1>{new:.4f}\g<2>'
-        f'  # null p95 over n={n:,} pairs, derived {_TODAY}'
-    )
+    note = comment if comment is not None else f"null p95 over n={n:,} pairs, derived {_TODAY}"
+    replacement = rf'\g<1>{new:.4f}\g<2>' + f'  # {note}'
     updated, count = pattern.subn(replacement, block, count=1)
     if count != 1:
         return False
@@ -329,7 +362,14 @@ def apply_stale(rows: list[dict]) -> list[dict]:
         key = kind_for_n if row["domain"] is None else f'{kind_for_n}:{row["domain"]}'
         n = raw.get(key, {}).get("n", 0)
 
-        if row["kind"] == "deficit_anchors":
+        if row["kind"] == "deficit_floor":
+            ok = _replace_dict_entry(
+                "pipeline/cross_domain.py", "_UNRESOLVED_DEFICIT_FLOORS", row["domain"],
+                row["coded"], new, 0,
+                comment=(f"1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and "
+                         f"_DEFICIT_RESCALE_ANCHORS, derived {_TODAY}"),
+            )
+        elif row["kind"] == "deficit_anchors":
             ok = _replace_anchor_pair(
                 "pipeline/gap_scorer.py", row["domain"],
                 derive_all()["deficit_anchors"][row["domain"]], n,
@@ -348,8 +388,9 @@ def apply_stale(rows: list[dict]) -> list[dict]:
             print(f"  FAILED {row['name']}: could not locate the literal to rewrite")
             continue
         applied.append({**row, "new": new, "n": n})
+        tolerance = FLOOR_TOLERANCE if row["kind"] == "deficit_floor" else DRIFT_TOLERANCE
         print(f"  UPDATED {row['name']}: {row['coded']:.4f} -> {new:.4f} "
-              f"(drift {row['drift']:.4f} > {DRIFT_TOLERANCE}, n={n:,})")
+              f"(drift {row['drift']:.4f} > {tolerance}, n={n:,})")
     return applied
 
 
@@ -412,7 +453,7 @@ def _drift_table(apply: bool) -> int:
     rows = drift_report()
     print()
     print("=" * 96)
-    print(f"DRIFT vs CODED CONSTANTS  (tolerance {DRIFT_TOLERANCE})")
+    print(f"DRIFT vs CODED CONSTANTS  (tolerance {DRIFT_TOLERANCE}; floors {FLOOR_TOLERANCE})")
     print("=" * 96)
     print(f"  {'constant':<48}{'coded':>9}{'derived':>10}{'drift':>9}  action")
     for r in sorted(rows, key=lambda r: r["name"]):

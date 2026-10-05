@@ -119,8 +119,8 @@ def main() -> int:
         w(f"| `{row['name']}` | {float(row['coded']):.4f} | {derived} | {drift} | {action} |")
     w("")
     coded = th["coded"]
-    w(f"Other coded constants: `_UNRESOLVED_DEFICIT_FLOOR` = "
-      f"{coded['unresolved_deficit_floor']} (**still undrived — see caveats**), "
+    w(f"Other coded constants: `_UNRESOLVED_DEFICIT_FLOORS` = "
+      f"{coded['unresolved_deficit_floor']} (the solution noise floor on the deficit scale), "
       f"`MIN_WORDS` = {coded['min_words']} (p5 of the measured word distribution), "
       f"`_DEFICIT_RESCALE_ANCHORS` = "
       + ", ".join(f"{k} ({v[0]:.4f}, {v[1]:.4f})" for k, v in coded["deficit_anchors"].items())
@@ -150,7 +150,7 @@ def main() -> int:
       f"| {gaps['medical_imaging']['corroborated']} |")
     w(f"| single-source tier | {gaps['computer_vision']['single_source']} "
       f"| {gaps['medical_imaging']['single_source']} |")
-    w(f"| above `_UNRESOLVED_DEFICIT_FLOOR` | "
+    w(f"| above `_UNRESOLVED_DEFICIT_FLOORS` | "
       f"{gaps['computer_vision']['above_unresolved_floor']} "
       f"| {gaps['medical_imaging']['above_unresolved_floor']} |")
     w("")

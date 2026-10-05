@@ -1152,3 +1152,46 @@ CV→MI rests on 2 gaps. 3 of its 4 matches come from a gap that includes the am
 **Neither constant was changed.** `_UNRESOLVED_DEFICIT_FLOOR = 0.3` and
 `get_unresolved_gaps(top_n=20)` are both still underived and still awaiting an advisor
 decision.
+
+---
+
+## Phase S, 2026-10-05
+
+### S1 · Per-domain deficit floors — DONE
+
+- **Code.** `pipeline/cross_domain.py` replaces `_UNRESOLVED_DEFICIT_FLOOR = 0.3` with
+  `_UNRESOLVED_DEFICIT_FLOORS` plus `_unresolved_deficit_floor(domain)` (unknown domain →
+  strictest).
+- **Provenance.** The derivation (`floor = 1 − (p95 − p50)/(p99 − p50)` from
+  `_SOLUTION_THRESHOLDS` and `_DEFICIT_RESCALE_ANCHORS`) is written beside the constant, so
+  "why this value" is answerable in the code.
+- **Script.** `scripts/derive_thresholds.py` gains:
+  - `deficit_floor()` and `FLOOR_TOLERANCE = 0.0001`;
+  - floor rows in `drift_report`, derived from the values in effect after `--apply`;
+  - an `--apply` branch with a provenance comment.
+
+  `collect_run_facts.py` and `write_run_report.py` were updated for the renamed constant.
+- **Fail-first.** 11 tests (10 new, plus the inventory test extended) failed against HEAD's
+  production code: `11 failed, 14 passed` on the selection. After the change the full suite
+  gives `532 passed`.
+- **Dry run first.** The derivation proposed exactly 2 updates and kept the other 9.
+- **The second authorised `--apply`** wrote only:
+
+| constant | before | after |
+|---|---:|---:|
+| `_UNRESOLVED_DEFICIT_FLOORS["computer_vision"]` | 0.3000 (was the single 0.3) | **0.3122** |
+| `_UNRESOLVED_DEFICIT_FLOORS["medical_imaging"]` | 0.3000 (was the single 0.3) | **0.2857** |
+
+  `gap_scorer.py` was untouched (empty diff).
+- **Gate: counts are unchanged.** CV→MI is **4** (2 source gaps) and MI→CV is **4** (1 source
+  gap), real code, no patching. Integration tier: `37 passed, 3 skipped`.
+- **Boundary band, recorded rather than hidden.**
+  - MI's exact floor is 0.2857142857, stored as 0.2857, which is below exact. A nearest future
+    direction exactly on the MI solution threshold yields deficit 0.285714 > 0.2857, so it
+    counts as unresolved.
+  - The band width is |Δfloor| × (p99 − p50) ≈ 1.4e-5 × 0.0742 ≈ **1e-6 cosine**.
+  - CV is unaffected (exact 0.312154 rounds *up* to 0.3122).
+  - The test asserts equivalence outside the band and pins the band below 1e-5. Rounding up
+    (MI 0.2858) would close it; that's an advisor decision.
+- **Not changed:** `README.md:97` still calls the floor "the one threshold still not derived".
+  That's now false, but left because README is frozen until the figures settle.

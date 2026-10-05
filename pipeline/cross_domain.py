@@ -41,8 +41,34 @@ from vectors.embed import (
 
 logger = logging.getLogger(__name__)
 
-# Gaps with a deficit at or below this floor are considered adequately addressed.
-_UNRESOLVED_DEFICIT_FLOOR = 0.3
+# Per-domain deficit floor (S1, 2026-10-05). A gap is "unresolved", and may seed
+# cross-domain matching, only if its solution_deficit_score is ABOVE its domain's floor.
+#
+# Why these values: each is the domain's solution noise floor expressed on the deficit
+# scale. Since A9 Option F the deficit is
+#     1 - clamp((nearest - p50) / (p99 - p50))
+# where `nearest` is the most similar eligible future direction and p50/p99 are
+# _DEFICIT_RESCALE_ANCHORS. Setting `nearest` to the domain's _SOLUTION_THRESHOLDS value
+# (the null p95 — the point below which a "solution" is indistinguishable from chance)
+# gives
+#     floor = 1 - (p95 - p50) / (p99 - p50)
+# So "deficit > floor" means exactly "no eligible future direction clears the solution
+# noise floor" — the same definition of addressed that _find_addressing_solutions uses.
+#
+# Derived from the CODED threshold and anchors, not from a fresh null, because those are
+# what the deficit is computed with. Written only by `scripts/derive_thresholds.py`, which
+# re-derives them whenever either input changes. Replaces the single 0.3 of 2026-07-03
+# (commit 2bb9b58), which was never derived.
+_UNRESOLVED_DEFICIT_FLOORS: dict[str, float] = {
+    "computer_vision": 0.3122,  # 1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and _DEFICIT_RESCALE_ANCHORS, derived 2026-10-05
+    "medical_imaging": 0.2857,  # 1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and _DEFICIT_RESCALE_ANCHORS, derived 2026-10-05
+}
+
+
+def _unresolved_deficit_floor(domain: str) -> float:
+    """The deficit floor for a domain; the strictest known floor for an unknown one."""
+    return _UNRESOLVED_DEFICIT_FLOORS.get(domain, max(_UNRESOLVED_DEFICIT_FLOORS.values()))
+
 # Seconds between individual paper ingestions (Semantic Scholar free tier: 1 req/sec).
 _FETCH_SLEEP_SECONDS = 2
 # How many future-direction candidates to pull per gap before thresholding.
@@ -188,12 +214,13 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
 def get_unresolved_gaps(domain: str, top_n: int = 20) -> list[GapResult]:
     """Ranked gaps for a domain that remain genuinely unresolved.
 
-    Runs score_gaps and keeps only gaps whose solution_deficit_score exceeds
-    _UNRESOLVED_DEFICIT_FLOOR (0.3) — those the corpus's own future directions
-    have not meaningfully addressed.
+    Runs score_gaps and keeps only gaps whose solution_deficit_score exceeds the
+    domain's derived floor (`_unresolved_deficit_floor`): those for which no eligible
+    future direction in the corpus clears the solution noise floor.
     """
+    floor = _unresolved_deficit_floor(domain)
     gaps = score_gaps(domain=domain, top_n=top_n)
-    return [gap for gap in gaps if gap.solution_deficit_score > _UNRESOLVED_DEFICIT_FLOOR]
+    return [gap for gap in gaps if gap.solution_deficit_score > floor]
 
 
 def find_cross_domain_matches(

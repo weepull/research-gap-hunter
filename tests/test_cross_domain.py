@@ -685,3 +685,60 @@ def test_verify_pairing_runs_before_any_llm_call(monkeypatch):
 
     with pytest.raises(cd.UngroundedPairingError):
         cd.verify_pairing(source_gap="anything", target_solution="anything else")
+
+
+# ---------------------------------------------------------------------------
+# S1 — per-domain deficit floors derived from the solution noise floor
+# ---------------------------------------------------------------------------
+
+
+def _gap_with_deficit(deficit: float) -> GapResult:
+    return GapResult(
+        gap_description="g", score=0.5, frequency_score=0.1, recency_score=1.0,
+        solution_deficit_score=deficit, supporting_papers=["a"], proposed_solutions=[],
+    )
+
+
+def test_the_unresolved_floor_is_per_domain(monkeypatch):
+    """A deficit of 0.30 is unresolved in MI (floor 0.2857) but not in CV (0.3122).
+
+    Fails against the single 0.3 floor, under which 0.30 > 0.3 is false in both.
+    """
+    monkeypatch.setattr(cd, "score_gaps", lambda domain, top_n: [_gap_with_deficit(0.30)])
+    assert len(cd.get_unresolved_gaps("medical_imaging")) == 1
+    assert len(cd.get_unresolved_gaps("computer_vision")) == 0
+
+
+def test_each_floor_is_the_solution_noise_floor_on_the_deficit_scale(monkeypatch):
+    """"Unresolved" means: no eligible future direction clears the solution threshold.
+
+    Proved through the real deficit computation, not by restating the formula: a
+    nearest future direction just ABOVE the domain's solution threshold must leave the
+    gap addressed (deficit <= floor), and one just below it unresolved (deficit > floor).
+
+    Exactly AT the threshold the answer depends on 4-dp rounding of the stored floor.
+    MI's exact value is 0.285714..., stored as 0.2857 (slightly below), so a nearest
+    sitting exactly on the MI threshold counts as unresolved. That band is pinned
+    below rather than hidden: it is under 1e-5 in cosine, recorded in
+    PLAN_AUDIT_FIX.md S1, and rounding the floor up instead is an advisor decision.
+    """
+    import pipeline.gap_scorer as gs
+
+    assert set(cd._UNRESOLVED_DEFICIT_FLOORS) == set(gs._SOLUTION_THRESHOLDS)
+    monkeypatch.setattr(gs, "_cluster_representative_text", lambda cluster: "g")
+    cluster = [{"text": "g", "paper_ids": ["a"], "years": [2025]}]
+    for domain, threshold in gs._SOLUTION_THRESHOLDS.items():
+        floor = cd._unresolved_deficit_floor(domain)
+        p50, p99 = gs._DEFICIT_RESCALE_ANCHORS[domain]
+        exact = 1.0 - (threshold - p50) / (p99 - p50)
+        assert abs(floor - exact) <= 0.00005, (domain, floor, exact)  # 4-dp rounding only
+        assert abs(floor - exact) * (p99 - p50) < 1e-5, "boundary band must stay negligible"
+        for nearest, unresolved in ((threshold + 0.0001, False), (threshold - 0.001, True)):
+            monkeypatch.setattr(gs, "_addressing_hits", lambda *a, _s=nearest, **kw: [(_s, "fd", ["b"])])
+            deficit = gs.compute_solution_deficit_score(cluster, domain=domain)
+            assert (deficit > floor) is unresolved, (domain, nearest, deficit, floor)
+
+
+def test_an_unknown_domain_gets_the_strictest_floor():
+    """Same fallback rule as the other per-domain constants: the strictest known value."""
+    assert cd._unresolved_deficit_floor("not_a_domain") == max(cd._UNRESOLVED_DEFICIT_FLOORS.values())

@@ -1189,6 +1189,40 @@ this project's own doctrine an empty result is a finding ("no gaps", "no connect
 typo produced a false one. They now return **422** via `api/main.py:_known_domain`. An
 *empty known* domain still returns `200 []`, which is correct.
 
+### Audit-fix S1 · per-domain deficit floors, derived — DONE 2026-10-05
+
+**Decision (advisor):** replace the single `_UNRESOLVED_DEFICIT_FLOOR = 0.3`
+(`2bb9b58`, 2026-07-03, never derived) with `_UNRESOLVED_DEFICIT_FLOORS` =
+**CV 0.3122, MI 0.2857** (`pipeline/cross_domain.py`). This closes A5.
+
+**Why these values.** Each floor is the domain's solution noise floor expressed on the
+deficit scale:
+- The deficit is `1 − clamp((nearest − p50)/(p99 − p50))`.
+- At `nearest = _SOLUTION_THRESHOLDS[d]` (the null p95), that gives
+  `floor = 1 − (p95 − p50)/(p99 − p50)`.
+- So "deficit > floor" means "no eligible future direction clears the solution noise floor",
+  the same notion of *addressed* that `_find_addressing_solutions` uses.
+- The floor is derived from the **coded** threshold and anchors, because those are what the
+  deficit is computed with, not from a fresh null.
+
+**How it is maintained.**
+- `scripts/derive_thresholds.py` derives the floors (`deficit_floor`) and reports their
+  drift. `--apply` rewrites them with a provenance comment.
+- Floors are derived from the values the code will hold *after* the same run's `--apply`, so
+  they never lag a rewritten threshold or anchor.
+- `FLOOR_TOLERANCE = 0.0001`. There is no sampling noise, so any difference beyond rounding
+  is inconsistency.
+- The integration derivation guard now covers them. Written by the second authorised
+  `--apply` of the session; nothing else changed.
+
+**Measured effect:** none on output, as R3 predicted. CV→MI stays at 4 (2 gaps) and MI→CV at
+4 (1 gap).
+
+**Known boundary band.** MI's exact floor is 0.285714…, stored as 0.2857. A gap whose nearest
+future direction sits *exactly* on the MI solution threshold therefore counts as unresolved.
+The band is about 1e-6 in cosine, and a test pins it below 1e-5. Rounding the floor up
+(0.2858) would close it; that is an advisor decision.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

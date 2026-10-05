@@ -1014,3 +1014,72 @@ domain mismatches: 0 in both collections.
 - `eval/label_sheet.csv`, which was generated pre-R1 and is now stale for the 8 rows citing
   relabelled papers;
 - README figures (a note was added, figures unchanged).
+
+### R2 · Re-derive from the corrected corpus — DONE
+
+**5 · `scripts/derive_thresholds.py --apply`.** This was the single authorised `--apply` of
+the session. **It wrote nothing:** "All constants within tolerance. Nothing to do." No source
+file changed (`git diff` was empty afterwards).
+
+| constant | before (coded) | derived on corrected corpus | drift | after (coded) |
+|---|---:|---:|---:|---:|
+| `_CLUSTER_THRESHOLDS["computer_vision"]` | 0.8744 | 0.8745 (n=5,671) | 0.0001 | 0.8744 |
+| `_CLUSTER_THRESHOLDS["medical_imaging"]` | 0.8954 | 0.8951 (n=5,778) | 0.0003 | 0.8954 |
+| `_CROSS_DOMAIN_THRESHOLD` | 0.8764 | 0.8748 (n=11,704) | 0.0016 | 0.8764 |
+| `_DEFICIT_RESCALE_ANCHORS["computer_vision"]` p50 | 0.8235 | 0.8242 | 0.0007 | 0.8235 |
+| `_DEFICIT_RESCALE_ANCHORS["computer_vision"]` p99 | 0.8959 | 0.8962 | 0.0003 | 0.8959 |
+| `_DEFICIT_RESCALE_ANCHORS["medical_imaging"]` p50 | 0.8385 | 0.8375 | 0.0010 | 0.8385 |
+| `_DEFICIT_RESCALE_ANCHORS["medical_imaging"]` p99 | 0.9127 | 0.9119 | 0.0008 | 0.9127 |
+| `_SOLUTION_THRESHOLDS["computer_vision"]` | 0.8733 | 0.8738 (n=4,387) | 0.0005 | 0.8733 |
+| `_SOLUTION_THRESHOLDS["medical_imaging"]` | 0.8915 | 0.8908 (n=7,344) | 0.0007 | 0.8915 |
+
+This is the outcome INV-5 predicted: the noise floors are robust to the contamination. The
+largest drift, cross-domain at 0.0016, is the closest to `DRIFT_TOLERANCE` (0.002).
+
+**6 · Rebuild.** Clusters, scores and matches are **not persisted**. There is no stored
+`cluster_id`; only a per-process representative cache exists. They were recomputed in a
+fresh process on the corrected stores.
+
+| | CV before | CV after | MI before | MI after |
+|---|---:|---:|---:|---:|
+| limitations | 112 | 107 | 103 | 108 |
+| gaps | 57 | **54** | 53 | **56** |
+| corroborated / single-source | 21 / 36 | 20 / 34 | 16 / 37 | 18 / 38 |
+| largest cluster (papers) | 8 | 7 | 13 | 14 |
+| exact-score ties (gaps) | 4 | 2 | 3 | 2 |
+
+**7 · Cross-domain at the coded floor (0.3, unchanged):**
+
+| direction | before R1 | after | distinct source gaps (before → after) |
+|---|---:|---:|---|
+| CV→MI | 9 | **4** | 3 → **2** |
+| MI→CV | 8 | **4** | 1 → **1** |
+
+Neither direction returned 0.
+
+**CV→MI (4):**
+- 3 come from CV gap rank 4, "Deployment in high-stakes settings may amplify errors or
+  unequal performance…". It has 2 papers, one of them the **ambiguous 2609.30566**.
+  - Targets: 2402.14815 (×2) and 2609.30613, the dermoscopy paper, now correctly in MI.
+- 1 comes from "Behavior labels derived from short trajectories…" (2 papers), matched to a
+  2406.05285 future direction, at similarity 0.8766, 0.0002 above the threshold.
+
+**MI→CV (4):** all from **one single-source MI gap, "Extensive hyperparameter tuning"**,
+matched to four generic CV future directions:
+- "Scaling to much larger transformer-dominated architectures…" (2307.01952)
+- "Reinforcement fine-tuning" (2609.30709)
+- "Scaling model capacity and incorporating broader pretraining data" (2609.30222)
+- "Future research includes clearer separation of base models…" (2407.07726)
+
+The 14-paper MI gap that produced all 8 pre-R1 matches produces none now.
+
+**Old CV rank 7** ("Non-dermoscopic generalization remains open…"; papers 2207.10077,
+2609.30402, 2609.30595, 2609.30613, 2609.30698) **no longer exists**.
+- No CV gap label mentions dermoscopy.
+- That sentence is now **MI rank 24**, a single-source gap. It belongs to its correct domain.
+- Its four remaining CV papers re-clustered into gaps at CV ranks 2, 6, 12, 15, 20, 23, 49
+  and 52.
+- The current CV rank 7 is "Performance remains coupled to underlying pointmap fidelity due
+  to reliance on external geometry" (corroborated, 2 papers).
+- No relabelled paper supports any CV gap. 5 MI gaps now include a relabelled paper (MI
+  ranks 1, 3, 6, 23 and 24).

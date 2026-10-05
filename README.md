@@ -6,7 +6,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-Graph_DB-008CC1?style=flat-square&logo=neo4j&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-176_passed-22c55e?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-542_unit_%2B_37_integration_passed-22c55e?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-6366f1?style=flat-square)
 
 ---
@@ -18,7 +18,7 @@ Academic literature is growing at a rate no researcher can track. A computer vis
 Research Gap Hunter inverts this. It ingests papers from arXiv, extracts structured limitation statements using a local LLM (Llama 3.1 8B via Ollama), and builds a graph + vector index over the ingested corpus. A scoring engine then ranks research gaps by three independent signals: how frequently a limitation appears across papers, how recently it has been reported, and how few future-work suggestions from those same papers address it. The result is a ranked list of candidate open problems, each shown with the number of papers supporting it.
 
 > **Scope — read this before interpreting any output.** This is a working research
-> prototype over a **curated sample of 149 papers** (64 computer vision, 85 medical
+> prototype over a **curated sample of 149 papers** (60 computer vision, 89 medical
 > imaging), not a survey of either field. Treat the rankings as a demonstration of the
 > method, not as findings about the state of either field.
 >
@@ -32,10 +32,11 @@ Research Gap Hunter inverts this. It ingests papers from arXiv, extracts structu
 > - 2609.30682 (gigapixel scientific images, one of three datasets pathology);
 > - 2304.09148 (SAM-Adapter, where polyp segmentation is a secondary task).
 >
-> The corpus figures in this README predate that relabel and have not been refreshed yet.
+> See [Known limitations](#known-limitations).
 >
 > **The quality of the output has not been measured.** The mechanism is extensively
-> tested — 522 unit tests and 37 integration tests against live Neo4j, Qdrant and Ollama —
+> tested — 542 unit tests, 40 integration tests against live Neo4j, Qdrant and Ollama
+> (37 pass, 3 skip on the small fixture corpus), and 8 frontend tests —
 > but no one has yet judged whether the gaps it surfaces are real. `eval/` contains the
 > apparatus for that (a blinded label sheet, two baselines, precision@k with Wilson
 > intervals) and it is **awaiting human labels**. Running `eval/score.py` today prints
@@ -51,17 +52,18 @@ The third dimension is the most novel: cross-domain hypothesis generation. Spect
 ## Measured state
 
 Every number here is produced by a script in `scripts/` or `eval/`, not written by hand.
-Regenerate with `bash scripts/nightly_eval.sh`. Last measured 2026-09-29.
+Regenerate with `bash scripts/nightly_eval.sh`. Last measured 2026-10-05, after the
+domain relabel and the Phase S/T changes.
 
 ### Corpus
 
 | | computer_vision | medical_imaging |
 |---|---:|---:|
-| papers | 64 | 85 |
-| papers contributing ≥1 limitation | **48** | **50** |
-| limitation nodes | 112 | 103 |
-| gap clusters | 57 | 53 |
-| largest cluster | 8 | 16 |
+| papers | 60 | 89 |
+| papers contributing ≥1 limitation | **45** | **53** |
+| limitation nodes | 107 | 108 |
+| gap clusters | 54 | 56 |
+| largest cluster (limitations) | 9 | 17 |
 
 `contributing` is the divisor of `frequency_score`. It is **not** the corpus size: a paper
 that extracted no limitations cannot corroborate a gap, and counting it made frequency the
@@ -71,17 +73,17 @@ product of two unrelated things. `/corpus` reports both.
 
 | | computer_vision | medical_imaging |
 |---|---:|---:|
-| gaps | 57 | 53 |
-| corroborated (≥2 papers) | 21 | 16 |
-| single source | 36 | 37 |
-| gaps sharing a score | **4** | **3** |
-| distinct scores | 55 | 51 |
+| gaps | 54 | 56 |
+| corroborated (≥2 papers) | 20 | 18 |
+| single source | 34 | 38 |
+| gaps sharing a score | **2** | **2** |
+| distinct scores | 53 | 55 |
 
 Corroborated gaps rank above all single-source gaps, so **scores are non-monotonic across
 the tier boundary** — the UI shows a heading at the boundary for that reason. Before the
 A9 Option F work, 17 of 24 CV gaps and 38 of 53 MI gaps shared a score.
 
-### Thresholds — all derived, none hand-picked
+### Similarity thresholds and deficit floors — derived, not hand-picked
 
 Derived from measured null distributions by `scripts/derive_thresholds.py`; rewritten only
 when drift exceeds `DRIFT_TOLERANCE = 0.002`, and only by that script.
@@ -93,11 +95,21 @@ when drift exceeds `DRIFT_TOLERANCE = 0.002`, and only by that script.
 | `_SOLUTION_THRESHOLDS` (limitation × future-direction p95) | 0.8733 | 0.8915 |
 | `_DEFICIT_RESCALE_ANCHORS` (p50, p99) | (0.8235, 0.8959) | (0.8385, 0.9127) |
 | `_CROSS_DOMAIN_THRESHOLD` (pooled cross-domain p95) | 0.8764 | — |
+| `_UNRESOLVED_DEFICIT_FLOORS` (solution p95 on the deficit scale) | 0.3121546961325975 | 0.2857142857142859 |
 
-`_UNRESOLVED_DEFICIT_FLOOR = 0.3` is the **one threshold still not derived from anything**.
-It was harmless while the deficit term took four discrete values; now that the deficit is
-continuous it genuinely selects which gaps reach cross-domain matching, and it needs a
-decision. Recorded rather than quietly left.
+The deficit floors replaced a single `0.3` that was never derived. Each is
+`1 − (p95 − p50)/(p99 − p50)`, from that domain's `_SOLUTION_THRESHOLDS` (p95) and
+`_DEFICIT_RESCALE_ANCHORS` (p50, p99), stored at full precision. A gap
+whose deficit exceeds its domain's floor has no eligible future direction above the solution
+noise floor.
+
+A gap may seed cross-domain matching only if its deficit is above that floor **and at least
+2 papers support it**. Matching considers every such gap; there is no rank cap.
+
+**Not derived from any measurement:**
+- `_CORROBORATED_MIN_PAPERS = 2`, which is also the cross-domain evidence gate;
+- `_MAX_CLUSTER_SHARE = 0.20`, which does not bind at this corpus size;
+- the extraction tier weights (1.0 / 0.75 / 0.5).
 
 ### Extraction quality
 
@@ -119,6 +131,36 @@ boilerplate for the filter to catch. The filter remains as a second line of defe
 512 MB tier — **+39.7 MB headroom, fits without margin**. The corpus vectors are 0.66 MB
 and live in Qdrant, not in the API process, so corpus growth barely moves this. The
 binding constraint is the model, a fixed cost.
+
+---
+
+## Known limitations
+
+- **Four papers were relabelled from computer vision to medical imaging on 2026-10-05:**
+  2609.30708 (brain MR image segmentation), 2609.31788 (3D CT report generation),
+  2609.30613 (dermoscopic image classification) and 2609.30223 (lesion segmentation loss).
+  - They are clinical papers.
+  - The computer-vision admission rule accepts any paper whose arXiv primary category is
+    `cs.CV`, and medical-imaging papers often carry `cs.CV` as their primary (44 of the 85
+    curated medical-imaging papers did). So the rule admitted them.
+  - The rule itself has not been changed.
+- **Three papers remain in computer vision as ambiguous classifications:** 2609.30566,
+  2609.30682 and 2304.09148. Each is a general method evaluated partly on medical data.
+- **Cross-domain matching yields 4 computer vision → medical imaging matches and 0 medical
+  imaging → computer vision matches.** Only corroborated gaps (supported by at least 2
+  papers) may seed a match.
+  - The 4 CV→MI matches come from 2 gaps, each supported by exactly 2 papers. 3 of the 4
+    come from a gap that includes the ambiguous 2609.30566. The 4th clears the similarity
+    threshold (0.8764) by 0.0002.
+  - In the other direction, 2 corroborated medical-imaging gaps were compared against 41
+    computer-vision future directions. None cleared the threshold.
+- **This is a corpus-scale limitation.** At 60 computer-vision and 89 medical-imaging
+  papers, 20 and 18 gaps respectively are reported by more than one paper. Only those can
+  seed a cross-domain match.
+  - Of them, 7 computer-vision and 2 medical-imaging gaps are also unresolved.
+  - Those 9 gaps produce the counts above.
+- **`eval/label_sheet.csv` was generated before the relabel.** 8 of its 60 computer-vision
+  rows cite one of the four relabelled papers. No row has been labelled.
 
 ---
 
@@ -173,7 +215,7 @@ binding constraint is the model, a fixed cost.
                               │  Cross-Domain Matcher│
                               │  CV gaps ↔ MI        │
                               │  solutions via cosine│
-                              │  similarity ≥ 0.82   │
+                              │  similarity ≥ 0.8764 │
                               └──────────┬──────────┘
                                          │
                     ┌────────────────────▼─────────────────────┐
@@ -201,13 +243,13 @@ binding constraint is the model, a fixed cost.
 | Knowledge graph | Neo4j Desktop (`rgh-mvp`) | Relationship-aware queries across Paper → Limitation → FutureDirection → Method → Dataset |
 | Embeddings | `allenai/specter2_base` via `sentence-transformers` | Scientific paper embeddings; 768 dimensions; loaded from local HuggingFace cache |
 | Vector store | Qdrant | ANN search over `limitations` and `future_directions` collections; cosine distance |
-| Gap clustering | Seed-anchored grouping | Membership anchored to seed similarity (not transitive chains); threshold 0.86 within-domain |
-| Cross-domain matching | Specter2 + Qdrant | CV gap descriptions queried against MI future-direction vectors; threshold 0.82 |
+| Gap clustering | Seed-anchored grouping | Membership anchored to seed similarity (not transitive chains); per-domain threshold = null p95 (CV 0.8744, MI 0.8954) |
+| Cross-domain matching | Specter2 + Qdrant | Corroborated, unresolved gaps queried against the other domain's future-direction vectors; threshold 0.8764 (pooled null p95) |
 | Explanation LLM | Llama 3.1 8B via Ollama | Generates natural-language hypothesis explanations; temperature 0.2 |
 | API | FastAPI + Uvicorn | 7 endpoints; Pydantic response models; lifespan model warming; CORS |
 | Frontend | Next.js 16 + TypeScript + Tailwind CSS v4 | 3 pages; dark theme; server + client components; Inter font |
 | Paper source | Semantic Scholar API | arXiv metadata, PDF URLs, open access links |
-| Tests | pytest | 522 unit tests (hermetic, enforced by a guard in `tests/conftest.py`) + 40 opt-in integration tests against real services |
+| Tests | pytest, `node:test` | 542 unit tests (hermetic, enforced by a guard in `tests/conftest.py`) + 40 opt-in integration tests against real services; 8 frontend tests via `npm test` |
 | Python version | 3.11+ | `requires-python = ">=3.11"`; developed on 3.14; type hints throughout |
 
 ---
@@ -418,7 +460,7 @@ research-gap-hunter/
 
 **Separate thresholds for within-domain and cross-domain matching** — Specter2-base similarity scores on this corpus have a median of ~0.82 and a range of 0.68–0.93. Within-domain clustering needs a threshold of 0.86 to sit well above the median and avoid over-merging. Cross-domain matching uses 0.82 because different field vocabularies (CV vs. medical imaging) compress Specter2 scores further — the best CV↔MI pairs peak around 0.84.
 
-> **Disputed — do not cite this number.** A null-distribution analysis (2026-08-22) found 0.82 sits *below the median of random cross-domain pairs*: 61.6% of 1,490 randomly paired CV/MI items clear it, and the 95th percentile of pure noise is 0.8792. The "10 meaningful matches" claim above has not survived that test. The threshold is pending an advisor decision — see item A2 in `PROJECT_HARDENING_PLAN.md`.
+> **Disputed — do not cite this number.** A null-distribution analysis (2026-08-22) found 0.82 sits *below the median of random cross-domain pairs*: 61.6% of 1,490 randomly paired CV/MI items clear it, and the 95th percentile of pure noise is 0.8792. The "10 meaningful matches" claim above has not survived that test. It was replaced on 2026-08-23 by the measured null p95 (item A2 in `PROJECT_HARDENING_PLAN.md`); the current value is 0.8764.
 
 **Local LLM (Ollama) over API calls** — Zero cost, zero latency variance, no rate limits, and the extracted data stays local. On an M-series Mac, Llama 3.1 8B processes a full paper (8–12K tokens) in ~15 seconds. The 3-tier extraction strategy (explicit→conclusion→inferred, confidence weights 1.0/0.75/0.5) compensates for the weaker instruction-following of a 8B model relative to GPT-4.
 
@@ -435,12 +477,12 @@ pytest -m ''            # both
 ```
 
 ```
-522 passed, 40 deselected, 1 warning in 1.27s
-37 passed, 3 skipped, 522 deselected, 1 warning in 38.01s
+542 passed, 40 deselected, 1 warning in 1.24s
+37 passed, 3 skipped, 542 deselected, 1 warning in 37.83s
 ```
 
 Both lines were measured with Neo4j, Qdrant and Ollama all running. The unit figure is
-identical with all three stopped (as measured at 489 tests, before P2 and P3 added 33), which is
+identical with all three stopped (as measured at 489 tests, before later phases added 53), which is
 the point. An autouse guard in `tests/conftest.py` refuses, in the unit tier, any real
 Neo4j driver, Qdrant client, embedding-model load, or SQLite file outside pytest's temp
 directory. It also fails the test at teardown when the code under test swallowed the refusal.
@@ -475,7 +517,9 @@ collections, and a `tmp_path` SQLite, so a run can never touch the real corpus.
 | `test_extraction_filter.py` | Prompt-echo / hedging / length / duplicate gates, the echo-list guards, audit logging |
 | `test_corpus_rules.py` | arXiv feed parsing, the CV primary-category rule, the MI two-primary rule, the allowlist |
 | `test_eval_harness.py` | Wilson intervals, sheet round-trip, and the scorer's refusal to read LLM triage |
+| `test_derive_thresholds.py` | Deficit-floor derivation, drift, full-precision rewriting |
 | `tests/integration/` | Domain ground truth, cluster caps, frequency denominator, tier ordering, `/explain` grounding, per-service health, threshold derivation |
+| `frontend/tests/` (`npm test`, `node:test`) | Cross-domain finding copy for every status; `CrossDomainFinding` rendered with `react-dom/server` |
 
 ---
 
@@ -486,7 +530,7 @@ collections, and a `tmp_path` SQLite, so a run can never touch the real corpus.
 | `GET` | `/health` | Service status + paper/vector counts |
 | `GET` | `/gaps?domain&top_n` | Ranked research gaps with sub-scores |
 | `GET` | `/search?q&top_k&domain` | Vector search over limitation statements |
-| `GET` | `/cross-domain?source&target&top_n` | Cross-domain hypothesis matches |
+| `GET` | `/cross-domain?source&target&top_n` | Cross-domain report: `status` (`matches_found`, `none_above_threshold`, `no_corroborated_gaps`, `no_data`), `message`, evidence counts, and the matches |
 | `GET` | `/explain?source_gap&target_solution` | LLM explanation for a gap↔solution pair |
 | `POST` | `/ingest` | Ingest a single paper by arXiv ID |
 | `GET` | `/paper/{arxiv_id}` | Raw extracted fields for a paper |

@@ -1316,3 +1316,39 @@ each with exactly 2 supporting papers.
 
 **Not verified:** the page was not opened in a browser. Rendering is verified by the
 component render test and the build, not visually.
+
+### T3 · README correction pass — DONE
+
+Every figure was re-measured on 2026-10-05 against the live corpus, not copied from earlier
+notes.
+
+**Corrected:**
+
+| item | was | now |
+|---|---|---|
+| test badge | "176 passed" | "542 unit + 37 integration passed" |
+| scope note corpus split | 64 / 85 | **60 CV / 89 MI** |
+| scope note "figures predate the relabel" | present | removed; links to Known limitations |
+| test counts (scope note, tech table, Test Suite) | 522 | **542 unit**; 40 integration (37 pass, 3 skip); **8 frontend** |
+| *Measured state*, corpus table | papers 64/85, contributing 48/50, limitations 112/103, clusters 57/53, largest 8/16 | 60/89, 45/53, 107/108, 54/56, largest 9/17 limitations |
+| *Measured state*, tiers table | gaps 57/53, corroborated 21/16, single 36/37, ties 4/3, distinct 55/51 | 54/56, 20/18, 34/38, 2/2, 53/55 |
+| floor at README:97 ("one threshold still not derived") | `_UNRESOLVED_DEFICIT_FLOOR = 0.3`, underived | `_UNRESOLVED_DEFICIT_FLOORS` row with its derivation, the evidence gate, and an explicit list of constants **not** derived |
+| architecture diagram | similarity ≥ 0.82 | ≥ 0.8764 |
+| tech table, clustering / cross-domain | 0.86 / 0.82 | per-domain null p95 (0.8744 / 0.8954) / 0.8764, and corroborated seeds |
+| "Disputed" note | "pending an advisor decision" (A2) | replaced 2026-08-23; current 0.8764 |
+| API reference `/cross-domain` | "matches" | the report with status, message, evidence and matches |
+| test table | — | rows added for `test_derive_thresholds.py` and `frontend/tests/` |
+
+**Added** a plain *Known limitations* section:
+- the 4-paper relabel and why (the CV rule admits any `cs.CV` primary; 44 of 85 curated MI
+  papers carry one);
+- the 3 ambiguous papers left in CV;
+- **4 CV→MI and 0 MI→CV** corroborated matches, with the evidence (2 seed gaps of exactly
+  2 papers each, 3 of 4 via the ambiguous 2609.30566, the 4th at +0.0002; MI→CV is 2 seeds
+  against 41 CV future directions);
+- that this is a corpus-scale limitation (20 / 18 corroborated gaps; 7 / 2 also unresolved);
+- the stale `eval/label_sheet.csv` (8 of 60 CV rows cite relabelled papers; none labelled).
+
+**Left as historical narrative, not figures of current state:** the HDBSCAN paragraph's "27
+clean clusters from 64 limitations at 0.86", and the original threshold-rationale paragraph,
+which is followed by the corrected note.

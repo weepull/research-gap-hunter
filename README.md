@@ -22,6 +22,18 @@ Research Gap Hunter inverts this. It ingests papers from arXiv, extracts structu
 > imaging), not a survey of either field. Treat the rankings as a demonstration of the
 > method, not as findings about the state of either field.
 >
+> **Domain labels are a judgement, and three are recorded as ambiguous.** On 2026-10-05,
+> four clinically medical papers that the computer-vision tranche had admitted (their arXiv
+> primary is `cs.CV`) were relabelled to medical imaging: 2609.30708, 2609.31788,
+> 2609.30613 and 2609.30223. Three papers stay in computer vision as **known ambiguous
+> classifications**, each a general method evaluated partly on medical data:
+> - 2609.30566 (diffusion-model atlases: brain MRI and chest X-ray, but also faces and 3D
+>   shapes);
+> - 2609.30682 (gigapixel scientific images, one of three datasets pathology);
+> - 2304.09148 (SAM-Adapter, where polyp segmentation is a secondary task).
+>
+> The corpus figures in this README predate that relabel and have not been refreshed yet.
+>
 > **The quality of the output has not been measured.** The mechanism is extensively
 > tested — 522 unit tests and 37 integration tests against live Neo4j, Qdrant and Ollama —
 > but no one has yet judged whether the gaps it surfaces are real. `eval/` contains the

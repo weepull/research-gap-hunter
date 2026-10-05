@@ -951,3 +951,66 @@ to a clinical gap on more than a single gap's worth of evidence.
 Beyond rank 20 the ranking is almost entirely single-source gaps: MI has 16 corroborated
 gaps, so ranks 17 and below are single-source. So widening `top_n` mostly adds single-source
 MI gaps as cross-domain sources.
+
+---
+
+## Phase R · corpus correction and re-derivation (advisor-approved), 2026-10-05
+
+### R1 · Relabel — DONE
+
+**Backups taken first.** None of these is committed:
+- `data/backups/papers.db.pre-R1-2026-10-05`: a SQLite online backup, 149 rows, integrity ok.
+- `data/backups/neo4j-rollback-R1-2026-10-05.json`: the 4 papers' prior `Paper.domain`.
+- Qdrant snapshots `limitations-…-2026-10-05-03-36-58.snapshot` and
+  `future_directions-…-2026-10-05-03-37-01.snapshot`, inside `qdrant_storage/`.
+
+**Relabelled `computer_vision` → `medical_imaging`** (manifest):
+
+| arXiv id | title | limitations / FDs moved |
+|---|---|---|
+| 2609.30708 | Combining General and Domain-Specific Pretext Tasks for Brain MR Image Segmentation | 1 / 0 |
+| 2609.31788 | SelfCue: Making a 3D CT Report Generator Say What It Already Knows | 2 / 2 |
+| 2609.30613 | MedTokenBudget: Lesion-Preserving Token Routing for Dermoscopic Image Classification | 2 / 4 |
+| 2609.30223 | BiCC: Bidirectional Connected-Component Loss for Instance-Aware Segmentation | 0 / 0 |
+
+**How.**
+- The same two statements curation pass 1 used (`scripts/domain_backfill.py:251` and
+  `:255`): Neo4j `SET p.domain` and SQLite `UPDATE papers SET domain`. Each was guarded on
+  the old value, and each touched exactly 1 row per paper.
+- `domain_backfill.py` itself was **not** run, because it is driven by `--apply`, which this
+  phase authorises only for `derive_thresholds.py`. That script's manifests were not edited.
+  This table is the audit record.
+- `domain` lives only on `Paper`. `get_all_limitations` filters on `p.domain`, and the Qdrant
+  payload is copied from it. **None of the 4 papers' Limitation or FutureDirection nodes is
+  shared with any other paper**, so the relabel moves only their own evidence.
+
+**Qdrant re-synced from the graph** with `embed_limitations()` and `embed_future_directions()`
+(prune on). Point ids are `uuid5(domain, text)`, so the 4 papers' points were re-keyed and
+the stale CV-labelled copies pruned: 5 limitation and 6 future-direction points, exactly the
+4 papers' evidence.
+
+**Verified after:**
+
+| store | computer_vision | medical_imaging | total |
+|---|---:|---:|---:|
+| SQLite papers | **60** | **89** | 149 |
+| Neo4j Paper nodes | **60** | **89** | 149 |
+| Qdrant `limitations` | 107 | 108 | 215 |
+| Qdrant `future_directions` | 41 | 68 | 109 |
+
+Per-paper domain agreement between SQLite and Neo4j: 149/149. Qdrant payload versus graph
+domain mismatches: 0 in both collections.
+
+**Known ambiguous classifications, left in `computer_vision` by advisor decision:**
+
+| arXiv id | title | why ambiguous |
+|---|---|---|
+| 2609.30566 | Atlases Are Already Inside: Recovering Population Templates from Pretrained Diffusion Models | method "applies to multiple domains, such as brain MRI, chest X-ray, faces, and 3D shapes"; the evaluation is mostly medical |
+| 2609.30682 | Structure-Guided Masked Autoencoders for Ultra-High Resolution Scientific Image Understanding | electron microscopy and X-ray CT of materials, plus one pathology WSI dataset |
+| 2304.09148 | SAM-Adapter: Adapting SAM in Underperformed Scenes: Camouflage, Shadow, Medical Image Segmentation, and More | camouflage and shadow are the main tasks; polyp segmentation is secondary |
+
+**Untouched by design:**
+- the keyword rule and the CV admission rule;
+- `eval/label_sheet.csv`, which was generated pre-R1 and is now stale for the 8 rows citing
+  relabelled papers;
+- README figures (a note was added, figures unchanged).

@@ -95,7 +95,10 @@ def parse_feed(xml_text: str) -> list[ArxivCandidate]:
     out: list[ArxivCandidate] = []
     for entry in root.findall("atom:entry", _NS):
         raw_id = (entry.findtext("atom:id", default="", namespaces=_NS) or "")
-        arxiv_id = raw_id.rsplit("/", 1)[-1]
+        # Everything after /abs/, not the last path segment: a pre-2007 id contains a
+        # slash (`math/0309136`), and keeping only `0309136` made a by-id lookup miss
+        # it, so the admission check would reject it for a parsing reason.
+        arxiv_id = raw_id.split("/abs/", 1)[1] if "/abs/" in raw_id else raw_id.rsplit("/", 1)[-1]
         # Strip the version suffix: 2301.00234v2 -> 2301.00234, so ids match what is
         # already stored and the skip-already-ingested check works.
         arxiv_id = re.sub(r"v\d+$", "", arxiv_id)

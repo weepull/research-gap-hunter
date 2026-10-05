@@ -35,8 +35,11 @@ loud failure mode for a quiet one.
 """
 
 import logging
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
+from pipeline import arxiv_source
 from pipeline.domains import RESEARCH_DOMAINS, classify_text, validate_domain
 
 logger = logging.getLogger(__name__)
@@ -119,6 +122,87 @@ def accept(
         f"{domain} (expected one of {expected}); add the id to data/mi_allowlist.txt "
         f"to override",
     )
+
+
+class AdmissionUnverifiable(RuntimeError):
+    """arXiv could not be asked, so the rule could not be applied.
+
+    Fails closed: a paper whose primary category is unknown is not admitted, because
+    "could not check" is exactly how the fourteen curated-out papers got in.
+    """
+
+
+@dataclass(frozen=True)
+class Admission:
+    """The verdict for one paper. `reason` is always populated, accepted or not."""
+
+    arxiv_id: str
+    accepted: bool
+    reason: str
+    primary_category: str
+
+
+def _unversioned(arxiv_id: str) -> str:
+    return re.sub(r"v\d+$", "", arxiv_id.strip())
+
+
+def admit(
+    domain: str,
+    arxiv_ids: list[str],
+    known: dict[str, arxiv_source.ArxivCandidate] | None = None,
+    allowlist: set[str] | None = None,
+) -> dict[str, Admission]:
+    """The single admission check every ingestion path runs before extraction (P2).
+
+    Applies `accept` — unchanged, so this is a coverage fix and not a policy change —
+    to each id. The rule needs arXiv's *primary category*, which only arXiv reports:
+    the tranche path already has it from the category listing and passes it in
+    `known`; `/ingest`, `ingest_from_query` and `ingest_domain_papers` start from a bare
+    id, so the missing ones are looked up in one batched `fetch_by_ids` call.
+
+    Returns verdicts keyed by the caller's id exactly as given (a version suffix is
+    stripped only for the lookup and the allowlist). An id arXiv has no record of is
+    rejected. Raises `AdmissionUnverifiable` if arXiv cannot be asked at all.
+    """
+    domain = validate_domain(domain)
+    allowed = allowlist if allowlist is not None else load_allowlist()
+    candidates = {_unversioned(k): v for k, v in (known or {}).items()}
+
+    to_fetch = []
+    for arxiv_id in arxiv_ids:
+        base = _unversioned(arxiv_id)
+        if base not in allowed and base not in candidates and base not in to_fetch:
+            to_fetch.append(base)
+    if to_fetch:
+        # Called through the module so a test can answer it offline.
+        try:
+            candidates.update(arxiv_source.fetch_by_ids(to_fetch))
+        except Exception as exc:  # noqa: BLE001 — any failure means "unverified"
+            raise AdmissionUnverifiable(
+                f"cannot apply the corpus rules: arXiv lookup failed ({exc})"
+            ) from exc
+
+    verdicts: dict[str, Admission] = {}
+    for arxiv_id in arxiv_ids:
+        base = _unversioned(arxiv_id)
+        candidate = candidates.get(base)
+        if candidate is None and base not in allowed:
+            verdicts[arxiv_id] = Admission(
+                arxiv_id, False,
+                f"arXiv has no record of {base}, so its primary category cannot be "
+                f"checked against the {domain} rule",
+                "",
+            )
+            continue
+        primary = candidate.primary_category if candidate else ""
+        ok, reason = accept(
+            domain, base, primary,
+            candidate.title if candidate else "",
+            candidate.abstract if candidate else "",
+            allowlist=allowed,
+        )
+        verdicts[arxiv_id] = Admission(arxiv_id, ok, reason, primary)
+    return verdicts
 
 
 def describe_rules() -> str:

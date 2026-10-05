@@ -10,6 +10,10 @@ import sqlite_utils
 import pipeline.batch as batch_mod
 from pipeline.batch import get_paper, ingest_from_query, search_papers
 from pipeline.extractor import PaperExtract
+from tests.conftest import arxiv_reports
+
+# Every ingest_from_query test reaches the P2 admission check; arXiv is answered offline.
+pytestmark = pytest.mark.usefixtures("arxiv_admits")
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +283,7 @@ def test_ingest_from_query_tolerates_schema_drift(monkeypatch, tmp_db):
 
     result = ingest_from_query("object detection", domain="computer_vision")
 
-    assert result == {"ingested": 1, "skipped": 0, "failed": 0}
+    assert result == {"ingested": 1, "skipped": 0, "failed": 0, "rejected": 0}
     assert "extraction_tier" in sqlite_utils.Database(tmp_db / "papers.db")["papers"].columns_dict
 
 
@@ -297,7 +301,7 @@ def test_ingest_from_query_returns_summary(monkeypatch, tmp_db):
 
     result = ingest_from_query("object detection", domain="computer_vision")
 
-    assert result == {"ingested": 1, "skipped": 0, "failed": 0}
+    assert result == {"ingested": 1, "skipped": 0, "failed": 0, "rejected": 0}
 
 
 def test_ingest_from_query_writes_to_sqlite(monkeypatch, tmp_db):
@@ -330,7 +334,7 @@ def test_ingest_from_query_skips_existing(monkeypatch, tmp_db):
 
     result = ingest_from_query("object detection", domain="computer_vision")
 
-    assert result == {"ingested": 0, "skipped": 1, "failed": 0}
+    assert result == {"ingested": 0, "skipped": 1, "failed": 0, "rejected": 0}
     assert extract_called == [], "extract_paper should not be called for existing papers"
 
 
@@ -504,3 +508,72 @@ def test_blank_papers_db_path_falls_back_to_default(monkeypatch):
     finally:
         monkeypatch.delenv("PAPERS_DB_PATH", raising=False)
         importlib.reload(batch_mod)
+
+
+# ---------------------------------------------------------------------------
+# P2 — the corpus admission rule gates ingest_from_query
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_from_query_refuses_papers_their_domain_rule_rejects(monkeypatch, tmp_db):
+    """A keyword hit whose arXiv primary category is outside the domain is not ingested.
+
+    Fails against pre-fix code: this is exactly the path by which analytic number
+    theory, atomic physics and four language models entered the corpus as computer
+    vision — the search returned them and nothing checked.
+    """
+    monkeypatch.setattr(batch_mod, "search_papers",
+                        lambda q, limit: [{"arxiv_id": "2306.14824", "title": "K", "year": 2023}])
+    arxiv_reports(monkeypatch, "cs.CL", title="Grounding multimodal large language models")
+    extract = MagicMock(side_effect=lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
+    monkeypatch.setattr(batch_mod, "extract_paper", extract)
+    monkeypatch.setattr(batch_mod.time, "sleep", lambda s: None)
+
+    result = ingest_from_query("multimodal grounding", domain="computer_vision")
+
+    assert extract.call_count == 0
+    assert result["ingested"] == 0
+    assert result.get("rejected") == 1
+    assert "papers" not in sqlite_utils.Database(tmp_db / "papers.db").table_names()
+
+
+def test_ingest_from_query_ingests_only_the_admitted_papers(monkeypatch, tmp_db):
+    """Admission is per paper: one rejection does not stop the accepted ones."""
+    from pipeline import arxiv_source
+
+    monkeypatch.setattr(batch_mod, "search_papers", lambda q, limit: [
+        {"arxiv_id": "2501.00001", "title": "A", "year": 2025},
+        {"arxiv_id": "2501.00002", "title": "B", "year": 2025},
+    ])
+    primaries = {"2501.00001": "cs.CV", "2501.00002": "cs.CL"}
+    monkeypatch.setattr(arxiv_source, "fetch_by_ids", lambda ids: {
+        i: arxiv_source.ArxivCandidate(i, "t", "", primaries[i], (primaries[i],), "2025")
+        for i in ids
+    })
+    extract = MagicMock(side_effect=lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
+    monkeypatch.setattr(batch_mod, "extract_paper", extract)
+    monkeypatch.setattr(batch_mod.time, "sleep", lambda s: None)
+
+    result = ingest_from_query("detection", domain="computer_vision")
+
+    assert [c.args[0] for c in extract.call_args_list] == ["2501.00001"]
+    assert (result["ingested"], result.get("rejected")) == (1, 1)
+
+
+def test_ingest_from_query_fails_closed_when_arxiv_cannot_be_asked(monkeypatch, tmp_db):
+    """No primary category, no admission: the call raises before extracting anything."""
+    from pipeline import arxiv_source
+
+    def unreachable(arxiv_ids):
+        raise RuntimeError("arXiv request failed after 4 attempts: timed out")
+
+    monkeypatch.setattr(batch_mod, "search_papers",
+                        lambda q, limit: [{"arxiv_id": "2501.00001", "title": "A", "year": 2025}])
+    monkeypatch.setattr(arxiv_source, "fetch_by_ids", unreachable)
+    extract = MagicMock(side_effect=lambda arxiv_id, domain: _make_paper_extract(arxiv_id, domain=domain))
+    monkeypatch.setattr(batch_mod, "extract_paper", extract)
+    monkeypatch.setattr(batch_mod.time, "sleep", lambda s: None)
+
+    with pytest.raises(RuntimeError, match="arXiv"):
+        ingest_from_query("detection", domain="computer_vision")
+    assert extract.call_count == 0

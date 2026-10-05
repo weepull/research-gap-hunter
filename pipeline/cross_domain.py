@@ -21,6 +21,7 @@ from graph.populate import (
     get_neo4j_driver,
 )
 from pipeline.batch import _get_db, _log_failure, _paper_to_row
+from pipeline import corpus_rules
 from pipeline.domains import validate_domain
 from pipeline.extractor import extract_paper
 from pipeline.gap_scorer import (
@@ -108,8 +109,14 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
     both Qdrant collections are re-synced from Neo4j so the new domain's limitations
     and future_directions carry the correct domain payload.
 
+    Every new id must pass the corpus admission rule (P2, ``corpus_rules.admit``)
+    before extraction; an id list is not trusted to belong to the domain it is
+    ingested into. Rejected ids are logged and counted, never extracted. If arXiv
+    cannot be asked, this raises ``AdmissionUnverifiable`` before any extraction or
+    graph write.
+
     Failures are logged to data/failed_extractions.log and do not abort the batch.
-    Returns {"ingested": n, "failed": n, "skipped": n}.
+    Returns {"ingested": n, "failed": n, "skipped": n, "rejected": n}.
     """
     domain = validate_domain(domain)
     db = _get_db()
@@ -120,6 +127,9 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
             row[0] for row in db.execute("SELECT arxiv_id FROM papers").fetchall()
         }
 
+    # Before the driver is opened, so an unreachable arXiv touches nothing.
+    verdicts = corpus_rules.admit(domain, [i for i in arxiv_ids if i not in existing])
+
     driver = get_neo4j_driver()
     create_constraints(driver)
 
@@ -127,6 +137,7 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
     ingested = 0
     failed = 0
     skipped = 0
+    rejected = 0
 
     for i, arxiv_id in enumerate(arxiv_ids, start=1):
         print(f"[{i}/{total}] {arxiv_id} ({domain})")
@@ -134,6 +145,12 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
         if arxiv_id in existing:
             logger.info("Skipping %s — already ingested", arxiv_id)
             skipped += 1
+            continue
+
+        verdict = verdicts[arxiv_id]
+        if not verdict.accepted:
+            logger.warning("Not ingesting %s into %s: %s", arxiv_id, domain, verdict.reason)
+            rejected += 1
             continue
 
         try:
@@ -165,7 +182,7 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
         embed_limitations()
         embed_future_directions()
 
-    return {"ingested": ingested, "failed": failed, "skipped": skipped}
+    return {"ingested": ingested, "failed": failed, "skipped": skipped, "rejected": rejected}
 
 
 def get_unresolved_gaps(domain: str, top_n: int = 20) -> list[GapResult]:

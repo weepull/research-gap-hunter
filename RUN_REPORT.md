@@ -63,8 +63,8 @@ Other coded constants: `_UNRESOLVED_DEFICIT_FLOOR` = 0.3 (**still undrived — s
 ## Tests — raw summary lines
 
 ```
-pytest -q               489 passed, 40 deselected, 1 warning in 1.17s
-pytest -m integration   37 passed, 3 skipped, 489 deselected, 1 warning in 39.90s
+pytest -q               515 passed, 40 deselected, 1 warning in 1.10s
+pytest -m integration   37 passed, 3 skipped, 515 deselected, 1 warning in 37.47s
 ```
 
 **Corrected by hand on 2026-10-04 and 2026-10-05, not by `collect_run_facts.py`.**
@@ -81,7 +81,8 @@ the result was 8 failed, 481 passed.
 
 The lines above were measured with Neo4j, Qdrant and Ollama all running, after
 `tests/conftest.py` began refusing live services and real SQLite files in the unit tier. The
-unit line is identical with all three stopped (`… in 1.18s`).
+unit line was identical with all three stopped (measured at 489 tests). 2026-10-05: the counts
+above are after P2 added 26 admission tests.
 
 ## Ties and tiers
 

@@ -1147,6 +1147,27 @@ tell you if you forget.**
 - **Measured:** `489 passed` with Neo4j, Qdrant and Ollama all stopped and with all running.
   `data/papers.db` mtime is unchanged, and the unit run makes 0 socket attempts.
 
+### Audit-fix P2 · one admission validator on every ingestion path — DONE 2026-10-05
+
+**Decision (advisor): the one-validator variant.** This is a coverage fix, not a policy
+change.
+- The arXiv primary-category rule (`corpus_rules.accept`, unchanged) used to be enforced
+  only by `scripts/ingest_tranche.py`.
+- `/ingest`, `ingest_from_query` and `ingest_domain_papers` extracted whatever id they were
+  handed, which is how all fourteen curated-out papers got in.
+- All four paths now call `corpus_rules.admit` before any extraction or write. It looks up
+  the primary category on arXiv when the caller doesn't already have it.
+
+Things to know:
+- **It fails closed.** If arXiv can't be asked, `AdmissionUnverifiable` is raised: `/ingest`
+  returns 503, and the batch functions raise before extracting anything. "Could not check"
+  is how the bad papers got in.
+- **An id arXiv has no record of is rejected.** This is why the `parse_feed` old-style-id
+  fix (`math/0309136` was parsed as `0309136`) had to land with it.
+- **Unit tests must answer arXiv offline.** Use `tests.conftest.arxiv_reports` or the
+  `arxiv_admits` fixture. The three ingestion test modules apply `arxiv_admits` to every
+  test; a rejection test overrides it.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

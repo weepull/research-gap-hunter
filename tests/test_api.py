@@ -10,6 +10,10 @@ from api import rate_limit
 from pipeline.cross_domain import CrossDomainMatch
 from pipeline.extractor import PaperExtract
 from pipeline.gap_scorer import GapResult
+from tests.conftest import arxiv_reports
+
+# Every /ingest test reaches the P2 admission check; arXiv is answered offline.
+pytestmark = pytest.mark.usefixtures("arxiv_admits")
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +658,61 @@ def test_ingest_happy_path(monkeypatch):
     assert body["arxiv_id"] == "2301.00234"
     assert body["limitations_found"] == 2
     assert body["tier"] == "explicit"
+
+
+def _patch_ingest_backends(monkeypatch, paper):
+    """Patch everything /ingest touches after admission; return the extract mock."""
+    mock_db = MagicMock()
+    mock_db.__getitem__ = MagicMock(return_value=MagicMock())
+    mock_driver = MagicMock()
+    extract = MagicMock(return_value=paper)
+    monkeypatch.setattr("api.main.load_embedding_model", MagicMock())
+    monkeypatch.setattr("api.main.get_qdrant_client", MagicMock())
+    monkeypatch.setattr("api.main.get_neo4j_driver", lambda: mock_driver)
+    monkeypatch.setattr("api.main.extract_paper", extract)
+    monkeypatch.setattr("api.main._get_db", lambda: mock_db)
+    monkeypatch.setattr("api.main._paper_to_row", lambda p: {"arxiv_id": p.arxiv_id})
+    monkeypatch.setattr("api.main._upsert_paper_counting", MagicMock())
+    monkeypatch.setattr("api.main.embed_limitations", MagicMock())
+    monkeypatch.setattr("api.main.embed_future_directions", MagicMock())
+    return extract
+
+
+def test_ingest_refuses_a_paper_its_domain_rule_rejects(monkeypatch):
+    """/ingest applies the same arXiv primary-category rule as the tranche path (P2).
+
+    Fails against pre-fix code, where /ingest extracted any id it was handed: a paper
+    with Kosmos-2's profile (primary cs.CL, cross-listed cs.CV) declared as computer
+    vision went straight to extraction and into the corpus.
+    """
+    arxiv_reports(monkeypatch, "cs.CL", title="Grounding multimodal large language models")
+    extract = _patch_ingest_backends(monkeypatch, _make_paper_extract())
+
+    from api.main import app
+    with TestClient(app) as c:
+        r = c.post("/ingest", json={"arxiv_id": "2306.14824", "domain": "computer_vision"})
+
+    assert extract.call_count == 0
+    assert r.status_code == 422
+    assert "cs.CL" in r.json()["detail"]
+
+
+def test_ingest_fails_closed_when_arxiv_cannot_be_asked(monkeypatch):
+    """An unverifiable paper is not admitted: 503, and nothing is extracted (P2)."""
+    from pipeline import arxiv_source
+
+    def unreachable(arxiv_ids):
+        raise RuntimeError("arXiv request failed after 4 attempts: timed out")
+
+    monkeypatch.setattr(arxiv_source, "fetch_by_ids", unreachable)
+    extract = _patch_ingest_backends(monkeypatch, _make_paper_extract())
+
+    from api.main import app
+    with TestClient(app) as c:
+        r = c.post("/ingest", json={"arxiv_id": "2301.00234", "domain": "computer_vision"})
+
+    assert extract.call_count == 0
+    assert r.status_code == 503
 
 
 def test_ingest_passes_the_requested_domain_into_extraction(monkeypatch):

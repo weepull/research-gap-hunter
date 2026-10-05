@@ -124,3 +124,47 @@ def _forbid_live_services(request, monkeypatch, tmp_path, tmp_path_factory):
 
     if violations:
         pytest.fail("\n".join(dict.fromkeys(violations)), pytrace=False)
+
+
+# ---------------------------------------------------------------------------
+# arXiv stub for ingestion tests (P2)
+# ---------------------------------------------------------------------------
+
+# Accepted by BOTH domain rules, so one stub serves every ingestion test: `cs.CV` is
+# accepted outright for computer_vision, and the clinical title makes the medical
+# keyword verifier fire, which medical_imaging requires of a `cs.CV` primary.
+ADMISSIBLE_TITLE = "Deep learning segmentation of tumours on chest CT and MRI scans for radiology"
+
+
+def arxiv_reports(monkeypatch, primary_category: str, title: str = ADMISSIBLE_TITLE):
+    """Make `pipeline.arxiv_source.fetch_by_ids` report every requested id with this
+    primary category, offline. Returns the list of id-lists it was asked for."""
+    import re
+
+    from pipeline import arxiv_source
+
+    calls: list[list[str]] = []
+
+    def fake_fetch_by_ids(arxiv_ids):
+        calls.append(list(arxiv_ids))
+        return {
+            re.sub(r"v\d+$", "", i): arxiv_source.ArxivCandidate(
+                arxiv_id=re.sub(r"v\d+$", "", i),
+                title=title,
+                abstract="",
+                primary_category=primary_category,
+                categories=(primary_category,),
+                published="2025-01-01T00:00:00Z",
+            )
+            for i in arxiv_ids
+        }
+
+    monkeypatch.setattr(arxiv_source, "fetch_by_ids", fake_fetch_by_ids)
+    return calls
+
+
+@pytest.fixture()
+def arxiv_admits(monkeypatch):
+    """arXiv reports every id as admissible to either domain. For the existing
+    ingestion tests, which are about what happens *after* admission."""
+    return arxiv_reports(monkeypatch, "cs.CV")

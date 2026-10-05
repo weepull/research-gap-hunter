@@ -195,10 +195,13 @@ def _gather_candidates(domain: str, needed: int, skip: set[str], state: dict) ->
             for candidate in batch:
                 if candidate.arxiv_id in skip or candidate.arxiv_id in seen_now:
                     continue
-                ok, reason = corpus_rules.accept(
-                    domain, candidate.arxiv_id, candidate.primary_category,
-                    candidate.title, candidate.abstract, allowlist=allowlist,
-                )
+                # The shared validator every ingestion path uses (P2). The listing
+                # already carries the primary category, so no lookup is made.
+                verdict = corpus_rules.admit(
+                    domain, [candidate.arxiv_id],
+                    known={candidate.arxiv_id: candidate}, allowlist=allowlist,
+                )[candidate.arxiv_id]
+                ok, reason = verdict.accepted, verdict.reason
                 seen_now.add(candidate.arxiv_id)
                 if not ok:
                     _log_outcome({

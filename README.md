@@ -23,7 +23,7 @@ Research Gap Hunter inverts this. It ingests papers from arXiv, extracts structu
 > method, not as findings about the state of either field.
 >
 > **The quality of the output has not been measured.** The mechanism is extensively
-> tested — 489 unit tests and 37 integration tests against live Neo4j, Qdrant and Ollama —
+> tested — 515 unit tests and 37 integration tests against live Neo4j, Qdrant and Ollama —
 > but no one has yet judged whether the gaps it surfaces are real. `eval/` contains the
 > apparatus for that (a blinded label sheet, two baselines, precision@k with Wilson
 > intervals) and it is **awaiting human labels**. Running `eval/score.py` today prints
@@ -195,7 +195,7 @@ binding constraint is the model, a fixed cost.
 | API | FastAPI + Uvicorn | 7 endpoints; Pydantic response models; lifespan model warming; CORS |
 | Frontend | Next.js 16 + TypeScript + Tailwind CSS v4 | 3 pages; dark theme; server + client components; Inter font |
 | Paper source | Semantic Scholar API | arXiv metadata, PDF URLs, open access links |
-| Tests | pytest | 489 unit tests (hermetic, enforced by a guard in `tests/conftest.py`) + 40 opt-in integration tests against real services |
+| Tests | pytest | 515 unit tests (hermetic, enforced by a guard in `tests/conftest.py`) + 40 opt-in integration tests against real services |
 | Python version | 3.11+ | `requires-python = ">=3.11"`; developed on 3.14; type hints throughout |
 
 ---
@@ -423,12 +423,12 @@ pytest -m ''            # both
 ```
 
 ```
-489 passed, 40 deselected, 1 warning in 1.17s
-37 passed, 3 skipped, 489 deselected, 1 warning in 39.90s
+515 passed, 40 deselected, 1 warning in 1.10s
+37 passed, 3 skipped, 515 deselected, 1 warning in 37.47s
 ```
 
 Both lines were measured with Neo4j, Qdrant and Ollama all running. The unit figure is
-identical with all three stopped (`489 passed, 40 deselected, 1 warning in 1.18s`), which is
+identical with all three stopped (as measured at 489 tests, before P2 added 26), which is
 the point. An autouse guard in `tests/conftest.py` refuses, in the unit tier, any real
 Neo4j driver, Qdrant client, embedding-model load, or SQLite file outside pytest's temp
 directory. It also fails the test at teardown when the code under test swallowed the refusal.

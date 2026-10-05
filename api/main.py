@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 from graph.populate import _upsert_paper_counting, get_neo4j_driver  # noqa: E402
 from pipeline.batch import _get_db, _log_failure, _paper_to_row, get_paper  # noqa: E402
 from pipeline.config import allowed_origins, is_demo_mode  # noqa: E402
+from pipeline import corpus_rules  # noqa: E402
 from pipeline.domains import validate_domain  # noqa: E402
 from pipeline.cross_domain import (  # noqa: E402
     CrossDomainMatch,
@@ -591,6 +592,21 @@ def ingest_paper(body: IngestRequest) -> IngestResponse:
 
     arxiv_id = body.arxiv_id.strip()
     domain = body.domain.strip()
+
+    # The corpus admission rule (P2), before any extraction or write. 422 for a paper
+    # the rule rejects — the request is well-formed but the paper does not belong in
+    # the declared domain — and 503 when arXiv cannot be asked, since an unverified
+    # paper is not admitted.
+    try:
+        verdict = corpus_rules.admit(domain, [arxiv_id])[arxiv_id]
+    except corpus_rules.AdmissionUnverifiable as exc:
+        logger.error("Ingest of %s not attempted: %s", arxiv_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot check this paper's arXiv primary category right now; try again later.",
+        )
+    if not verdict.accepted:
+        raise HTTPException(status_code=422, detail=f"Not admitted: {verdict.reason}")
 
     try:
         # domain goes into extraction rather than being patched on afterwards:

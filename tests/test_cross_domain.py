@@ -19,6 +19,10 @@ from pipeline.cross_domain import (
 )
 from pipeline.extractor import PaperExtract
 from pipeline.gap_scorer import GapResult
+from tests.conftest import arxiv_reports
+
+# Every ingest_domain_papers test reaches the P2 admission check; arXiv is answered offline.
+pytestmark = pytest.mark.usefixtures("arxiv_admits")
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +126,44 @@ def test_ingest_domain_papers_stores_domain_tag(monkeypatch):
     assert json.loads(row["future_directions"]) == ["a future direction"]
 
 
+def test_ingest_domain_papers_refuses_papers_their_domain_rule_rejects(monkeypatch):
+    """An id list is not trusted to belong to the domain it is ingested into (P2).
+
+    Fails against pre-fix code, which extracted every id it was handed: a cs.CL-primary
+    paper declared as medical imaging was extracted, stored and written to the graph.
+    """
+    db = sqlite_utils.Database(memory=True)
+    extract_mock = MagicMock(side_effect=lambda arxiv_id, domain: _make_paper(domain=domain))
+    driver = _patch_ingest_backends(monkeypatch, db, extract_mock)
+    arxiv_reports(monkeypatch, "cs.CL", title="A clinical question answering language model")
+
+    result = ingest_domain_papers(["2401.00001"], domain="medical_imaging")
+
+    assert extract_mock.call_count == 0
+    assert result["ingested"] == 0
+    assert result.get("rejected") == 1
+    assert "papers" not in db.table_names()
+    assert driver.session.call_count == 0
+
+
+def test_ingest_domain_papers_fails_closed_when_arxiv_cannot_be_asked(monkeypatch):
+    """No primary category, no admission: raise before extraction or any graph write."""
+    from pipeline import arxiv_source
+
+    def unreachable(arxiv_ids):
+        raise RuntimeError("arXiv request failed after 4 attempts: timed out")
+
+    db = sqlite_utils.Database(memory=True)
+    extract_mock = MagicMock(side_effect=lambda arxiv_id, domain: _make_paper(domain=domain))
+    driver = _patch_ingest_backends(monkeypatch, db, extract_mock)
+    monkeypatch.setattr(arxiv_source, "fetch_by_ids", unreachable)
+
+    with pytest.raises(RuntimeError, match="arXiv"):
+        ingest_domain_papers(["2401.00001"], domain="medical_imaging")
+    assert extract_mock.call_count == 0
+    assert driver.session.call_count == 0
+
+
 def test_ingest_domain_papers_populates_graph_and_resyncs_qdrant(monkeypatch):
     """Each ingested paper is written to Neo4j and Qdrant collections are re-synced."""
     db = sqlite_utils.Database(memory=True)
@@ -144,7 +186,7 @@ def test_ingest_domain_papers_skips_existing(monkeypatch):
 
     result = ingest_domain_papers(["2206.01106"], domain="medical_imaging")
 
-    assert result == {"ingested": 0, "failed": 0, "skipped": 1}
+    assert result == {"ingested": 0, "failed": 0, "skipped": 1, "rejected": 0}
     # Domain tag untouched.
     assert list(db["papers"].rows)[0]["domain"] == "computer_vision"
     # No new ingests => no Qdrant re-sync.
@@ -176,7 +218,7 @@ def test_ingest_domain_papers_empty_list(monkeypatch):
 
     result = ingest_domain_papers([], domain="medical_imaging")
 
-    assert result == {"ingested": 0, "failed": 0, "skipped": 0}
+    assert result == {"ingested": 0, "failed": 0, "skipped": 0, "rejected": 0}
     assert not cd.embed_future_directions.called
 
 

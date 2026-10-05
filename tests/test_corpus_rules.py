@@ -207,3 +207,131 @@ def test_the_keyword_verifier_never_assigns_a_domain():
                          title="clinical MRI of patient anatomy", allowlist=set())
     # Medical text does NOT move this paper out of the domain the caller declared.
     assert ok_cv is True
+
+
+# ---------------------------------------------------------------------------
+# P2 — old-style ids survive feed parsing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("math/0309136v1", "math/0309136"),
+    ("cs/0309136v3", "cs/0309136"),
+    ("2301.00234v2", "2301.00234"),
+])
+def test_parse_feed_keeps_the_whole_arxiv_id(raw, expected):
+    """Pre-2007 ids contain a slash. Taking only the last path segment turned
+    `math/0309136` into `0309136`, so a by-id lookup could never find it and the
+    admission check would reject a paper for a parsing reason, not a rule."""
+    feed = _FEED.replace("2502.54321", raw, 1)
+    ids = [c.arxiv_id for c in parse_feed(feed)]
+    assert expected in ids
+
+
+# ---------------------------------------------------------------------------
+# P2 — one admission validator for every ingestion path
+# ---------------------------------------------------------------------------
+
+_KOSMOS = ArxivCandidate("2306.14824", "Kosmos-2: Grounding Multimodal LLMs", "", "cs.CL",
+                         ("cs.CL", "cs.CV"), "2023-06-26T00:00:00Z")
+_CLINICAL = "Deep learning segmentation of tumours on chest CT and MRI scans for radiology"
+
+_RULE_CASES = [
+    ("computer_vision", "cs.CV", "Object detection"),
+    ("computer_vision", "cs.CL", "A language model"),
+    ("computer_vision", "eess.IV", "Image restoration"),
+    ("computer_vision", "", "No category"),
+    ("medical_imaging", "eess.IV", "Image restoration"),
+    ("medical_imaging", "physics.med-ph", "Dosimetry"),
+    ("medical_imaging", "cs.CV", _CLINICAL),
+    ("medical_imaging", "cs.CV", "Object detection in street scenes"),
+    ("medical_imaging", "cs.LG", _CLINICAL),
+]
+
+
+@pytest.mark.parametrize("domain, primary, title", _RULE_CASES)
+def test_admit_decides_exactly_as_accept_does(domain, primary, title):
+    """The validator is a coverage fix, not a policy change: same verdict, same reason."""
+    candidate = ArxivCandidate("2501.00001", title, "", primary, (primary,), "2025")
+    verdict = cr.admit(domain, ["2501.00001"], known={"2501.00001": candidate},
+                       allowlist=set())["2501.00001"]
+    assert (verdict.accepted, verdict.reason) == cr.accept(
+        domain, "2501.00001", primary, title, "", allowlist=set()
+    )
+
+
+def test_admit_with_known_candidates_makes_no_request(monkeypatch):
+    from tests.conftest import arxiv_reports
+
+    calls = arxiv_reports(monkeypatch, "cs.CV")
+    cr.admit("computer_vision", [_KOSMOS.arxiv_id], known={_KOSMOS.arxiv_id: _KOSMOS},
+             allowlist=set())
+    assert calls == []
+
+
+def test_admit_looks_up_unknown_ids_in_one_request(monkeypatch):
+    from tests.conftest import arxiv_reports
+
+    calls = arxiv_reports(monkeypatch, "cs.CL")
+    verdicts = cr.admit("computer_vision", ["2306.14824", "2401.13601"], allowlist=set())
+    assert calls == [["2306.14824", "2401.13601"]]
+    assert not any(v.accepted for v in verdicts.values())
+    assert all(v.primary_category == "cs.CL" for v in verdicts.values())
+
+
+def test_admit_keys_verdicts_by_the_callers_id_including_a_version(monkeypatch):
+    from tests.conftest import arxiv_reports
+
+    calls = arxiv_reports(monkeypatch, "cs.CV")
+    verdicts = cr.admit("computer_vision", ["2301.00234v2"], allowlist=set())
+    assert calls == [["2301.00234"]]
+    assert verdicts["2301.00234v2"].accepted
+
+
+def test_admit_rejects_an_id_arxiv_has_no_record_of(monkeypatch):
+    from pipeline import arxiv_source
+
+    monkeypatch.setattr(arxiv_source, "fetch_by_ids", lambda ids: {})
+    verdict = cr.admit("computer_vision", ["0000.99999"], allowlist=set())["0000.99999"]
+    assert not verdict.accepted
+    assert "no record" in verdict.reason
+
+
+def test_admit_does_not_look_up_allowlisted_ids(monkeypatch):
+    from tests.conftest import arxiv_reports
+
+    calls = arxiv_reports(monkeypatch, "cs.CL")
+    verdict = cr.admit("medical_imaging", ["2401.00001"], allowlist={"2401.00001"})["2401.00001"]
+    assert verdict.accepted
+    assert calls == []
+
+
+def test_admit_fails_closed_when_arxiv_cannot_be_asked(monkeypatch):
+    from pipeline import arxiv_source
+
+    def unreachable(arxiv_ids):
+        raise RuntimeError("arXiv request failed after 4 attempts: timed out")
+
+    monkeypatch.setattr(arxiv_source, "fetch_by_ids", unreachable)
+    with pytest.raises(cr.AdmissionUnverifiable):
+        cr.admit("computer_vision", ["2501.00001"], allowlist=set())
+
+
+def test_the_tranche_path_still_rejects_by_the_rule(monkeypatch):
+    """Control: the one path that was already gated must behave identically after P2."""
+    import importlib
+
+    tranche = importlib.import_module("scripts.ingest_tranche")
+    logged = []
+    cv = ArxivCandidate("2501.00001", "Object detection", "", "cs.CV", ("cs.CV",), "2025")
+    pages = {0: [_KOSMOS, cv]}
+    monkeypatch.setattr(tranche, "search_category",
+                        lambda category, start=0, max_results=100: pages.get(start, []))
+    monkeypatch.setattr(tranche, "_save_checkpoint", lambda state: None)
+    monkeypatch.setattr(tranche, "_log_outcome", logged.append)
+    monkeypatch.setattr(tranche.corpus_rules, "load_allowlist", lambda path=None: set())
+
+    accepted = tranche._gather_candidates("computer_vision", 5, set(), {})
+
+    assert [c.arxiv_id for c, _ in accepted] == ["2501.00001"]
+    assert [(e["arxiv_id"], e["outcome"]) for e in logged] == [("2306.14824", "rule_rejected")]

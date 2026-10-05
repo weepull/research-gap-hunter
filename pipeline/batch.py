@@ -10,6 +10,7 @@ import requests
 import sqlite_utils
 from dotenv import load_dotenv
 
+from pipeline import corpus_rules
 from pipeline.domains import validate_domain
 from pipeline.extractor import (
     extract_paper,
@@ -142,11 +143,17 @@ def ingest_from_query(query: str, domain: str, limit: int = 100) -> dict:
     logs a warning when a paper's own text disagrees with the declaration, and
     that log is the signal to curate the query's results.
 
+    Every new paper must pass the corpus admission rule (P2,
+    ``corpus_rules.admit``) before extraction: its arXiv primary category is looked
+    up and checked against ``domain``. A rejected paper is logged and counted, never
+    extracted. If arXiv cannot be asked, this raises ``AdmissionUnverifiable`` before
+    anything is extracted — an unverified paper is not admitted.
+
     Skips papers already present in the database.
     Logs extraction failures to data/failed_extractions.log and continues.
     Prints progress to stdout: "[{i}/{total}] {arxiv_id}".
 
-    Returns {"ingested": n, "skipped": n, "failed": n}.
+    Returns {"ingested": n, "skipped": n, "failed": n, "rejected": n}.
     """
     domain = validate_domain(domain)
     papers = search_papers(query, limit=limit)
@@ -160,10 +167,17 @@ def ingest_from_query(query: str, domain: str, limit: int = 100) -> dict:
             for row in db.execute("SELECT arxiv_id FROM papers").fetchall()
         }
 
+    # One batched arXiv lookup for every paper not already stored, before any
+    # extraction, so an unreachable arXiv fails the call cleanly.
+    verdicts = corpus_rules.admit(
+        domain, [p["arxiv_id"] for p in papers if p["arxiv_id"] not in existing]
+    )
+
     total = len(papers)
     ingested = 0
     skipped = 0
     failed = 0
+    rejected = 0
 
     for i, paper_stub in enumerate(papers, start=1):
         arxiv_id = paper_stub["arxiv_id"]
@@ -171,6 +185,12 @@ def ingest_from_query(query: str, domain: str, limit: int = 100) -> dict:
 
         if arxiv_id in existing:
             skipped += 1
+            continue
+
+        verdict = verdicts[arxiv_id]
+        if not verdict.accepted:
+            logger.warning("Not ingesting %s into %s: %s", arxiv_id, domain, verdict.reason)
+            rejected += 1
             continue
 
         try:
@@ -192,7 +212,7 @@ def ingest_from_query(query: str, domain: str, limit: int = 100) -> dict:
         # data/failed_extractions.log.
         time.sleep(_FETCH_SLEEP_SECONDS)
 
-    return {"ingested": ingested, "skipped": skipped, "failed": failed}
+    return {"ingested": ingested, "skipped": skipped, "failed": failed, "rejected": rejected}
 
 
 def get_paper(arxiv_id: str) -> dict | None:

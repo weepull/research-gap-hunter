@@ -186,6 +186,36 @@ calls). No unit test imports `scripts/`. `tests/test_eval_harness.py` imports `e
 
 ### P2 · (a) The corpus-admission rule only guards one of four ingestion paths
 
+> **Status: DONE 2026-10-05.** The advisor chose the **one-validator variant**: no path
+> retired, no code path deleted, and no change to what the rule accepts.
+> - **`corpus_rules.admit(domain, ids, known=None, allowlist=None)`** is the single
+>   validator. It wraps `accept`, which is unchanged.
+>   - For ids not in `known`, it looks up the primary category in one batched
+>     `arxiv_source.fetch_by_ids` call.
+>   - An id arXiv has no record of is rejected.
+>   - If arXiv can't be reached, it raises `AdmissionUnverifiable`. It fails closed.
+> - **Callers:** `/ingest` (422 on rejection, 503 when arXiv can't be asked),
+>   `ingest_from_query`, `ingest_domain_papers`, and `scripts/ingest_tranche.py`. The tranche
+>   passes its listing candidate as `known`, so it makes no extra request.
+> - **Before any extraction or write:** in every path the check runs first. Rejections are
+>   logged and counted (`"rejected"` in the return dicts).
+> - **Parser fix found along the way:** `parse_feed` cut old-style ids down to their last
+>   path segment (`math/0309136` → `0309136`). A by-id lookup could never find them, so
+>   `/ingest` would have rejected them for a parsing reason rather than a rule. It now keeps
+>   everything after `/abs/`.
+> - **Pre-fix: 24 failed, 491 passed.**
+>   - Every ungated-path test failed on behaviour: `extract_paper` was called
+>     (`assert 1 == 0`), or the call `DID NOT RAISE`.
+>   - The two old-style id parses failed (`'math/0309136' in ['2501.12345', '0309136']`).
+>   - The `admit` unit tests failed with `AttributeError`.
+>   - The tranche-path control and the new-style-id parse case passed, as intended.
+> - **Post-fix: 515 passed.**
+>   - 5 existing tests compared the return dict exactly; they gained `"rejected": 0`.
+>   - `test_admit_decides_exactly_as_accept_does` checks verdict and reason against `accept`
+>     over 9 rule cases.
+>   - The unit run made 0 socket attempts and opened no real `data/` store.
+>   - Integration tier: 37 passed, 3 skipped.
+
 - **Problem.** All 14 papers removed in the two curation passes got in through
   search-style ingestion. The primary-category rule that would have refused them is only
   applied by `scripts/ingest_tranche.py`. `/ingest` (`api/main.py:598`), `ingest_from_query`

@@ -563,8 +563,10 @@ def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResu
     """Discover, score, and rank research gaps for a domain.
 
     Pulls all limitations, clusters them, scores each cluster with the weighted
-    formula, and returns the top_n GapResults sorted by score descending. The most
-    frequent limitation text in a cluster becomes its gap_description.
+    formula, and returns the top_n GapResults in `_ranking_key` order: corroborated
+    gaps (two or more papers) first, then score descending within each tier, so
+    scores are not monotonic across the tier boundary. A cluster's gap_description is
+    the member nearest its vector centroid (`_cluster_representative_text`).
     """
     limitations = get_all_limitations(domain)
     if not limitations:

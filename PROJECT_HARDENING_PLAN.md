@@ -94,7 +94,14 @@ growth rates for the partial sums" ↔ "Propose future research directions in th
   Preserves the demo at the cost of presenting noise as a finding.
 
 ### A3 · Contentless future directions corrupt solution-deficit scoring — BLOCKING
-**Status: DEFERRED 2026-08-23 (advisor decision).** Not an oversight. The real fix (A3-a) needs re-extraction, which is **blocked by B4** — re-ingesting a paper that already has graph relationships duplicates its limitations. Raising thresholds does not substitute: generic text scores *high*, not low.
+**Status: DONE 2026-09-29.** This was closed **without re-extraction**, which B4 still blocks:
+- deterministic extraction-quality gates in `pipeline/extraction_filter.py`;
+- an anti-boilerplate constraint added to the prompt;
+- a backfill that re-filtered the stored strings, removing 10 of 234.
+
+Decision and measurements: CLAUDE.md, *Phase 1b · deterministic extraction-quality gates*.
+*Superseded: DEFERRED 2026-08-23.* The analysis below is the original audit, kept for the
+record. Its figures predate the fix.
 
 This directly answers "does the contentless-future-directions issue affect anything beyond
 cross-domain?" — **yes, measurably.**
@@ -165,7 +172,16 @@ references `min_cluster_size` in its body. It implies singletons are filtered; t
 rankings and would be an advisor decision.)
 
 ### A8 · `extract_paper()` hardcodes `domain="computer_vision"` — IMPORTANT
-**Status: NEEDS ADVISOR DECISION** (affects data labelling, hence scoring)
+**Status: DONE 2026-09-28.** The advisor chose option 1A plus 1C-as-verifier; LLM
+classification was rejected.
+- `domain` is now required and validated on `PaperExtract`, `extract_paper`,
+  `ingest_from_query` and `IngestRequest`.
+- The keyword heuristic reports disagreements and never assigns a domain.
+- 11 off-topic papers were removed and 4 relabelled.
+
+Decision: CLAUDE.md, *Phase 1 · #1 domain labelling*. The line reference below was wrong
+when written: the hardcode was at `pipeline/extractor.py:452`, not `:388`. The original
+audit text follows unchanged.
 
 `pipeline/extractor.py:388` tags every paper CV regardless of content. Both current callers
 patch it afterwards (`cross_domain.ingest_domain_papers`, `api/main.py:/ingest`), so it works
@@ -175,7 +191,14 @@ required parameter; infer it during extraction; or keep the default and add a lo
 warning plus a test asserting callers override it.
 
 ### A9 · Solution-deficit metric is dimensionally incoherent and saturates — IMPORTANT
-**Status: DEFERRED 2026-08-23 (advisor decision).** A quality refinement, not an integrity risk — the term still orders gaps sensibly, it just has poor resolution.
+**Status: DONE 2026-09-29 (Option F).**
+- `solution_deficit` is now continuous: `1 - addressedness`, where addressedness rescales
+  the nearest eligible future direction's similarity between the domain null's p50 and p99.
+- Gaps backed by two or more papers rank above every single-source gap.
+- The 0.40/0.35/0.25 weights and the recency term are unchanged.
+
+Decision and measurements: CLAUDE.md, *Phase 2 · A9 resolved — Option F*, and
+`A9_F_MEASURED.md`. *Superseded: DEFERRED 2026-08-23.* The original audit text follows.
 
 Divides a corpus-wide count of future directions by a cluster-local count of papers, so it is
 not a proportion. 17 of 27 clusters sit at exactly 0.0 with only 5 distinct values across the
@@ -504,7 +527,13 @@ documenting in the README deploy section so it is not discovered at deploy time.
 ## H. Corpus / scale honesty
 
 ### H1 · Nothing anywhere states the corpus size — BLOCKING for public demo
-**Status: DONE 2026-08-23** — commit `8f1c8fe` (new `/corpus` endpoint) + `c11d17c` (CorpusBanner on all three results pages). Banner states domain paper count, limitation/future-direction counts and last-updated date; `papers` is the Neo4j count that divides frequency_score, pinned by a test.
+**Status: DONE 2026-08-23** — commit `8f1c8fe` (new `/corpus` endpoint) + `c11d17c` (CorpusBanner on all three results pages). Banner states domain paper count, limitation/future-direction counts and last-updated date.
+
+**Correction (2026-09-28, Phase 3):** `papers` is **no longer** the divisor of
+`frequency_score`. The divisor is now the number of papers that contributed at least one
+limitation (`_count_contributing_papers`). `/corpus` reports it as
+`papers_reporting_limitations` next to `papers` (corpus size), and the banner shows both. See
+CLAUDE.md, *Phase 3 · #4 frequency denominator + honesty pass*.
 
 The UI presents `0.6065` in a green "good" badge with three sub-score bars, in the visual
 language of an authoritative metric. Nothing on the page says the ranking is computed over
@@ -591,21 +620,34 @@ follow the demo.
 
 ## Decision log
 
-> Append one entry per advisor decision, newest last. Format mirrors the advisor-decision
-> entries in CLAUDE.md: what was decided, why, measured impact, and what was deliberately
-> deferred. Once an entry lands here, update the corresponding item's **Status** above and
-> record the rationale in CLAUDE.md so it is not re-litigated next session.
+> **CLAUDE.md is the single decision log** (advisor decision, 2026-10-05). Record each
+> decision there, with its rationale and measured impact. This section only points to it,
+> so the two cannot disagree. Before 2026-10-05 the decisions were recorded only in
+> CLAUDE.md while this section still said "no decisions recorded", and several item
+> statuses above went stale as a result. When a decision closes an item, update that
+> item's **Status** line and add a pointer here.
 
-```
-### <ITEM-ID> · <short title> — decided <YYYY-MM-DD> (advisor: <name>)
-
-**Decision:** <option chosen>
-**Rationale:** <why, including numbers that drove it>
-**Measured impact:** <ranking delta / test delta / what was verified live>
-**Deferred:** <anything explicitly not settled by this decision>
-```
-
-_(No decisions recorded yet — audit delivered 2026-08-22.)_
+| items | decided | CLAUDE.md section |
+|---|---|---|
+| recency baseline | 2026-08-20 | *Recency baseline — decided 2026-08-20* |
+| solution-deficit 1A / 2A / 3A | 2026-08-21 | *Solution-deficit scoring — decided 2026-08-21* |
+| A1, A2 | 2026-08-23 | *Similarity thresholds — decided 2026-08-23* |
+| A3, A5, A9 deferred | 2026-08-23 | *Deliberately deferred, 2026-08-23* (A3 and A9 since superseded) |
+| PLAN.md #7, #6 (integration tier, `/health`) | 2026-09-28 | *Phase 0 · #7 integration tier + #6 health honesty* |
+| A8 / PLAN.md #1 | 2026-09-28 | *Phase 1 · #1 domain labelling* |
+| PLAN.md #3 (cluster threshold) | 2026-09-28 | *Phase 2 · #3 cluster threshold + domain filter* |
+| PLAN.md #4, H1 correction | 2026-09-28 | *Phase 3 · #4 frequency denominator + honesty pass* |
+| PLAN.md #2 (ties, representative) | 2026-09-28 | *Phase 4 · #2 tie-breaking + cluster representative* |
+| PLAN.md #5 (`/explain` grounding) | 2026-09-28 | *Phase 5 · #5 /explain grounding* |
+| CV corpus primary-category rule | 2026-09-28 | *Corpus curation pass 2* |
+| MI solution threshold | 2026-09-28 | *Phase 1a · MI solution threshold re-derived* |
+| A3 | 2026-09-29 | *Phase 1b · deterministic extraction-quality gates* |
+| A9 | 2026-09-29 | *Phase 2 · A9 resolved — Option F* |
+| Qdrant point ids | 2026-09-29 | *Phase 3a · stable Qdrant point ids* |
+| ingest-time corpus rules | 2026-09-29 | *Phase 3b/3c · rule-gated resumable ingestion* |
+| audit-fix P1, P1b | 2026-10-04 / 05 | *Audit-fix P1*, *Audit-fix P1b* |
+| audit-fix P2 (judgement calls 2 and 3 **still under advisor review**) | 2026-10-05 | *Audit-fix P2* |
+| audit-fix P3 | 2026-10-05 | *Audit-fix P3* |
 
 ---
 

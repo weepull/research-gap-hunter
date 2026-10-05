@@ -288,6 +288,23 @@ calls). No unit test imports `scripts/`. `tests/test_eval_harness.py` imports `e
 
 ### P4 · Documentation drift (affects (a), (b), (d) and every future session)
 
+> **Status: DONE 2026-10-05. Docs and one docstring only.**
+> - **Status lines updated in `PROJECT_HARDENING_PLAN.md`:** A3 (DONE, Phase 1b), A8 (DONE,
+>   Phase 1; it also notes `:388` should have been `:452`), A9 (DONE, Option F) and H1 (a
+>   correction: `papers` is no longer the divisor). The original audit text under each is
+>   kept and marked superseded.
+> - **Decision log:** it now states that CLAUDE.md is the single log and holds a pointer
+>   table instead of the false "no decisions recorded yet". CLAUDE.md's header was changed
+>   to match.
+> - **`score_gaps` docstring** now describes two-tier ordering and the centroid-nearest
+>   representative.
+>
+> **Noted, not changed (outside the four approved items):**
+> - CLAUDE.md's header still says `_SOLUTION_THRESHOLD = 0.85` and cross-domain `0.82`
+>   "sit below their measured noise floors". Both were replaced on 2026-08-23.
+> - `PROJECT_HARDENING_PLAN.md` A5 still says the floor "acts as a binary switch". That
+>   stopped being true when Option F made deficits continuous.
+
 - **Problem.** The file CLAUDE.md says to read first disagrees with CLAUDE.md about the
   status of A3, A8, A9 and H1, and says no decisions have been recorded.
   `pipeline/gap_scorer.py:566` describes a representative rule that no longer exists.

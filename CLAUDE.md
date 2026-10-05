@@ -11,8 +11,10 @@
 > below their measured noise floors**, so solution-deficit and cross-domain output are
 > substantially noise-driven right now. Do not propose changes to scoring, thresholds,
 > clustering, or displayed results without checking whether that item already has an entry
-> and a status there. When a decision is made, append it to that file's decision log **and**
-> record the rationale here.
+> and a status there. **This file is the single decision log** (advisor decision,
+> 2026-10-05). Record each decision and its rationale here, update the affected item's
+> Status line in that file, and add a one-line pointer to its decision-log table. Do not
+> duplicate the rationale there.
 
 ## What This Project Is
 

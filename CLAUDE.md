@@ -1168,6 +1168,14 @@ Things to know:
   `arxiv_admits` fixture. The three ingestion test modules apply `arxiv_admits` to every
   test; a rejection test overrides it.
 
+### Audit-fix P3 · read endpoints reject unknown domains — DONE 2026-10-05
+
+`/gaps`, `/search`, `/corpus`, `/cross-domain` and `/explain` used to pass any domain string
+through. An unknown domain matched nothing and returned **200 with an empty result**. By
+this project's own doctrine an empty result is a finding ("no gaps", "no connections"), so a
+typo produced a false one. They now return **422** via `api/main.py:_known_domain`. An
+*empty known* domain still returns `200 []`, which is correct.
+
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 
 Three known scoring limitations were reviewed at the same time and consciously

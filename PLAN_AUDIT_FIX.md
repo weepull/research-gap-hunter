@@ -251,6 +251,23 @@ calls). No unit test imports `scripts/`. `tests/test_eval_harness.py` imports `e
 
 ### P3 · (a) The read endpoints accept any domain string
 
+> **Status: DONE 2026-10-05.** `api/main.py:_known_domain` wraps `validate_domain` and
+> returns **422** with `expected one of ['computer_vision', 'medical_imaging']`.
+> - **Where it runs:** `/gaps`, `/search`, `/corpus` (`domain`), `/cross-domain` (`source`,
+>   `target`) and `/explain` (`source`, `target`; after the demo-mode 403, before grounding).
+> - **Pre-fix: 7 failed, 515 passed, 1 error.**
+>   - Five cases gave `assert 200 == 422`.
+>   - Both `/explain` cases failed with `verify_pairing reached with an unknown domain`.
+>   - The 1 error was the guard: before the fix, `/corpus` with a bad domain still reached
+>     Neo4j.
+> - **Post-fix: 522 passed.**
+> - **One existing test changed.** `test_gaps_empty_domain_returns_empty_list` used
+>   `domain=unknown_domain` to stand in for "a domain with no papers" and asserted 200, which
+>   is exactly the conflation P3 removes. It now uses `medical_imaging` and keeps its stated
+>   premise.
+> - **Frontend:** not touched. `frontend/lib/api.ts` surfaces a 422 as a generic
+>   `API 422: …` error, and the frontend only sends the two known domains.
+
 - **Problem.** `/gaps?domain=computer_visoin` presumably returns `200 []`, which reads as
   "no gaps" rather than "bad request". By project doctrine, an empty result is meaningful
   output, so a typo becomes a false finding. I have **not** observed this live this run;

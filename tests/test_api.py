@@ -512,10 +512,15 @@ def test_gaps_passes_domain_and_top_n(client, monkeypatch):
 
 
 def test_gaps_empty_domain_returns_empty_list(client, monkeypatch):
-    """An empty domain (no papers ingested) returns an empty list, not an error."""
+    """An empty domain (no papers ingested) returns an empty list, not an error.
+
+    Uses a known domain. This test previously sent `domain=unknown_domain` and asserted
+    200 — standing in an unknown domain for an empty one, which is the conflation P3
+    removed: an unknown domain is now a 422 (see the P3 tests below).
+    """
     monkeypatch.setattr("api.main.score_gaps", lambda domain, top_n: [])
 
-    r = client.get("/gaps?domain=unknown_domain")
+    r = client.get("/gaps?domain=medical_imaging")
 
     assert r.status_code == 200
     assert r.json() == []
@@ -1225,3 +1230,45 @@ def test_startup_skips_selfheal_when_the_graph_is_unavailable(monkeypatch):
         pass
 
     assert called == [], "reconciliation must not run against a missing driver"
+
+
+# ---------------------------------------------------------------------------
+# P3 — read endpoints reject unknown domains
+# ---------------------------------------------------------------------------
+
+_READ_ENDPOINT_DOMAIN_CASES = [
+    # (path, query params with one misspelt domain, backend that must not be called)
+    ("/gaps", {"domain": "computer_visoin"}, "score_gaps"),
+    ("/search", {"q": "occlusion", "domain": "computer_visoin"}, "find_similar_limitations"),
+    ("/cross-domain", {"source": "computer_visoin"}, "find_cross_domain_matches"),
+    ("/cross-domain", {"target": "medical_imagng"}, "find_cross_domain_matches"),
+    ("/corpus", {"domain": "computer_visoin"}, "_count_papers_in_domain"),
+    ("/explain", {"source_gap": "g", "target_solution": "s", "source": "computer_visoin"},
+     "verify_pairing"),
+    ("/explain", {"source_gap": "g", "target_solution": "s", "target": "medical_imagng"},
+     "verify_pairing"),
+]
+
+
+@pytest.mark.parametrize("path, params, backend", _READ_ENDPOINT_DOMAIN_CASES)
+def test_read_endpoints_reject_an_unknown_domain_with_422(client, monkeypatch, path, params, backend):
+    """A misspelt domain is a bad request, not an empty corpus (P3).
+
+    Fails against pre-fix code, where these endpoints took `domain` as a plain string
+    and passed it straight through: `/gaps?domain=computer_visoin` returned 200 with an
+    empty list, which by this project's own doctrine reads as "no gaps found" — a false
+    finding produced by a typo.
+    """
+    if backend == "verify_pairing":
+        # /explain has no list to return empty; reaching the gate at all is the defect.
+        called = MagicMock(side_effect=AssertionError(f"{backend} reached with an unknown domain"))
+    else:
+        called = MagicMock(return_value=[])
+    monkeypatch.setattr(f"api.main.{backend}", called)
+    monkeypatch.setattr("api.main.explain_match", MagicMock(return_value="x"))
+
+    r = client.get(path, params=params)
+
+    assert r.status_code == 422
+    assert called.call_count == 0
+    assert "computer_vision" in r.json()["detail"] and "medical_imaging" in r.json()["detail"]

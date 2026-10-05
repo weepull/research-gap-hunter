@@ -45,7 +45,7 @@ from graph.populate import _upsert_paper_counting, get_neo4j_driver  # noqa: E40
 from pipeline.batch import _get_db, _log_failure, _paper_to_row, get_paper  # noqa: E402
 from pipeline.config import allowed_origins, is_demo_mode  # noqa: E402
 from pipeline import corpus_rules  # noqa: E402
-from pipeline.domains import validate_domain  # noqa: E402
+from pipeline.domains import RESEARCH_DOMAINS, validate_domain  # noqa: E402
 from pipeline.cross_domain import (  # noqa: E402
     CrossDomainMatch,
     UngroundedPairingError,
@@ -318,6 +318,24 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 
+def _known_domain(value: str, param: str = "domain") -> str:
+    """The domain a read endpoint was asked for, or a 422 (P3).
+
+    Read endpoints used to pass any string straight through. An unknown domain then
+    matched nothing and came back as 200 with an empty result, which this project
+    treats as meaningful output ("no gaps", "no connections") — so a typo produced a
+    false finding. Validation reuses `validate_domain`; the message is written for a
+    reader rather than for ingestion.
+    """
+    try:
+        return validate_domain(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown {param} {value!r}; expected one of {list(RESEARCH_DOMAINS)}",
+        )
+
+
 def _internal_error(
     operation: str,
     exc: Exception,
@@ -457,6 +475,7 @@ def corpus_info(domain: str = Query(default="computer_vision")) -> CorpusInfo:
     contributed any limitation at all, which is what `papers_reporting_limitations`
     is for.
     """
+    domain = _known_domain(domain)
     graph_available = True
     try:
         papers = _count_papers_in_domain(domain)
@@ -530,7 +549,7 @@ def get_gaps(
     top_n: int = Query(default=20, ge=1, le=100),
 ) -> list[GapResult]:
     """Return top-ranked research gaps for a domain, scored by frequency/recency/deficit."""
-    return score_gaps(domain=domain, top_n=top_n)
+    return score_gaps(domain=_known_domain(domain), top_n=top_n)
 
 
 @app.get("/search", response_model=list[LimitationResult])
@@ -540,6 +559,7 @@ def search_limitations(
     domain: str = Query(default="computer_vision"),
 ) -> list[LimitationResult]:
     """Vector-search the limitations collection and return semantically similar statements."""
+    domain = _known_domain(domain)
     results = find_similar_limitations(query_text=q, top_k=top_k, domain=domain)
     return [
         LimitationResult(
@@ -560,8 +580,8 @@ def get_cross_domain_matches(
 ) -> list[CrossDomainMatch]:
     """Return ranked cross-domain research hypotheses above the similarity threshold."""
     return find_cross_domain_matches(
-        source_domain=source,
-        target_domain=target,
+        source_domain=_known_domain(source, "source"),
+        target_domain=_known_domain(target, "target"),
         top_n=top_n,
     )
 
@@ -675,6 +695,9 @@ def explain_connection(
                 "live explanations — see the README for setup."
             ),
         )
+
+    source = _known_domain(source, "source")
+    target = _known_domain(target, "target")
 
     # Deterministic, server-side grounding BEFORE any generation (PLAN.md #5,
     # option 5A). Without this the endpoint would explain any two strings a client

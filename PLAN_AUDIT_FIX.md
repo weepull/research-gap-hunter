@@ -1083,3 +1083,72 @@ The 14-paper MI gap that produced all 8 pre-R1 matches produces none now.
   to reliance on external geometry" (corroborated, 2 papers).
 - No relabelled paper supports any CV gap. 5 MI gaps now include a relabelled paper (MI
   ranks 1, 3, 6, 23 and 24).
+
+### R3 · Re-measure what was deferred, on the corrected corpus — REPORT ONLY
+
+The floor and `top_n` were patched in memory only, with restoration asserted. Nothing
+changed.
+
+**Principled floors** `d* = 1 − (p95 − p50)/(p99 − p50)`:
+- From the coded constants (unchanged by R2): **CV 0.3122, MI 0.2857**, the same as before.
+- From the R2 re-derivation, not applied: CV 0.3111, MI 0.2836.
+
+**9 · Floor sweep** (`top_n = 20`):
+
+| floor | CV→MI | MI→CV | source gaps (CV / MI) | unresolved in top 20 (CV / MI) | Jaccard vs previous (CV→MI, MI→CV) |
+|---:|---:|---:|---|---|---|
+| 0.15 | 5 | 15 | 3 / 4 | 8 / 8 | — |
+| 0.20 | 4 | 10 | 2 / 3 | 7 / 7 | 0.80, 0.67 |
+| 0.25 | 4 | 9 | 2 / 2 | 7 / 5 | 1.00, 0.90 |
+| **0.30** | **4** | **4** | **2 / 1** | 7 / 4 | 1.00, 0.44 |
+| 0.35 | 4 | 4 | 2 / 1 | 6 / 4 | 1.00, 1.00 |
+| 0.40 | **0** | 4 | 0 / 1 | 3 / 4 | 0.00, 1.00 |
+| 0.45 | 0 | 4 | 0 / 1 | 2 / 4 | 1.00, 1.00 |
+| 0.50 | 0 | 4 | 0 / 1 | 2 / 4 | 1.00, 1.00 |
+
+At the principled floors:
+
+| floor | CV→MI | MI→CV |
+|---|---|---|
+| both 0.3122 | 4 (2 gaps) | 4 (1 gap) |
+| both 0.2857 | 4 (2 gaps) | 4 (1 gap) |
+| per source domain | 4 (2 gaps) | 4 (1 gap) |
+| coded 0.3 | 4 (2 gaps) | 4 (1 gap) |
+
+**What changed versus pre-R1:**
+- **The choice among principled values no longer matters.** No top-20 gap's deficit falls
+  between 0.2857 and 0.3122. The nearest is MI rank 10 at 0.2699, which is below both. Pre-R1,
+  MI→CV went 8 → 0 across that window.
+- **Both directions now sit on plateaus that contain every principled value.**
+  - CV→MI: the same 4 matches from 0.20 to 0.35 (Jaccard 1.00), and 0 from 0.40.
+  - MI→CV: the same 4 from 0.30 to 0.50. Below 0.30 it rises to 9–15 as the MI rank-10 gap
+    (deficit 0.2699, 3 papers) and others enter.
+
+**10 · `top_n` sweep** (coded floor 0.3):
+
+| top_n | CV→MI | MI→CV |
+|---:|---|---|
+| 10 | 4 (2 gaps) | **0** |
+| **20** | **4 (2 gaps)** | **4 (1 gap)** |
+| 30 | 4 (2 gaps) | 4 (1 gap) |
+| 50 | 8 (3 gaps) | 18 (7 gaps) |
+
+**MI→CV's only source is a single-source gap that ranks exactly 20th**, the last slot
+`top_n = 20` admits:
+- The gap is "Extensive hyperparameter tuning": 1 paper (2501.09049), deficit 0.6321, score
+  0.5118.
+- Rank 21 scores 0.5075, so the margin is **0.0043**.
+- The MI ranking has 18 corroborated gaps, and by Option F's two-tier rule they rank above
+  every single-source gap. So only 2 single-source MI gaps fit inside `top_n = 20`.
+- MI→CV is therefore decided by `top_n` and the corroboration tier, **not** by the floor.
+- Its 4 targets are generic CV future directions: "Scaling to much larger
+  transformer-dominated architectures", "Reinforcement fine-tuning", "Scaling model capacity
+  and incorporating broader pretraining data", and "clearer separation of base models and
+  fine-tunes".
+
+CV→MI rests on 2 gaps. 3 of its 4 matches come from a gap that includes the ambiguous
+2609.30566.
+
+**Neither constant was changed.** `_UNRESOLVED_DEFICIT_FLOOR = 0.3` and
+`get_unresolved_gaps(top_n=20)` are both still underived and still awaiting an advisor
+decision.

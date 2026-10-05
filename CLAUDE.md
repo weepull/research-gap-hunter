@@ -1118,10 +1118,34 @@ makes these raise `LiveServiceInUnitTest`:
 - the lazily imported `sentence_transformers` module
 
 These are the same bindings the unit tests already patch, so a test's own stub still wins.
-The unit result is now identical with Neo4j up and down. **When you add a function that
-reaches a store, stub it in its unit tests. The guard will tell you if you forget.** Still
-open, and not covered by the guard: `tests/test_api.py` opens the real `data/papers.db`
-through startup self-heal. See `PLAN_AUDIT_FIX.md` P1.
+**When you add a function that reaches a store, stub it in its unit tests. The guard will
+tell you if you forget.**
+
+**Two corrections to what P1 originally recorded here:**
+- **The claim that the unit tier no longer touched Neo4j was false for two tests.**
+  `test_corpus_survives_missing_collections` and
+  `test_corpus_reports_unreachable_vectors_as_unknown_not_zero` still built a driver through
+  `/corpus`. The guard raised, and `/corpus` swallowed it in its `except Exception`
+  (`api/main.py:463`). Neither test asserted `graph_available`, so both passed.
+- **The real-`papers.db` opens were 56 from `tests/test_api.py` and 6 from
+  `tests/test_rate_limit.py`**, not "all from `tests/test_api.py`". The count of 62 was right.
+
+### Audit-fix P1b · guard extended to SQLite and to swallowed errors — DONE 2026-10-05
+
+- **A guard that only raises is not a guard here.** The API lifespan and several handlers
+  deliberately catch `Exception` (see the table in `PLAN_AUDIT_FIX.md` P1b). The first SQLite
+  guard raised on every real-path connect and *nothing failed*, because self-heal swallowed
+  it. The fixture now records every refusal and fails the test at teardown, so a swallowed
+  refusal still fails the test. That is also how the two `/corpus` Neo4j leaks above
+  surfaced.
+- **SQLite** is refused unless the database is in-memory or under pytest's temp root. Every
+  unit test also gets `SELFHEAL_ON_STARTUP=false` **and** `pipeline.batch._DB_PATH` pointed at
+  `tmp_path`. Both are needed: turning self-heal off alone leaves `/paper` and `/corpus`
+  reading the real file, and redirecting the path alone still lets self-heal write.
+- The two `/corpus` tests now stub `_count_contributing_papers` and assert
+  `graph_available is True`, which is their stated premise.
+- **Measured:** `489 passed` with Neo4j, Qdrant and Ollama all stopped and with all running.
+  `data/papers.db` mtime is unchanged, and the unit run makes 0 socket attempts.
 
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 

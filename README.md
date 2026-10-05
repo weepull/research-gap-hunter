@@ -423,16 +423,22 @@ pytest -m ''            # both
 ```
 
 ```
-489 passed, 40 deselected, 1 warning in 0.90s
-37 passed, 3 skipped, 489 deselected, 1 warning in 47.49s
+489 passed, 40 deselected, 1 warning in 1.17s
+37 passed, 3 skipped, 489 deselected, 1 warning in 39.90s
 ```
 
-The unit figure is identical with Neo4j stopped and running, which is the point: an
-autouse guard in `tests/conftest.py` makes any real Neo4j driver, Qdrant client or
-embedding-model load raise in the unit tier. Before it existed (2026-10-04), eight
-`score_gaps` tests silently queried the production Neo4j, so the earlier `489 passed`
-held only while Neo4j was up — with it down the same suite was 8 failed, 481 passed.
-The integration line was measured with Ollama down; one of its 3 skips is the Ollama test.
+Both lines were measured with Neo4j, Qdrant and Ollama all running. The unit figure is
+identical with all three stopped (`489 passed, 40 deselected, 1 warning in 1.18s`), which is
+the point. An autouse guard in `tests/conftest.py` refuses, in the unit tier, any real
+Neo4j driver, Qdrant client, embedding-model load, or SQLite file outside pytest's temp
+directory. It also fails the test at teardown when the code under test swallowed the refusal.
+
+Before the guard existed (2026-10-04), the earlier `489 passed` depended on which services
+were running:
+- eight `score_gaps` tests and two `/corpus` tests queried the production Neo4j;
+- 62 API tests opened the real `data/papers.db` through startup self-heal.
+
+With Neo4j down, the same suite gave 8 failed, 481 passed.
 
 **Two tiers, and the split matters.** The unit tier mocks every external dependency and
 runs in under a second, which is what makes it usable on every change. It is also

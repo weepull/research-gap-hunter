@@ -63,17 +63,25 @@ Other coded constants: `_UNRESOLVED_DEFICIT_FLOOR` = 0.3 (**still undrived — s
 ## Tests — raw summary lines
 
 ```
-pytest -q               489 passed, 40 deselected, 1 warning in 0.90s
-pytest -m integration   37 passed, 3 skipped, 489 deselected, 1 warning in 47.49s
+pytest -q               489 passed, 40 deselected, 1 warning in 1.17s
+pytest -m integration   37 passed, 3 skipped, 489 deselected, 1 warning in 39.90s
 ```
 
-**Corrected by hand 2026-10-04, not by `collect_run_facts.py`.** The figures originally
-recorded here (`489 passed … in 0.73s`, `37 passed, 3 skipped … in 39.23s`) were measured
-while eight unit tests were leaking a live Neo4j connection: they passed only because the
-production database was running, and fail with it stopped (8 failed, 481 passed). The lines
-above were measured after `tests/conftest.py` began refusing live services in the unit tier,
-and the unit line is identical with Neo4j stopped and running. The integration line was
-measured with Ollama down; one of its 3 skips is the Ollama test.
+**Corrected by hand on 2026-10-04 and 2026-10-05, not by `collect_run_facts.py`.**
+
+The figures originally recorded here (`489 passed … in 0.73s` and
+`37 passed, 3 skipped … in 39.23s`) were measured while the unit tier was leaking live
+stores:
+- eight `score_gaps` tests and two `/corpus` tests read the production Neo4j;
+- 62 API tests (56 in `tests/test_api.py`, 6 in `tests/test_rate_limit.py`) opened the real
+  `data/papers.db` through startup self-heal.
+
+The unit count passed only because the production database was running. With it stopped,
+the result was 8 failed, 481 passed.
+
+The lines above were measured with Neo4j, Qdrant and Ollama all running, after
+`tests/conftest.py` began refusing live services and real SQLite files in the unit tier. The
+unit line is identical with all three stopped (`… in 1.18s`).
 
 ## Ties and tiers
 

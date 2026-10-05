@@ -21,32 +21,44 @@ a test that stubs the resource itself (``patch("graph.populate.GraphDatabase.dri
   of ``load_embedding_model`` (``pipeline.gap_scorer``, ``vectors.search``, …) without
   breaking the unit tests of ``load_embedding_model`` itself.
 
+- SQLite: ``sqlite3.connect`` to any file outside pytest's temp root. Every unit test
+  also gets ``SELFHEAL_ON_STARTUP=false`` and ``pipeline.batch._DB_PATH`` under
+  ``tmp_path``, so the API lifespan never opens the real ``data/papers.db``.
+
+Refusals are recorded as well as raised, and the test fails at teardown if any occurred,
+because the API swallows backend errors in several places and a raise alone was invisible.
+
 The integration tier (``-m integration``) is untouched: it exists to talk to real
 services, and its own conftest isolates them.
 """
 
+import os
+import sqlite3
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
 
 class LiveServiceInUnitTest(RuntimeError):
-    """A unit test tried to reach a real Neo4j, Qdrant or embedding model."""
+    """A unit test tried to reach a real Neo4j, Qdrant, embedding model or SQLite file."""
 
 
-def _refuse(service: str, binding: str):
+def _refuse(service: str, binding: str, violations: list[str]):
     def guard(*args, **kwargs):
-        raise LiveServiceInUnitTest(
+        message = (
             f"unit test touched a real service: {service} via {binding}. "
             "Stub it in the test, or mark the test `integration`."
         )
+        violations.append(message)
+        raise LiveServiceInUnitTest(message)
 
     return guard
 
 
 @pytest.fixture(autouse=True)
-def _forbid_live_services(request, monkeypatch):
+def _forbid_live_services(request, monkeypatch, tmp_path, tmp_path_factory):
     if request.node.get_closest_marker("integration"):
         yield
         return
@@ -54,23 +66,61 @@ def _forbid_live_services(request, monkeypatch):
     import graph.populate
     import vectors.embed
 
+    # Every refusal is recorded as well as raised, and the test fails at teardown if
+    # any were recorded. Raising alone is not enough: the API lifespan deliberately
+    # swallows backend failures (`_warm`, and the self-heal `except Exception`), so a
+    # refused connection there was logged and the test still passed.
+    violations: list[str] = []
+
     monkeypatch.setattr(
         graph.populate.GraphDatabase,
         "driver",
-        _refuse("Neo4j", "graph.populate.GraphDatabase.driver"),
+        _refuse("Neo4j", "graph.populate.GraphDatabase.driver", violations),
     )
     monkeypatch.setattr(
         vectors.embed,
         "QdrantClient",
-        _refuse("Qdrant", "vectors.embed.QdrantClient"),
+        _refuse("Qdrant", "vectors.embed.QdrantClient", violations),
     )
 
     fake_st = types.ModuleType("sentence_transformers")
     fake_st.SentenceTransformer = _refuse(
-        "embedding model", "sentence_transformers.SentenceTransformer"
+        "embedding model", "sentence_transformers.SentenceTransformer", violations
     )
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake_st)
     # A model cached by an earlier test would bypass the import entirely.
     monkeypatch.setattr(vectors.embed, "_model_cache", {})
 
+    # SQLite: only in-memory databases and files under pytest's temp root. The root
+    # (not this test's own tmp_path) is the boundary because every tmp_path lives
+    # under it, and some tests build their database in a fixture's directory.
+    allowed_root = Path(tmp_path_factory.getbasetemp()).resolve()
+    real_connect = sqlite3.connect
+
+    def guarded_connect(database, *args, **kwargs):
+        name = os.fsdecode(database) if isinstance(database, (bytes, os.PathLike)) else database
+        in_memory = name in ("", ":memory:") or name.startswith("file::memory:") or (
+            name.startswith("file:") and "mode=memory" in name
+        )
+        if not in_memory:
+            path = Path(name.removeprefix("file:").split("?", 1)[0]).resolve()
+            if not path.is_relative_to(allowed_root):
+                _refuse(f"SQLite at {path}", "sqlite3.connect", violations)()
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", guarded_connect)
+
+    # Keep the unit tier off the real paper store, by two independent means. The
+    # startup self-heal is a write path into SQLite and has no business running
+    # against a mocked graph; and any code that does open the store gets a throwaway
+    # file. Either alone leaves a hole: disabling self-heal does not cover /paper or
+    # /corpus, and redirecting the path still lets self-heal write into it.
+    import pipeline.batch
+
+    monkeypatch.setenv("SELFHEAL_ON_STARTUP", "false")
+    monkeypatch.setattr(pipeline.batch, "_DB_PATH", tmp_path / "papers.db")
+
     yield
+
+    if violations:
+        pytest.fail("\n".join(dict.fromkeys(violations)), pytrace=False)

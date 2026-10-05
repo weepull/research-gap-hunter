@@ -409,6 +409,7 @@ def test_corpus_survives_missing_collections(client, monkeypatch):
     exception is classified as an outage and reports None instead of 0.
     """
     monkeypatch.setattr("api.main._count_papers_in_domain", lambda domain: 5)
+    monkeypatch.setattr("api.main._count_contributing_papers", lambda domain: 3)
     qdrant = MagicMock()
     qdrant.count.side_effect = _unexpected_response(404)
     monkeypatch.setattr("api.main.get_qdrant_client", lambda: qdrant)
@@ -423,6 +424,9 @@ def test_corpus_survives_missing_collections(client, monkeypatch):
     assert r.json()["future_directions"] == 0
     assert r.json()["last_updated"] is None
     assert r.json()["vectors_available"] is True
+    # The premise is that only Qdrant is degraded. Without this, a graph read that
+    # failed and was swallowed by /corpus passed unnoticed (it did, through P1).
+    assert r.json()["graph_available"] is True
 
 
 def test_corpus_reports_unreachable_vectors_as_unknown_not_zero(client, monkeypatch):
@@ -432,6 +436,7 @@ def test_corpus_reports_unreachable_vectors_as_unknown_not_zero(client, monkeypa
     asserted an empty corpus underneath a working gap list.
     """
     monkeypatch.setattr("api.main._count_papers_in_domain", lambda domain: 5)
+    monkeypatch.setattr("api.main._count_contributing_papers", lambda domain: 3)
     qdrant = MagicMock()
     qdrant.count.side_effect = OSError("connection refused")
     monkeypatch.setattr("api.main.get_qdrant_client", lambda: qdrant)
@@ -445,6 +450,9 @@ def test_corpus_reports_unreachable_vectors_as_unknown_not_zero(client, monkeypa
     assert r.json()["limitations"] is None
     assert r.json()["future_directions"] is None
     assert r.json()["vectors_available"] is False
+    # The premise is that only Qdrant is degraded. Without this, a graph read that
+    # failed and was swallowed by /corpus passed unnoticed (it did, through P1).
+    assert r.json()["graph_available"] is True
 
 
 def test_corpus_reports_unreachable_graph_as_unknown_not_zero(client, monkeypatch):

@@ -699,3 +699,255 @@ is 10. "Unresolved" is the number of the top 20 gaps above the floor.
   to above 20%.
 - **For comparison:** at the old underived 0.86 threshold, MI's largest cluster was 52 of
   104 (50%). The cap would have split that.
+
+---
+
+## Investigations, 2026-10-05 (2): CV-corpus contamination. Report only, nothing changed
+
+Read-only throughout: SQLite opened `mode=ro`, live Qdrant and Neo4j read, constants patched
+in memory only and asserted restored, `derive_thresholds.derive_all()` called unmodified, and
+`--apply` never used. `data/papers.db` mtime stayed `29 Sep 07:03:40 2026`; the working tree
+stayed clean.
+
+**Premise correction.** The CV solution threshold is **0.8733**, not 0.8773. 0.8773 was its
+value from 2026-08-23 until Phase 3d re-derived it on 2026-09-29. The CV cluster threshold is
+0.8744.
+
+### INV-4 · How contaminated is the CV corpus?
+
+**Method.** The keyword scores are mechanical: `classify_text` over arXiv title and abstract.
+The three-way classification is a **human-judgement reading of each title and full
+abstract**, deliberately *not* the keyword verifier, because that is what is under audit.
+- **Clearly medical:** the paper's subject is clinical or biomedical imaging (patients,
+  lesions, a clinical modality, clinical reports).
+- **Ambiguous:** a general method evaluated on medical *and* non-medical data, or
+  scientific imaging that includes a medical dataset.
+- **Clearly CV:** everything else. Every single-hit medical term in a clearly-CV paper was
+  checked in context and is a false hit: "**Retina**Net", "diagnostic benchmarks",
+  "orche**st**ration", "su**stain**ability".
+
+**Count:**
+- **Clearly medical: 4 of 64 (6.3%).** Including the ambiguous papers: **7 of 64 (10.9%).**
+- Clearly CV: 57.
+- All 4 clearly-medical papers and 2 of the 3 ambiguous ones are `2609.*`, so they entered
+  through the Phase 3d `cs.CV` tranche.
+
+| | arXiv id | title | why |
+|---|---|---|---|
+| clearly medical | 2609.30708 | Combining General and Domain-Specific Pretext Tasks for Brain MR Image Segmentation | brain MRI, MS lesions, "medical image analysis" |
+| clearly medical | 2609.31788 | SelfCue: Making a 3D CT Report Generator Say What It Already Knows | 3D CT radiology report generation (CT-RATE abnormalities) |
+| clearly medical | 2609.30613 | MedTokenBudget: Lesion-Preserving Token Routing for Dermoscopic Image Classification | dermoscopy lesion classification |
+| clearly medical | 2609.30223 | BiCC: Bidirectional Connected-Component Loss for Instance-Aware Segmentation | lesion-wise segmentation loss, nnU-Net, "clinically critical lesions", computer-assisted review |
+| ambiguous | 2609.30566 | Atlases Are Already Inside: Recovering Population Templates from Pretrained Diffusion Models | "applies to multiple domains, such as brain MRI, chest X-ray, faces, and 3D shapes", though the evaluation is mostly medical |
+| ambiguous | 2609.30682 | Structure-Guided Masked Autoencoders for Ultra-High Resolution Scientific Image Understanding | electron microscopy and X-ray CT of materials, plus one pathology WSI dataset (PAIP) |
+| ambiguous | 2304.09148 | SAM-Adapter: Adapting SAM in Underperformed Scenes: Camouflage, Shadow, Medical Image Segmentation, and More | camouflage and shadow are the main tasks; polyp segmentation is secondary |
+
+**Correction to INV-1.** INV-1 listed 2609.30566 among "clinically medical" papers in the CV
+corpus. The full abstract makes it ambiguous, so INV-1's "at least five" is four clearly
+medical plus three ambiguous.
+
+**The two readings against the judgement:**
+
+| | (a) documented, med ≥ 3 | (b) implemented, med > vis |
+|---|---:|---:|
+| verdict "MI" | 12 / 64 | 6 / 64 |
+| … of the 4 clearly medical | 4 | 3 (misses 2609.30613 dermoscopy, 6 vs 7) |
+| … of the 3 ambiguous | 3 | 2 |
+| … of the 57 clearly CV (false MI calls) | 5 (FCOS, Paxion, Shape of Events, TrafficImag, CPSS) | 1 (CPSS: "used as diagnostics") |
+
+**All 64:**
+
+| # | arXiv id | title | med | vis | (a) documented: med ≥ 3 | (b) implemented: med > vis | judgement |
+|---:|---|---|---:|---:|---|---|---|
+| 1 | 1505.04870 | Flickr30k Entities: Collecting Region-to-Phrase Correspondences for Ri… | 0 | 3 | — | — | clearly CV |
+| 2 | 1904.01355 | FCOS: Fully Convolutional One-Stage Object Detection | 3 | 8 | MI | — | clearly CV |
+| 3 | 1904.08980 | Exploring the Limitations of Behavior Cloning for Autonomous Driving | 0 | 3 | — | — | clearly CV |
+| 4 | 2005.12872 | End-to-End Object Detection with Transformers | 0 | 10 | — | — | clearly CV |
+| 5 | 2101.09744 | Classic versus deep learning approaches to address computer vision cha… | 0 | 3 | — | — | clearly CV |
+| 6 | 2207.10077 | Discover and Mitigate Unknown Biases with Debiasing Alternate Networks | 0 | 0 | — | — | clearly CV |
+| 7 | 2304.02643 | Segment Anything | 0 | 3 | — | — | clearly CV |
+| 8 | 2304.09148 | SAM Fails to Segment Anything? -- SAM-Adapter: Adapting SAM in Underpe… | 3 | 7 | MI | — | **ambiguous** |
+| 9 | 2305.10683 | Paxion: Patching Action Knowledge in Video-Language Foundation Models | 3 | 6 | MI | — | clearly CV |
+| 10 | 2305.11175 | VisionLLM: Large Language Model is also an Open-Ended Decoder for Visi… | 0 | 8 | — | — | clearly CV |
+| 11 | 2307.01952 | SDXL: Improving Latent Diffusion Models for High-Resolution Image Synt… | 0 | 10 | — | — | clearly CV |
+| 12 | 2308.12966 | Qwen-VL: A Versatile Vision-Language Model for Understanding, Localiza… | 0 | 9 | — | — | clearly CV |
+| 13 | 2310.03744 | Improved Baselines with Visual Instruction Tuning | 0 | 6 | — | — | clearly CV |
+| 14 | 2311.07575 | SPHINX: The Joint Mixing of Weights, Tasks, and Visual Embeddings for … | 0 | 8 | — | — | clearly CV |
+| 15 | 2312.02145 | Repurposing Diffusion-Based Image Generators for Monocular Depth Estim… | 0 | 12 | — | — | clearly CV |
+| 16 | 2404.01197 | Getting it Right: Improving Spatial Consistency in Text-to-Image Model… | 0 | 6 | — | — | clearly CV |
+| 17 | 2405.14458 | YOLOv10: Real-Time End-to-End Object Detection | 0 | 6 | — | — | clearly CV |
+| 18 | 2405.14874 | Open-Vocabulary Object Detectors: Robustness Challenges under Distribu… | 0 | 10 | — | — | clearly CV |
+| 19 | 2405.16009 | Streaming Long Video Understanding with Large Language Models | 0 | 6 | — | — | clearly CV |
+| 20 | 2407.07726 | PaliGemma: A versatile 3B VLM for transfer | 0 | 3 | — | — | clearly CV |
+| 21 | 2408.00714 | SAM 2: Segment Anything in Images and Videos | 0 | 4 | — | — | clearly CV |
+| 22 | 2409.13112 | Analyzing mixed construction and demolition waste in material recovery… | 2 | 7 | — | — | clearly CV |
+| 23 | 2410.02730 | DivScene: Towards Open-Vocabulary Object Navigation with Large Vision … | 0 | 7 | — | — | clearly CV |
+| 24 | 2411.03511 | Beyond Complete Shapes: A Benchmark for Quantitative Evaluation of 3D … | 0 | 4 | — | — | clearly CV |
+| 25 | 2412.09082 | Towards Long-Horizon Vision-Language Navigation: Platform, Benchmark a… | 0 | 4 | — | — | clearly CV |
+| 26 | 2502.13071 | RobuRCDet: Enhancing Robustness of Radar-Camera Fusion in Bird's Eye V… | 0 | 8 | — | — | clearly CV |
+| 27 | 2504.03164 | NuScenes-SpatialQA: A Spatial Understanding and Reasoning Benchmark fo… | 0 | 8 | — | — | clearly CV |
+| 28 | 2510.16295 | OpenLVLM-MIA: A Controlled Benchmark Revealing the Limits of Membershi… | 0 | 3 | — | — | clearly CV |
+| 29 | 2609.30222 | TrackEverything: Long Horizon Dense Tracking via De-Duplicating 3D Sce… | 0 | 7 | — | — | clearly CV |
+| 30 | 2609.30223 | BiCC: Bidirectional Connected-Component Loss for Instance-Aware Segmen… | 8 | 0 | MI | MI | **clearly medical** |
+| 31 | 2609.30234 | OmniFabric: Coherent UV Space Texture Synthesis for 3D Garment Reconst… | 0 | 4 | — | — | clearly CV |
+| 32 | 2609.30245 | Towards Practical Compression of 3D Gaussian Splatting | 0 | 1 | — | — | clearly CV |
+| 33 | 2609.30393 | LiTe-GS: Oracle-Efficient Next Best View Selection for 3D Gaussian Spl… | 0 | 2 | — | — | clearly CV |
+| 34 | 2609.30395 | CSCWD: Cross-Scale Channel-wise Knowledge Distillation for Lightweight… | 0 | 5 | — | — | clearly CV |
+| 35 | 2609.30402 | What Improves Multimodal Misinformation Detection? Answers from a Larg… | 0 | 1 | — | — | clearly CV |
+| 36 | 2609.30434 | ProCAP: Probabilistic Cross-Attentive Prompt Learning for Vision-Langu… | 0 | 10 | — | — | clearly CV |
+| 37 | 2609.30450 | LensDesigner: A Self-Improving Agent for Optical Lens Design | 2 | 1 | — | — | clearly CV |
+| 38 | 2609.30478 | The Shape of Events: Edge-Based Inductive Biases via Cross-Domain Dist… | 3 | 9 | MI | — | clearly CV |
+| 39 | 2609.30566 | Atlases Are Already Inside: Recovering Population Templates from Pretr… | 14 | 3 | MI | MI | **ambiguous** |
+| 40 | 2609.30595 | Action Forcing: Training World Models on Unsupervised Video by Recover… | 0 | 3 | — | — | clearly CV |
+| 41 | 2609.30609 | MVAgent: Multi-Agent Video Generation via Consistent Condition Constru… | 2 | 4 | — | — | clearly CV |
+| 42 | 2609.30613 | MedTokenBudget: Lesion-Preserving Token Routing for Dermoscopic Image … | 6 | 7 | MI | — | **clearly medical** |
+| 43 | 2609.30647 | Conditional Predictive Sufficient Statistics for Visual Representation… | 3 | 2 | MI | MI | clearly CV |
+| 44 | 2609.30667 | StarWM: Self-Supervised Trained Attention Routing for Robust World Mod… | 0 | 5 | — | — | clearly CV |
+| 45 | 2609.30682 | Structure-Guided Masked Autoencoders for Ultra-High Resolution Scienti… | 9 | 4 | MI | MI | **ambiguous** |
+| 46 | 2609.30698 | MM-VeriAgent: Learning to Use Extensive Tools to Verify Multimodal Mis… | 0 | 3 | — | — | clearly CV |
+| 47 | 2609.30703 | SAGE: Source-Anchored Guidance via Frequency Equalization for Hierarch… | 0 | 1 | — | — | clearly CV |
+| 48 | 2609.30708 | Combining General and Domain-Specific Pretext Tasks for Brain MR Image… | 14 | 1 | MI | MI | **clearly medical** |
+| 49 | 2609.30709 | VLALight: Lightweight Vision-Language-Action Models for Emergency-Awar… | 0 | 11 | — | — | clearly CV |
+| 50 | 2609.30722 | TrafficImag: A Benchmark for Counterfactual Roadside Traffic Video Gen… | 3 | 4 | MI | — | clearly CV |
+| 51 | 2609.30724 | EviDETR: Preserving Query-Relevant Temporal Evidence for Moment Retrie… | 0 | 4 | — | — | clearly CV |
+| 52 | 2609.30728 | Learning Polarization Image Restoration with General Restoration Prior… | 0 | 1 | — | — | clearly CV |
+| 53 | 2609.30733 | Amplify What You Gaze At: Target Saliency Boosting in Text-to-Image Ge… | 0 | 11 | — | — | clearly CV |
+| 54 | 2609.30741 | From Mono to Stereo: Accelerating Binocular Gaussian Splatting via Rep… | 0 | 2 | — | — | clearly CV |
+| 55 | 2609.30755 | Training-Free Bottleneck Width Planning for Convolutional Autoencoders | 0 | 2 | — | — | clearly CV |
+| 56 | 2609.30758 | LLPR: Location-aware learning and physics-based reconstruction for rai… | 0 | 7 | — | — | clearly CV |
+| 57 | 2609.30761 | Timo: $\textbf{T}$aming Mult$\textbf{i}$modal Diffusion Transformer fo… | 0 | 4 | — | — | clearly CV |
+| 58 | 2609.30769 | Query-Conditioned Prototype Adaptation for Cross-Domain Few-Shot Learn… | 0 | 5 | — | — | clearly CV |
+| 59 | 2609.30783 | Skip the Talk, Re-Focus on Vision: Latent Reasoning for Reasoning Segm… | 0 | 3 | — | — | clearly CV |
+| 60 | 2609.31780 | Panoptic Scene Program Diffusion Transformer | 0 | 10 | — | — | clearly CV |
+| 61 | 2609.31788 | SelfCue: Making a 3D CT Report Generator Say What It Already Knows | 5 | 0 | MI | MI | **clearly medical** |
+| 62 | 2609.32013 | TriO: Tri-Modal Unsupervised Occupancy World Model for Anything Percep… | 0 | 2 | — | — | clearly CV |
+| 63 | 2609.32027 | Depth Any Seen: Which Surfaces and How Far? | 0 | 0 | — | — | clearly CV |
+| 64 | 2609.32036 | ScreenHaystack: Finding Blind Zones in GUI Grounding | 0 | 0 | — | — | clearly CV |
+
+### INV-5 · What the contamination touches
+
+**Artefacts downstream of CV-corpus composition.** Nothing was re-derived or applied.
+
+| artefact | where | how it depends on the CV corpus |
+|---|---|---|
+| Paper/Limitation/FutureDirection `domain` | Neo4j; `graph/populate.py` | the stored label itself |
+| Qdrant `domain` payload | `limitations` and `future_directions` collections; `vectors/embed.py` | every domain-filtered query |
+| `_CLUSTER_THRESHOLDS["computer_vision"]` = 0.8744 | `pipeline/gap_scorer.py:75` | CV limitation × limitation null p95 |
+| `_SOLUTION_THRESHOLDS["computer_vision"]` = 0.8733 | `pipeline/gap_scorer.py:126` | CV limitation × CV future-direction null p95 |
+| `_DEFICIT_RESCALE_ANCHORS["computer_vision"]` = (0.8235, 0.8959) | `pipeline/gap_scorer.py:159` | p50 and p99 of the same null |
+| `_CROSS_DOMAIN_THRESHOLD` = 0.8764 | `pipeline/cross_domain.py:71` | pooled CV-lim × MI-FD and MI-lim × CV-FD null |
+| CV frequency denominator (48 contributing papers) | `_count_contributing_papers`, `pipeline/gap_scorer.py` | counts Paper nodes with domain = computer_vision |
+| CV cluster cap (23) | `_cluster_cap`, `pipeline/gap_scorer.py:243` | ceil(20% × CV limitation count) |
+| CV corpus reference year (recency baseline) | `_corpus_reference_year` | newest CV paper year; the 2609.* papers are 2026 |
+| CV gap clusters, representatives, scores, tiers, ranking | `score_gaps`; `/gaps` | membership, and centroid-nearest labels |
+| Cross-domain matches, both directions | `find_cross_domain_matches`; `/cross-domain` | CV gaps are CV→MI sources; CV future directions are MI→CV targets |
+| `/explain` grounding | `verify_pairing`, `pipeline/cross_domain.py:302` | texts must exist in the declared domain; thresholds above |
+| `/corpus`, `/health`, CorpusBanner | `api/main.py` | CV paper, limitation and FD counts |
+| MI nulls (counterfactually) | `_SOLUTION_THRESHOLDS["medical_imaging"]` etc. | the 4 medical papers are absent from MI; not measured here |
+| README figures | `README.md:21` (149 = 64 CV + 85 MI), `:48-51` (64 / 48 / 112 / 57), `:62` (57 gaps), `:80-83` (CV thresholds) | quoted CV-corpus figures |
+| RUN_REPORT | `RUN_REPORT.md:9-` corpus table, `:51-56` CV drift rows, `:98` CV top-15 verbatim, `:198` CV→MI 9 matches verbatim, `:239` MI→CV 8 matches verbatim | as above |
+| CLAUDE.md | Phase 3d table (64 CV), *Gap Scoring Formula* influence table (57 CV gaps, measured 2026-10-05) | as above |
+| **Evaluation label sheet** | `eval/label_sheet.csv` (60 CV rows, **0 labelled**) | **8 rows cite a clearly-medical paper and 6 more cite only an ambiguous one** |
+| Threshold guard | `tests/integration/test_threshold_derivation.py` | measures the production collections |
+| `PLAN_AUDIT_FIX.md` P5 / INV-2 numbers | this file | measured on this corpus |
+
+**5 · Dry-run re-derivation without the contaminating papers.** This calls
+`derive_thresholds.derive_all()` unmodified, through a read-only Qdrant wrapper that drops
+points whose `paper_ids` are *all* excluded. A limitation shared with a CV paper is kept.
+The control (no exclusion) reproduces every coded value exactly.
+
+| constant | coded | excluding 4 clearly medical | excluding 4 + 3 ambiguous |
+|---|---:|---:|---:|
+| CV cluster p95 | 0.8744 (n=6,216) | **0.8745** (n=5,671) | 0.8751 (n=5,253) |
+| CV solution p95 | 0.8733 (n=5,264) | **0.8738** (n=4,387) | 0.8738 (n=3,914) |
+| CV deficit anchors p50/p99 | (0.8235, 0.8959) | (0.8242, 0.8962) | (0.8239, 0.8962) |
+| cross-domain p95 | 0.8764 (n=11,785) | **0.8752** (n=10,857) | 0.8747 (n=10,300) |
+| MI cluster / solution p95 | 0.8959 / 0.8917 (derived) | unchanged | unchanged |
+
+**Every shift is inside `DRIFT_TOLERANCE` = 0.002.** The largest is cross-domain at −0.0012,
+or −0.0017 with the ambiguous papers. **The thresholds are robust to this contamination.**
+The damage is in what gets *clustered, labelled and matched*, not in the noise floors.
+Nothing was applied.
+
+**6 · CV gaps with a clearly-medical supporting paper: 4 of 57.** Another 4 have only an
+ambiguous paper.
+
+| rank | tier, papers | score | gap description | contaminating paper |
+|---:|---|---:|---|---|
+| 6 | corroborated, 2 | 0.4138 | The best linear readout of a next-embedding model is not its output. | 2609.31788 |
+| **7** | corroborated, 5 | 0.4085 | **Non-dermoscopic generalization remains open because auxiliary datasets…** | 2609.30613, *which also supplies the label* |
+| 15 | corroborated, 8 | 0.2771 | Scaling model capacity and incorporating broader pretraining data is l… | 2609.30708 |
+| 45 | single source | 0.3774 | What SelfCue writes into the condition is limited to the 18 abnormalit… | 2609.31788 |
+| 8 | corroborated, 2 | 0.3922 | Deployment in high-stakes settings may amplify errors or unequal perfo… | ambiguous: 2609.30566 |
+| 12 | corroborated, 3 | 0.2996 | Conditioning is required to resolve multiple templates or none | ambiguous: 2609.30566 |
+| 31 | single source | 0.4536 | Random masking is poorly matched to the structured, multi-scale morpho… | ambiguous: 2609.30682 |
+| 35 | single source | 0.4391 | Uniform tokenization produces prohibitively long sequences… | ambiguous: 2609.30682 |
+
+**Contamination dominates the cross-domain output in both directions:**
+- **CV→MI: 7 of 9 matches** (similarities 0.8773–0.8878) start from rank 7. Its label is the
+  dermoscopy paper's own sentence, which became a CV gap through centroid-nearest labelling
+  of a 5-paper cluster. The other 2 come from genuine CV gaps (crowded-scene tracking, and
+  trajectory behaviour labels).
+- **MI→CV: 4 of 8 target future directions** come from the medical or ambiguous papers in the
+  CV corpus: 2609.30613 (×2), 2609.31788 and 2304.09148.
+
+### INV-6 · Is MI→CV real?
+
+**7 · Counts at the principled floors.** The floor acts on the *source* domain's deficits.
+
+| floor | CV→MI | MI→CV |
+|---|---:|---:|
+| 0.312 in both directions | 9 | **0** |
+| 0.286 in both directions | 9 | 8 |
+| per source domain (CV 0.312, MI 0.286) | 9 | 8 |
+| coded 0.3 (control) | 9 | 8 |
+
+**8 · MI→CV at the principled MI floor 0.286: 8 matches, all from ONE MI gap.** The gap is
+"Simply enlarging convolution kernel sizes doesn't invariably enhance segmentation;
+performance …", corroborated by 13 papers, **with deficit 0.3064.**
+
+| sim | CV future direction | from (1 paper each) |
+|---:|---|---|
+| 0.9181 | extend the SAM-Adapter to tackle even more challenging image segmentation tasks… | 2304.09148 (ambiguous) |
+| 0.8998 | Iterative training can be used to add more abnormalities to the condition… | 2609.31788 (**clearly medical**) |
+| 0.8937 | Larger mask-annotated evaluations, lesion-size stratification, patient/lesion-grouped splits… | 2609.30613 (**clearly medical**) |
+| 0.8932 | Scaling model capacity and incorporating broader pretraining data | 2609.30222 |
+| 0.8911 | Remaining controls—a mask-oracle upper bound, fully epoch-matched baseline retraining… | 2609.30613 (**clearly medical**) |
+| 0.8898 | Future research includes clearer separation of base models and fine-tunes in VLM research | 2407.07726 |
+| 0.8824 | Investigating ways to provide a single stage of equal or better quality | 2307.01952 |
+| 0.8816 | Incorporating more explicit motion modeling into SAM 2… | 2408.00714 |
+
+**Plainly: MI→CV does not rest on evidence. It rests on one gap's deficit sitting 0.02 above
+the floor, and half its targets are misfiled medical papers.**
+- **One source gap.** The whole direction is that gap fanned out to 8 future directions.
+  Its deficit, 0.3064, lies between the MI principled floor (0.286) and the CV one (0.312).
+  So MI→CV is 8 under the per-source principled floor or the coded 0.3, and **0** under a
+  single floor of 0.312.
+- **Half the targets are not cross-domain.** 3 of the 8 come from clearly-medical papers
+  filed under CV, so those pairings are medical to medical. A 4th comes from an ambiguous
+  paper (SAM-Adapter, which itself tests medical segmentation).
+- **The rest are generic.** "Scaling model capacity…", "clearer separation of base models…",
+  "a single stage of equal or better quality", and "explicit motion modeling into SAM 2".
+  Their similarities (0.8816–0.8932) sit 0.005–0.017 above the cross-domain threshold of
+  0.8764.
+
+It does survive the principled MI floor. But nothing in it is a CV-specific solution matched
+to a clinical gap on more than a single gap's worth of evidence.
+
+**9 · The `top_n=20` in `get_unresolved_gaps`.**
+- **Origin:** `pipeline/cross_domain.py:188`, `def get_unresolved_gaps(domain, top_n=20)`.
+  It was introduced in `2bb9b58` (2026-07-03) in the same commit as the 0.3 floor, and it
+  mirrors `score_gaps`'s own default of 20.
+- **Never derived.** There is no comment, decision-log entry or measurement for it, and
+  `find_cross_domain_matches` always calls it with the default.
+
+| top_n | CV→MI | MI→CV |
+|---:|---:|---:|
+| 10 | 9 | 8 |
+| **20** | **9** | **8** |
+| 30 | 9 | 19 |
+| 50 | 10 | 26 |
+
+Beyond rank 20 the ranking is almost entirely single-source gaps: MI has 16 corroborated
+gaps, so ranks 17 and below are single-source. So widening `top_n` mostly adds single-source
+MI gaps as cross-domain sources.

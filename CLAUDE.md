@@ -6,10 +6,14 @@
 > **every future session and every advisor reviewing the project.**
 >
 > Read it first because several things that look wrong here are already diagnosed there
-> (with measured numbers), and several things that look *fine* are known to be unsound —
-> most importantly, **`_SOLUTION_THRESHOLD = 0.85` and the cross-domain `0.82` both sit
-> below their measured noise floors**, so solution-deficit and cross-domain output are
-> substantially noise-driven right now. Do not propose changes to scoring, thresholds,
+> (with measured numbers), and several things that look *fine* are known to be unsound.
+> (This header used to say `_SOLUTION_THRESHOLD = 0.85` and the cross-domain `0.82` sit
+> below their noise floors. That stopped being true on 2026-08-23. Every similarity
+> threshold is now a measured per-domain null p95, re-derived with
+> `scripts/derive_thresholds.py` and guarded within `DRIFT_TOLERANCE`; see *Similarity
+> thresholds* and *Phase 1a* below. Constants that are still **not** derived:
+> `_UNRESOLVED_DEFICIT_FLOOR`, `_MAX_CLUSTER_SHARE`, `_CORROBORATED_MIN_PAPERS` and the tier
+> weights.) Do not propose changes to scoring, thresholds,
 > clustering, or displayed results without checking whether that item already has an entry
 > and a status there. **This file is the single decision log** (advisor decision,
 > 2026-10-05). Record each decision and its rationale here, update the affected item's
@@ -241,15 +245,22 @@ score = (0.40 × frequency_score) + (0.35 × recency_score) + (0.25 × solution_
 >
 > | term | coefficient | measured influence (CV / MI) |
 > |---|---:|---:|
-> | frequency | 0.40 | **9.2% / 10.0%** (by spread) · 5.7% / 3.7% (by sd) |
-> | recency | 0.35 | 52.9% / 52.5% · 51.9% / 60.9% |
-> | solution_deficit | 0.25 | 37.8% / 37.5% · 42.5% / 35.4% |
+> | frequency | 0.40 | **8.3% / 10.3%** (by spread) · 4.4% / 4.3% (by sd) |
+> | recency | 0.35 | 53.5% / 52.8% · 66.4% / 68.5% |
+> | solution_deficit | 0.25 | 38.2% / 37.0% · 29.2% / 27.2% |
 >
-> The reason is range, not weighting: recency and deficit both span the full
-> [0, 1] on real data, while frequency spans ~0.04–0.19 (CV) because at this
-> corpus size a gap is reported by one to a handful of papers out of a few dozen.
-> **Deleting the frequency term entirely leaves the top 10 of both domains
-> unchanged.**
+> *Measured 2026-10-05: 149-paper corpus, 57 CV and 53 MI gaps, after Option F. An earlier
+> version of this table showed 9.2% / 10.0% for frequency; those figures predated
+> Option F.*
+>
+> The reason is range, not weighting. Recency and deficit both span the full [0, 1]
+> on real data. Frequency spans only 0.010–0.146 (CV) and 0.010–0.180 (MI), because
+> at this corpus size a gap is reported by one to a handful of papers out of a few
+> dozen.
+>
+> Deleting the frequency term entirely **changes the top-10 order in both domains**.
+> Before Option F removed the score ties it changed nothing, which is what this
+> paragraph used to say. The term is still weak, but it now discriminates.
 >
 > This is documented rather than normalised away, by advisor decision (PLAN.md #4
 > rejected option 4B): rescaling terms to make coefficients match influence would
@@ -1195,9 +1206,15 @@ and fix them unilaterally:
   It divides a corpus-wide count of future directions by a cluster-local count of
   papers, so it is not a proportion. A quality refinement, not an integrity risk:
   the term still orders gaps sensibly, it just has poor resolution.
-- **A5 — `_UNRESOLVED_DEFICIT_FLOOR = 0.3` is an undocumented constant.** With
-  deficits heavily saturated at 0.0 and 1.0 it acts as a binary switch rather
-  than a tunable dial, so re-deriving it would change little until A9 is settled.
+- **A5 — `_UNRESOLVED_DEFICIT_FLOOR = 0.3` is an undocumented constant.** *Superseded
+  2026-09-29:* this entry said that, with deficits saturated at 0.0 and 1.0, the floor
+  acts as a binary switch rather than a tunable dial. That stopped being true when Option
+  F made the deficit continuous.
+  - Measured 2026-10-05: 52 distinct deficit values in CV and 46 in MI.
+  - The floor now genuinely selects. Sweeping it from 0.25 to 0.35 moves MI→CV
+    cross-domain matches 13 → 8 → 0.
+  - It is still underived and still awaiting an advisor decision. The measurements are
+    in `PLAN_AUDIT_FIX.md` (P5, INV-2).
 
 ---
 

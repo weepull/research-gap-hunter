@@ -145,7 +145,11 @@ reported gaps less well?); collapse to binary explicit/other; or document as a d
 prior and leave.
 
 ### A5 · `_UNRESOLVED_DEFICIT_FLOOR = 0.3` is arbitrary — IMPORTANT
-**Status: DEFERRED 2026-08-23 (advisor decision).** A quality refinement, not an integrity risk. With deficits saturated at 0.0/1.0 this floor acts as a binary switch, so re-deriving it changes little until A9 is settled.
+**Status: OPEN, needs an advisor decision.** It was *deferred 2026-08-23* on the grounds that
+"with deficits saturated at 0.0/1.0 this floor acts as a binary switch". That premise ended
+when A9 Option F (2026-09-29) made the deficit continuous, and the floor is now load-bearing.
+Sweep and measurements: `PLAN_AUDIT_FIX.md` (P5, INV-2). The original text below predates
+Option F; in particular, `pipeline/cross_domain.py:37` is now `:45`.
 
 `pipeline/cross_domain.py:37` decides which gaps are "genuinely unresolved" and therefore
 eligible for cross-domain matching. Undocumented derivation. Interacts with A1/A3: since

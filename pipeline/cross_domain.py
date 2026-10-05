@@ -25,6 +25,7 @@ from pipeline import corpus_rules
 from pipeline.domains import validate_domain
 from pipeline.extractor import extract_paper
 from pipeline.gap_scorer import (
+    _CORROBORATED_MIN_PAPERS,
     GapResult,
     _solution_threshold,
     score_gaps,
@@ -60,9 +61,24 @@ logger = logging.getLogger(__name__)
 # re-derives them whenever either input changes. Replaces the single 0.3 of 2026-07-03
 # (commit 2bb9b58), which was never derived.
 _UNRESOLVED_DEFICIT_FLOORS: dict[str, float] = {
-    "computer_vision": 0.3122,  # 1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and _DEFICIT_RESCALE_ANCHORS, derived 2026-10-05
-    "medical_imaging": 0.2857,  # 1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and _DEFICIT_RESCALE_ANCHORS, derived 2026-10-05
+    "computer_vision": 0.3121546961325975,  # 1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and _DEFICIT_RESCALE_ANCHORS, full precision, derived 2026-10-05
+    "medical_imaging": 0.2857142857142859,  # 1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and _DEFICIT_RESCALE_ANCHORS, full precision, derived 2026-10-05
 }
+
+
+# Evidence gate (T1, 2026-10-05). A gap may seed cross-domain matching only if at least
+# this many papers support it. It replaces the `top_n=20` rank cap of 2bb9b58, which was
+# never derived and was what actually decided MI->CV: its only source gap was a
+# single-source gap at MI rank 20, inside the cap by a score margin of 0.0043
+# (PLAN_AUDIT_FIX.md R3). A cross-domain hypothesis claims that a problem one field
+# keeps reporting is something another field proposes to solve; one paper reporting it
+# is not "a field reporting it".
+#
+# It is the ranking's own corroboration rule (_CORROBORATED_MIN_PAPERS), not a second
+# literal, so "may seed a hypothesis" and "corroborated tier" cannot drift apart.
+# Measured before adoption (PLAN_AUDIT_FIX.md S2): CV->MI 4, MI->CV 0 at >= 2 papers;
+# 0 and 0 at >= 3.
+_MIN_SEED_PAPERS = _CORROBORATED_MIN_PAPERS
 
 
 def _unresolved_deficit_floor(domain: str) -> float:
@@ -211,16 +227,21 @@ def ingest_domain_papers(arxiv_ids: list[str], domain: str) -> dict:
     return {"ingested": ingested, "failed": failed, "skipped": skipped, "rejected": rejected}
 
 
-def get_unresolved_gaps(domain: str, top_n: int = 20) -> list[GapResult]:
-    """Ranked gaps for a domain that remain genuinely unresolved.
+def get_unresolved_gaps(domain: str) -> list[GapResult]:
+    """Gaps in a domain that may seed cross-domain matching, in ranking order.
 
-    Runs score_gaps and keeps only gaps whose solution_deficit_score exceeds the
-    domain's derived floor (`_unresolved_deficit_floor`): those for which no eligible
-    future direction in the corpus clears the solution noise floor.
+    Two conditions, no rank cap:
+    - **corroborated:** at least `_MIN_SEED_PAPERS` supporting papers (the evidence gate);
+    - **unresolved:** solution_deficit_score above the domain's derived floor
+      (`_unresolved_deficit_floor`), i.e. no eligible future direction in the corpus
+      clears the solution noise floor.
     """
     floor = _unresolved_deficit_floor(domain)
-    gaps = score_gaps(domain=domain, top_n=top_n)
-    return [gap for gap in gaps if gap.solution_deficit_score > floor]
+    gaps = score_gaps(domain=domain, top_n=None)
+    return [
+        gap for gap in gaps
+        if len(gap.supporting_papers) >= _MIN_SEED_PAPERS and gap.solution_deficit_score > floor
+    ]
 
 
 def find_cross_domain_matches(

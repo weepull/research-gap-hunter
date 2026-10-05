@@ -1218,10 +1218,34 @@ deficit scale:
 **Measured effect:** none on output, as R3 predicted. CV→MI stays at 4 (2 gaps) and MI→CV at
 4 (1 gap).
 
-**Known boundary band.** MI's exact floor is 0.285714…, stored as 0.2857. A gap whose nearest
-future direction sits *exactly* on the MI solution threshold therefore counts as unresolved.
-The band is about 1e-6 in cosine, and a test pins it below 1e-5. Rounding the floor up
-(0.2858) would close it; that is an advisor decision.
+**Known boundary band (closed in T1).** In S1 the floors were 4-dp literals. MI's exact floor
+0.285714… was stored as 0.2857, so a nearest future direction exactly on the MI threshold
+counted as unresolved. T1 stores the floors at full precision instead; the advisor
+explicitly rejected rounding up to 0.2858.
+
+### Audit-fix T1 · evidence gate replaces the rank cap — DONE 2026-10-05
+
+**Decision (advisor):** `get_unresolved_gaps` no longer takes the top 20 gaps by rank. A gap
+seeds cross-domain matching only if it is supported by **≥ 2 papers**
+(`_MIN_SEED_PAPERS = _CORROBORATED_MIN_PAPERS`, the ranking's own corroboration rule, so the
+two cannot drift apart) and its deficit is above its domain's floor.
+
+**Why.** The `top_n = 20` cap (`2bb9b58`) was never derived, and it was what actually
+decided MI→CV. Its only source was a **single-source** gap at MI rank 20, inside the cap by a
+score margin of 0.0043. One paper reporting a problem is not a field reporting it.
+
+**Measured:** CV→MI **4** (2 source gaps, each with 2 papers); MI→CV **0**. Two MI gaps are
+eligible to seed, but none of their pairs clears the cross-domain threshold. A ≥ 3 gate would
+give 0 and 0 (`PLAN_AUDIT_FIX.md` S2).
+
+**Floors at full precision.** `derive_thresholds.py` now writes the floors unrounded
+(`_replace_floor_entry`) with `FLOOR_TOLERANCE = 1e-12`.
+- Stored values: CV 0.3121546961325975, MI 0.2857142857142859.
+- This necessarily moved CV by 4.5e-5 as well as MI. **Verified first that no gap in either
+  domain has a deficit inside the rounding band** (0/54 CV, 0/56 MI; the nearest is ≥ 0.0016
+  away), so no classification changed.
+- Written by the third authorised `--apply`, which touched nothing else.
+- `score_gaps` accepts `top_n=None` (all gaps).
 
 ### Deliberately deferred, 2026-08-23 — do not treat as oversights
 

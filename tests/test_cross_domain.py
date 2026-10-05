@@ -228,7 +228,7 @@ def test_ingest_domain_papers_empty_list(monkeypatch):
 
 
 def test_get_unresolved_gaps_filters_by_deficit(monkeypatch):
-    """Only gaps with solution_deficit_score strictly above 0.3 are returned."""
+    """Only gaps whose deficit is strictly above the domain floor (CV 0.3122) are returned."""
     gaps = [
         _make_gap(desc="resolved", deficit=0.2),
         _make_gap(desc="borderline", deficit=0.3),
@@ -241,19 +241,46 @@ def test_get_unresolved_gaps_filters_by_deficit(monkeypatch):
     assert [gap.gap_description for gap in unresolved] == ["open"]
 
 
-def test_get_unresolved_gaps_passes_domain_and_top_n(monkeypatch):
-    """domain and top_n are forwarded to score_gaps."""
+def test_get_unresolved_gaps_considers_every_gap_not_a_rank_cap(monkeypatch):
+    """T1: no top_n rank cap. Every corroborated, unresolved gap may seed matching.
+
+    Replaces the test that asserted top_n was forwarded. Fails against the rank cap,
+    which asked score_gaps for 20 and so dropped every gap ranked below 20 — the cap
+    that decided MI->CV by a 0.0043 score margin at rank 20 (PLAN_AUDIT_FIX.md R3).
+    """
+    gaps = [_make_gap(desc=f"g{i}", deficit=0.9) for i in range(25)]
     captured = {}
 
     def fake_score_gaps(domain, top_n):
-        captured["domain"] = domain
-        captured["top_n"] = top_n
-        return []
+        captured.update(domain=domain, top_n=top_n)
+        return gaps if top_n is None else gaps[:top_n]
 
     monkeypatch.setattr(cd, "score_gaps", fake_score_gaps)
 
-    assert get_unresolved_gaps("medical_imaging", top_n=7) == []
-    assert captured == {"domain": "medical_imaging", "top_n": 7}
+    assert len(get_unresolved_gaps("medical_imaging")) == 25
+    assert captured == {"domain": "medical_imaging", "top_n": None}
+
+
+def test_get_unresolved_gaps_requires_corroboration(monkeypatch):
+    """T1: a gap seeds cross-domain matching only if >= 2 papers support it.
+
+    Fails against the rank cap, under which a single-source gap with a high deficit
+    seeded matches — the whole of MI->CV came from one such gap.
+    """
+    single = _make_gap(desc="single", deficit=0.9, papers=("p1",))
+    corroborated = _make_gap(desc="corroborated", deficit=0.9, papers=("p1", "p2"))
+    monkeypatch.setattr(cd, "score_gaps", lambda domain, top_n: [single, corroborated])
+
+    assert [g.gap_description for g in get_unresolved_gaps("medical_imaging")] == ["corroborated"]
+
+
+def test_the_corroboration_gate_is_the_tier_rule():
+    """The gate reuses the ranking's corroboration threshold rather than a second literal."""
+    import pipeline.gap_scorer as gs
+
+    assert cd._MIN_SEED_PAPERS is gs._CORROBORATED_MIN_PAPERS or (
+        cd._MIN_SEED_PAPERS == gs._CORROBORATED_MIN_PAPERS
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -695,7 +722,7 @@ def test_verify_pairing_runs_before_any_llm_call(monkeypatch):
 def _gap_with_deficit(deficit: float) -> GapResult:
     return GapResult(
         gap_description="g", score=0.5, frequency_score=0.1, recency_score=1.0,
-        solution_deficit_score=deficit, supporting_papers=["a"], proposed_solutions=[],
+        solution_deficit_score=deficit, supporting_papers=["a", "b"], proposed_solutions=[],
     )
 
 
@@ -713,14 +740,13 @@ def test_each_floor_is_the_solution_noise_floor_on_the_deficit_scale(monkeypatch
     """"Unresolved" means: no eligible future direction clears the solution threshold.
 
     Proved through the real deficit computation, not by restating the formula: a
-    nearest future direction just ABOVE the domain's solution threshold must leave the
-    gap addressed (deficit <= floor), and one just below it unresolved (deficit > floor).
+    nearest future direction exactly AT the domain's solution threshold must produce a
+    deficit equal to the floor, so the gap is addressed (the floor is a strict `>`);
+    one just below it must land above the floor.
 
-    Exactly AT the threshold the answer depends on 4-dp rounding of the stored floor.
-    MI's exact value is 0.285714..., stored as 0.2857 (slightly below), so a nearest
-    sitting exactly on the MI threshold counts as unresolved. That band is pinned
-    below rather than hidden: it is under 1e-5 in cosine, recorded in
-    PLAN_AUDIT_FIX.md S1, and rounding the floor up instead is an advisor decision.
+    T1 restored the exact-boundary assertion. In S1 the floors were 4-dp literals and
+    MI's (0.2857) sat below its exact value (0.285714...), so a nearest exactly on the
+    MI threshold counted as unresolved. The floors are now stored at full precision.
     """
     import pipeline.gap_scorer as gs
 
@@ -730,12 +756,12 @@ def test_each_floor_is_the_solution_noise_floor_on_the_deficit_scale(monkeypatch
     for domain, threshold in gs._SOLUTION_THRESHOLDS.items():
         floor = cd._unresolved_deficit_floor(domain)
         p50, p99 = gs._DEFICIT_RESCALE_ANCHORS[domain]
-        exact = 1.0 - (threshold - p50) / (p99 - p50)
-        assert abs(floor - exact) <= 0.00005, (domain, floor, exact)  # 4-dp rounding only
-        assert abs(floor - exact) * (p99 - p50) < 1e-5, "boundary band must stay negligible"
-        for nearest, unresolved in ((threshold + 0.0001, False), (threshold - 0.001, True)):
+        assert floor == pytest.approx(1.0 - (threshold - p50) / (p99 - p50), abs=1e-12)
+        for nearest, unresolved in ((threshold, False), (threshold - 0.001, True)):
             monkeypatch.setattr(gs, "_addressing_hits", lambda *a, _s=nearest, **kw: [(_s, "fd", ["b"])])
             deficit = gs.compute_solution_deficit_score(cluster, domain=domain)
+            if nearest == threshold:
+                assert deficit == pytest.approx(floor, abs=1e-12), (domain, deficit, floor)
             assert (deficit > floor) is unresolved, (domain, nearest, deficit, floor)
 
 

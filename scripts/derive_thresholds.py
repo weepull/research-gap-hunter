@@ -62,9 +62,11 @@ _PERCENTILES = (50, 90, 95, 99)
 DRIFT_TOLERANCE = 0.002
 
 # The unresolved-deficit floors are not measured from a null of their own: each is a
-# deterministic function of two coded constants (see deficit_floor). With no sampling
-# noise, any difference beyond 4-dp rounding means a floor is out of step with its inputs.
-FLOOR_TOLERANCE = 0.0001
+# deterministic function of two coded constants (see deficit_floor), stored at full
+# float precision (T1). With no sampling noise, any difference beyond float rounding means
+# a floor is out of step with its inputs. S1 used 0.0001 and 4-dp literals, which let
+# MI's 0.2857 sit below its exact 0.285714... and flip the exact-threshold boundary.
+FLOOR_TOLERANCE = 1e-12
 
 _TODAY = datetime.now(timezone.utc).date().isoformat()
 
@@ -299,6 +301,33 @@ def _replace_dict_entry(path: str, section: str, domain: str, old: float,
     return True
 
 
+def _replace_floor_entry(path: str, domain: str, old: float, new: float, comment: str) -> bool:
+    """Rewrite one _UNRESOLVED_DEFICIT_FLOORS entry at full precision (repr).
+
+    Unlike _replace_dict_entry this matches whatever float literal is there, because a
+    full-precision value cannot be found by its 4-dp rendering. The literal must still
+    equal `old` (to 1e-9), so a value nobody derived is never silently overwritten.
+    """
+    text = open(path).read()
+    located = _find_dict_block(text, "_UNRESOLVED_DEFICIT_FLOORS")
+    if located is None:
+        return False
+    start, stop = located
+    block = text[start:stop]
+    pattern = re.compile(
+        rf'(^[ \t]*"{re.escape(domain)}"[ \t]*:[ \t]*)([0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)'
+        r'([ \t]*,)(?:[ \t]*#[^\n]*)?',
+        re.M,
+    )
+    match = pattern.search(block)
+    if match is None or abs(float(match.group(2)) - old) > 1e-9:
+        return False
+    line = f"{match.group(1)}{new!r}{match.group(3)}  # {comment}"
+    updated = block[:match.start()] + line + block[match.end():]
+    open(path, "w").write(text[:start] + updated + text[stop:])
+    return True
+
+
 def _replace_scalar(path: str, marker: str, old: float, new: float, n: int) -> bool:
     """Rewrite a module-level `NAME = value` scalar constant."""
     text = open(path).read()
@@ -357,17 +386,17 @@ def apply_stale(rows: list[dict]) -> list[dict]:
     for row in rows:
         if not row["stale"]:
             continue
-        new = round(row["derived"], 4)
+        # Floors are exact functions of other constants: stored unrounded (T1).
+        new = row["derived"] if row["kind"] == "deficit_floor" else round(row["derived"], 4)
         kind_for_n = "solution" if row["kind"] == "deficit_anchors" else row["kind"]
         key = kind_for_n if row["domain"] is None else f'{kind_for_n}:{row["domain"]}'
         n = raw.get(key, {}).get("n", 0)
 
         if row["kind"] == "deficit_floor":
-            ok = _replace_dict_entry(
-                "pipeline/cross_domain.py", "_UNRESOLVED_DEFICIT_FLOORS", row["domain"],
-                row["coded"], new, 0,
-                comment=(f"1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and "
-                         f"_DEFICIT_RESCALE_ANCHORS, derived {_TODAY}"),
+            ok = _replace_floor_entry(
+                "pipeline/cross_domain.py", row["domain"], row["coded"], new,
+                (f"1 - (p95 - p50)/(p99 - p50) from _SOLUTION_THRESHOLDS and "
+                 f"_DEFICIT_RESCALE_ANCHORS, full precision, derived {_TODAY}"),
             )
         elif row["kind"] == "deficit_anchors":
             ok = _replace_anchor_pair(
@@ -389,7 +418,8 @@ def apply_stale(rows: list[dict]) -> list[dict]:
             continue
         applied.append({**row, "new": new, "n": n})
         tolerance = FLOOR_TOLERANCE if row["kind"] == "deficit_floor" else DRIFT_TOLERANCE
-        print(f"  UPDATED {row['name']}: {row['coded']:.4f} -> {new:.4f} "
+        shown = repr(new) if row["kind"] == "deficit_floor" else f"{new:.4f}"
+        print(f"  UPDATED {row['name']}: {row['coded']!r} -> {shown} "
               f"(drift {row['drift']:.4f} > {tolerance}, n={n:,})")
     return applied
 

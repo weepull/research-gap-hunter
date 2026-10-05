@@ -1230,3 +1230,42 @@ each with exactly 2 supporting papers.
   If that paper were treated as medical, the gap would be single-source on the CV side.
 - **The 4th** clears the threshold by **0.0002**.
 - **At ≥ 3 papers nothing survives in either direction.**
+
+---
+
+## Phase T, 2026-10-05
+
+### T1 · Evidence gate adopted; floors at full precision — DONE
+
+- **Code.**
+  - `get_unresolved_gaps(domain)` drops the `top_n = 20` rank cap. It now takes every gap
+    (`score_gaps(top_n=None)`) and keeps those with **≥ `_MIN_SEED_PAPERS` (=
+    `_CORROBORATED_MIN_PAPERS` = 2) supporting papers** and a deficit above the domain floor.
+  - The rationale is recorded beside `_MIN_SEED_PAPERS` in `pipeline/cross_domain.py`.
+  - `score_gaps` accepts `top_n=None`.
+- **Floors at full precision.**
+  - `derive_thresholds.py`: `FLOOR_TOLERANCE` goes from 0.0001 to `1e-12`, and the new
+    `_replace_floor_entry` writes `repr(float)` and can find a full-precision literal again.
+  - Floors are written unrounded.
+- **Check before applying.** Full precision necessarily moves CV too (0.3122 →
+  0.3121546961325975, Δ 4.5e-5), not only MI (0.2857 → 0.2857142857142859). I checked first
+  that **no gap's deficit lies inside either rounding band**: 0/54 CV and 0/56 MI, with the
+  nearest deficits 0.0024 (CV) and 0.0016 (MI) away. So no classification changed.
+- **The third authorised `--apply`** wrote only the two floors. A dry run first showed 2
+  UPDATE and 9 keep.
+- **Fail-first.** 6 tests failed against HEAD's production code (`6 failed, 36 passed` on
+  those files):
+  - `assert 20 == 25` (rank cap);
+  - `['single', 'corroborated'] == ['corroborated']`;
+  - `0.3122 == 0.3121546961325975 ± 1e-12`;
+  - `_MIN_SEED_PAPERS` / `_replace_floor_entry` missing.
+
+  Two tests were replaced or adjusted for the new behaviour, with reasons in their
+  docstrings:
+  - `test_get_unresolved_gaps_passes_domain_and_top_n`, which asserted the removed cap, was
+    replaced.
+  - The S1 fixtures now use exact floors and a 2-paper gap.
+
+  After: `535 passed`. Integration: `37 passed, 3 skipped`.
+- **Gate: met.** CV→MI **4** (2 source gaps; 7 gaps eligible to seed). MI→CV **0** (2 gaps
+  eligible, no pair above 0.8764).

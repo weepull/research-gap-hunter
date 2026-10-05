@@ -656,6 +656,7 @@ follow the demo.
 | audit-fix P2 (judgement calls 2 and 3 **still under advisor review**) | 2026-10-05 | *Audit-fix P2* |
 | audit-fix P3 | 2026-10-05 | *Audit-fix P3* |
 | A5 / audit-fix S1 (per-domain deficit floors) | 2026-10-05 | *Audit-fix S1* |
+| audit-fix T1 (evidence gate; full-precision floors) | 2026-10-05 | *Audit-fix T1* |
 
 ---
 

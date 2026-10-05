@@ -559,8 +559,8 @@ def compute_solution_deficit_score(
     return float(max(0.0, min(1.0, 1.0 - addressedness)))
 
 
-def score_gaps(domain: str = "computer_vision", top_n: int = 20) -> list[GapResult]:
-    """Discover, score, and rank research gaps for a domain.
+def score_gaps(domain: str = "computer_vision", top_n: int | None = 20) -> list[GapResult]:
+    """Discover, score, and rank research gaps for a domain. `top_n=None` returns all.
 
     Pulls all limitations, clusters them, scores each cluster with the weighted
     formula, and returns the top_n GapResults in `_ranking_key` order: corroborated

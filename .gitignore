@@ -23,3 +23,6 @@ data/rejected_extractions.jsonl
 data/ingest_log.jsonl
 data/ingest_checkpoint.json
 data/tranche_progress.jsonl
+
+# V1 raw external-label responses (runtime cache; eval/external_labels.csv is the artefact)
+data/external_raw/

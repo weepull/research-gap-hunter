@@ -1436,3 +1436,52 @@ The 85 MI papers can be classified but not scored.
   check that the seed reproduces the sample, that labels are blank or human classes, and that
   no classifier output appears outside the quoted titles and abstracts.
 - After: `554 passed`.
+
+---
+
+## Phase V · third-party human domain signals, 2026-10-06 — READ-ONLY
+
+### V1 · Harvest — DONE
+
+**Tool.** `scripts/harvest_external_labels.py` writes `eval/external_labels.csv`: 149 rows and
+40 columns. That is `arxiv_id` plus 13 value fields, each with its own `_source` and
+`_fetched_at`.
+- Raw responses are cached under `data/external_raw/` (gitignored), so a rate-limited run
+  resumes instead of dropping papers.
+- HTTP 429 and 5xx back off 30 / 60 / 120 / 240 / 480 s.
+- **Excluded by construction:** Semantic Scholar is asked only for
+  `venue,publicationVenue,externalIds`. `fieldsOfStudy` and `s2FieldsOfStudy` are never
+  requested, and a test pins this. No LLM, classifier or keyword-rule output is used.
+- **Missing stays missing:** an empty value with a `_source` saying what was absent. A PubMed
+  lookup that ran and found nothing is recorded as `not_found`, which is a result. A failed
+  lookup would be empty.
+- **PubMed hits must verify.** A record counts only if its own DOI or normalised title matches
+  the paper. The probe showed PubMed's DOI search translating to a looser `[Publisher ID]`
+  query.
+- **Tests:** `tests/test_harvest_external_labels.py` has 8 pure, offline tests, which failed at
+  collection before the script existed. After: `562 passed`.
+
+**Run.** All 149 papers were fetched for every source. **No paper could not be fetched;** no
+429s occurred today.
+
+**Coverage (of 149):**
+
+| signal | papers |
+|---|---:|
+| arXiv record, primary category | 149 |
+| arXiv any cross-list | 81 |
+| — eess.IV **cross-list** | **3** (eess.IV is the *primary* of 35) |
+| — q-bio.* or physics.med-ph cross-list | 4 |
+| arXiv author-supplied DOI | 13 |
+| arXiv journal-ref | 8 |
+| Semantic Scholar record | 149 |
+| — `venue` non-empty | 106 (84 other than arXiv.org / CoRR) |
+| — `publicationVenue` non-empty | 93 (71 other than arXiv) |
+| — DOI | 105 (63 publisher DOIs; 42 are arXiv's own `10.48550/…`) |
+| PubMed lookup completed | 149 (0 failed) |
+| — **verified PubMed record** | **18** (all assigned medical_imaging; all matched by DOI, none by title) |
+| — PMC id | 10 |
+| — ≥1 MeSH heading | 13 (MEDLINE 13, PubMed-not-MEDLINE 5) |
+
+arXiv primaries across the corpus: cs.CV 108, eess.IV 35, cs.LG 2, and 1 each of cs.CY,
+physics.med-ph, cs.AI and cs.CL.

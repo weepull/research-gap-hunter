@@ -96,3 +96,13 @@ One row per corpus paper: `arxiv_id, assigned_domain, manual_class`.
     `manual_class` is empty. That gap has deliberately not been filled with any classifier.
 - **The 3 `ambiguous` papers** (2609.30566, 2609.30682, 2304.09148) are excluded from any
   accuracy figure and reported separately.
+
+**U1b (2026-10-06).** Two columns were added: `source` (`inv4` or `curation_pass_1`; every
+label has a human source) and `note`.
+- Curation pass 1's four human-reviewed papers (2305.17456, 2307.15872, 2409.03367,
+  2501.16469) are now `clearly_medical`. Coverage is **68 of 149** (57 / 8 / 3), with **81**
+  medical-imaging papers unclassified.
+- INV-1's title-only reads (2303.08446, 2406.11026, 2408.08058) are deliberately **not**
+  labels; their `note` says why.
+- `mi_sample_review.md` holds a seeded random sample of 40 of those 81 for hand labelling.
+  Seed and population are recorded in the file.

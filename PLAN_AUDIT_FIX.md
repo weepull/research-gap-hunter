@@ -1394,3 +1394,45 @@ before the file existed. After: `548 passed`.
 **4 papers**, all from the Phase 3d CV tranche. A medical centroid would therefore come from
 4 papers (3 under leave-one-out), and medical-side accuracy can be scored on only those 4.
 The 85 MI papers can be classified but not scored.
+
+### U1b · Ground truth extended; MI sample drawn for hand labelling — DONE
+
+**1. `eval/domain_ground_truth.csv` extended.**
+- Columns are now `arxiv_id, assigned_domain, manual_class, source, note`.
+- Curation pass 1's four papers (2305.17456, 2307.15872, 2409.03367, 2501.16469) are
+  `clearly_medical`, `source = curation_pass_1`.
+- The INV-1 title-only reads (2303.08446, 2406.11026, 2408.08058) stay **unlabelled**. Their
+  `note` says they were read from the title only, which is not INV-4's full-abstract method.
+  2501.16469's note records that INV-1 also read it as medical, and that INV-1 is not the
+  source of its label.
+- Coverage is now **68 of 149**: 57 clearly_cv, 8 clearly_medical, 3 ambiguous, **81
+  unclassified** (all medical imaging). Sources: 64 `inv4`, 4 `curation_pass_1`. Every label
+  has a human source.
+
+**2. `eval/mi_sample_review.md`.** 40 papers drawn from the **81** still-unclassified MI papers.
+- **Why 81:** the brief said 85, but step 1 had just labelled four of them, and drawing from
+  85 could have sampled an already-labelled paper.
+- **Contents:** each entry has id, title, full abstract, assigned domain, and a **blank**
+  `manual_class`. All 40 blank. No classifier output anywhere.
+- **Text source:** titles and abstracts come from arXiv via `fetch_by_ids`, fetched
+  2026-10-05 during INV-1. The fresh fetch on 2026-10-06 got HTTP 429 after 4 attempts. The
+  draw does not depend on the text.
+
+**3. Reproducibility.**
+- Seed **`20261006`**; `random.Random(seed).sample(population, 40)` on the population sorted
+  by arXiv id. The full 81-id population is recorded in the file.
+- Sample in draw order: 2503.17261, 2305.17937, 2404.04550, 2509.24739, 2503.20653,
+  2311.12885, 2507.00185, 2312.10892, 2505.06527, 2507.01291, 2506.07044, 2303.08446,
+  2307.01704, 2301.10847, 2401.12771, 2307.04189, 2510.22990, 2402.05373, 2507.19004,
+  2509.10620, 2312.00634, 2310.07781, 2411.18101, 2505.06646, 2301.02613, 2303.10323,
+  2503.19005, 2401.17593, 2305.06244, 2412.09402, 2409.11664, 2410.12831, 2406.05285,
+  2405.05564, 2503.00915, 2302.03861, 2508.04044, 2405.07338, 2304.12637, 2501.09138.
+
+**Tests (failing first).**
+- `tests/test_domain_ground_truth.py` was extended to 9 tests, all failing before the CSV
+  change. They cover the human-source rule, curation pass 1, and that the INV-1 reads are not
+  labels.
+- New `tests/test_mi_sample_review.py` has 3 tests, all failing before the file existed. They
+  check that the seed reproduces the sample, that labels are blank or human classes, and that
+  no classifier output appears outside the quoted titles and abstracts.
+- After: `554 passed`.

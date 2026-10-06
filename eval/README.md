@@ -79,3 +79,20 @@ number would be worthless in the way that is hardest to notice.
 - **The corpus is a curated arXiv CV/MI sample**, not the field. precision@k here says
   nothing about coverage — a system could rank its 20 best gaps perfectly and still miss
   every important open problem in computer vision.
+
+## `domain_ground_truth.csv` — manual domain classification (U1, 2026-10-06)
+
+One row per corpus paper: `arxiv_id, assigned_domain, manual_class`.
+
+- `assigned_domain`: the paper's stored domain at 2026-10-06, after the R1 relabel (60 CV,
+  89 MI).
+- `manual_class`: a human reading of title and full abstract, `clearly_cv`,
+  `clearly_medical` or `ambiguous`. It is taken verbatim from the INV-4 table in
+  `PLAN_AUDIT_FIX.md`.
+- **Coverage is partial: 64 of 149.**
+  - INV-4 reviewed the 64 papers then in computer vision: 57 clearly CV, 4 clearly medical
+    (relabelled to MI in R1) and 3 ambiguous.
+  - **The 85 medical-imaging papers have never been manually classified**, so their
+    `manual_class` is empty. That gap has deliberately not been filled with any classifier.
+- **The 3 `ambiguous` papers** (2609.30566, 2609.30682, 2304.09148) are excluded from any
+  accuracy figure and reported separately.

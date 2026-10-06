@@ -1352,3 +1352,45 @@ notes.
 **Left as historical narrative, not figures of current state:** the HDBSCAN paragraph's "27
 clean clusters from 64 limitations at 0.86", and the original threshold-rationale paragraph,
 which is followed by the corrected note.
+
+---
+
+## Phase U · domain classification via embeddings, 2026-10-06
+
+### U1 · Ground-truth file — DONE
+
+**`eval/domain_ground_truth.csv`** has 149 rows, columns `arxiv_id, assigned_domain,
+manual_class`.
+- **Sources.** `assigned_domain` is read from SQLite (read-only) and checked against Neo4j:
+  they agree on all 149. `manual_class` is parsed from the INV-4 table in this file (64 rows)
+  and nothing else.
+- **Coverage is partial. Stated, not filled:**
+
+| assigned_domain | manual_class | papers |
+|---|---|---:|
+| computer_vision | clearly_cv | 57 |
+| computer_vision | ambiguous | 3 |
+| medical_imaging | clearly_medical (the 4 R1 relabels) | 4 |
+| medical_imaging | **unclassified** (empty) | **85** |
+
+- **64 of 149 have a manual classification; 85 do not.** INV-4 reviewed only the papers then
+  in computer vision. No medical-imaging paper predating R1 has ever been manually classified
+  in this audit.
+- **The 3 ambiguous papers** (2609.30566, 2609.30682, 2304.09148) are marked `ambiguous`
+  and are to be excluded from accuracy scoring.
+
+**Other recorded human judgements, deliberately NOT included** because the brief named
+INV-4 and R1 as the source:
+- `scripts/domain_backfill.py` `RELABEL` (curation pass 1, 2026-09-28): 4 papers judged
+  medical and moved CV → MI (2305.17456, 2307.15872, 2409.03367, 2501.16469).
+- INV-1's title-level reading of 4 MI papers as medical (2303.08446, 2406.11026,
+  2408.08058, 2501.16469). That was a title reading, not INV-4's full-abstract method.
+
+**Test:** `tests/test_domain_ground_truth.py` (6 tests) pins row count, columns, allowed
+classes, the 57/4/3/85 coverage, the ambiguous ids, and the R1 relabels. All 6 failed
+before the file existed. After: `548 passed`.
+
+**Consequence for U2, flagged before anything is built.** The `clearly_medical` class has
+**4 papers**, all from the Phase 3d CV tranche. A medical centroid would therefore come from
+4 papers (3 under leave-one-out), and medical-side accuracy can be scored on only those 4.
+The 85 MI papers can be classified but not scored.

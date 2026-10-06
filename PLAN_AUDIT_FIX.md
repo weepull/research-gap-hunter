@@ -1485,3 +1485,79 @@ The 85 MI papers can be classified but not scored.
 
 arXiv primaries across the corpus: cs.CV 108, eess.IV 35, cs.LG 2, and 1 each of cs.CY,
 physics.med-ph, cs.AI and cs.CL.
+
+### V2 · Agreement of each external signal with the 68 human labels — REPORT ONLY
+
+**Definitions were fixed before any result was seen.**
+- **Scored set:** 65 papers (57 clearly_cv, **8 clearly_medical**). The 3 ambiguous are
+  reported separately.
+- **"medical-imaging venue":** a case-insensitive substring match on raw S2 `venue`, S2
+  `publicationVenue` name and alternate names, and arXiv `journal_ref`, against a fixed list:
+  MICCAI, Medical Image Computing and Computer-Assisted Intervention, Transactions on Medical
+  Imaging, Medical Image Analysis, MIDL, SPIE Medical Imaging, ISBI, Computerized Medical
+  Imaging and Graphics, Journal of Medical Imaging, Radiology, Medical Physics, Physics in
+  Medicine and Biology, J-BHI, Computers in Biology and Medicine, Journal of Digital Imaging,
+  Insights into Imaging, Machine Learning for Health. A paper whose only venue is
+  arXiv/CoRR is *not covered*.
+- **"MeSH":** any assigned descriptor whose NLM MeSH tree number is under A (Anatomy), C
+  (Diseases) or E01.370.350 (Diagnostic Imaging). Tree numbers come from id.nlm.nih.gov, not
+  from a word list.
+
+| signal | covers (of 65) | TP | FP | FN | TN | precision [95% Wilson] | recall among covered | recall over all 8 |
+|---|---:|---:|---:|---:|---:|---|---|---:|
+| eess.IV **cross-list** | 65 | 0 | 1 | 8 | 56 | 0/1 = 0.00 [0.00, 0.79] | 0/8 [0.00, 0.32] | 0/8 |
+| eess.IV primary *or* cross-list (shown because primary ≠ cross-list) | 65 | 3 | 1 | 5 | 56 | 3/4 = 0.75 [0.30, 0.95] | 3/8 [0.14, 0.69] | 3/8 |
+| q-bio.* / physics.med-ph cross-list | 65 | 0 | 0 | 8 | 57 | n/a (never fires) | 0/8 [0.00, 0.32] | 0/8 |
+| medical-imaging venue | 26 | 1 | 0 | 2 | 23 | 1/1 = 1.00 [0.21, 1.00] | 1/3 [0.06, 0.79] | 1/8 |
+| PubMed indexed | 65 | 1 | 0 | 7 | 57 | 1/1 = 1.00 [0.21, 1.00] | 1/8 [0.02, 0.47] | 1/8 |
+| MeSH anatomy / disease / diagnostic imaging | 1 | 1 | 0 | 0 | 0 | 1/1 = 1.00 [0.21, 1.00] | 1/1 [0.21, 1.00] | 1/8 |
+
+**Venue strings that matched anywhere in the corpus:** MICCAI and its workshops
+(CLIP/FAIMI/EPIMI, DART, MedAGI), IEEE Transactions on Medical Imaging, Medical Image
+Analysis, ISBI, Medical Physics, Physics in Medicine and Biology, European Journal of
+Radiology Artificial Intelligence, European Radiology Experimental, Frontiers in Radiology.
+
+**Per-paper detail for the positives.**
+- **One paper carries every external positive.** 2307.15872 (curation pass 1) is in Medical
+  Image Analysis, is in PubMed, and has CT MeSH. It is the only true positive for venue,
+  PubMed and MeSH.
+- **The five R1/tranche positives (`2609.*`) have no venue, no PubMed record and no
+  eess.IV.** They are days-old preprints, so a publication-based signal cannot exist for them
+  yet.
+- **The single false positive** for both eess.IV rows is 2609.30728 (polarization image
+  restoration). It is legitimately image processing, not medical.
+- **The 3 ambiguous papers** fire no signal and have no venue or PubMed coverage.
+
+**Which signals could stand as ground truth: none.** Plainly:
+- **eess.IV cross-list** never fires on a medical paper (0/8) and its one hit is wrong.
+  **Unusable.**
+- **eess.IV primary or cross-list** catches 3 of 8 and is wrong once in 4. A precision interval
+  of [0.30, 0.95] cannot certify anything. **Not reliable.**
+- **q-bio / physics.med-ph** never fires on the labelled set. **No evidence either way.**
+- **Venue, PubMed and MeSH** never fire on any of the 57 clearly-CV papers: false positives
+  0/23 covered by venue, and 0/57 for PubMed. But each has **exactly one** true positive, so
+  their precision rests on n = 1, and their recall is 1–3 of 8. Precision cannot be
+  established. They are **not reliable as ground truth on this evidence.** They are also
+  structurally blind to unpublished preprints, which describes 5 of the 8 positives.
+- **No combination was tried.** The brief said not to reach for one that happens to fit the
+  68, and with 8 positives, any combination would be fitted to them.
+
+**Why the evidence is this thin.** The labelled positive class is 8 papers. 5 of them are new
+tranche preprints, and all 8 came through the computer-vision pipeline. They are not a
+representative sample of medical imaging papers, so even a better-agreeing signal could not be
+validated against them.
+
+**11 · The 81 unlabelled MI papers.** No signal is reliable, so **all 81 still need a human
+read.** For context only, raw coverage on the 81 (none of it usable as a label):
+
+| signal | covered | fires | not covered |
+|---|---:|---:|---:|
+| eess.IV cross-list | 81 | 2 | 0 |
+| eess.IV primary or cross-list | 81 | 34 | 0 |
+| q-bio / physics.med-ph cross-list | 81 | 4 | 0 |
+| medical-imaging venue | 58 | 21 | 23 |
+| PubMed indexed | 81 | 17 | 0 |
+| MeSH anatomy / disease / diagnostic imaging | 12 | 12 | 69 |
+
+Nothing was labelled. No `manual_class` was written. `eval/domain_ground_truth.csv` and
+`eval/mi_sample_review.md` are untouched.

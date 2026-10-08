@@ -26,3 +26,9 @@ data/tranche_progress.jsonl
 
 # V1 raw external-label responses (runtime cache; eval/external_labels.csv is the artefact)
 data/external_raw/
+
+# Local AI-assistant config, kept out of the repo root (2026-10-08).
+# docs/CLAUDE.md is the tracked project contract; the root CLAUDE.md is a local,
+# untracked one-line import of it so Claude Code still loads it automatically.
+/.claude/
+/CLAUDE.md

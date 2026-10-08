@@ -221,7 +221,7 @@ binding constraint is the model, a fixed cost.
                     ┌────────────────────▼─────────────────────┐
                     │              FastAPI (port 8000)          │
                     │  /health /gaps /search /cross-domain      │
-                    │  /ingest /paper/{id} /explain             │
+                    │  /ingest /paper/{id} /explain /corpus     │
                     └────────────────────┬─────────────────────┘
                                          │
                     ┌────────────────────▼─────────────────────┐
@@ -246,7 +246,7 @@ binding constraint is the model, a fixed cost.
 | Gap clustering | Seed-anchored grouping | Membership anchored to seed similarity (not transitive chains); per-domain threshold = null p95 (CV 0.8744, MI 0.8954) |
 | Cross-domain matching | Specter2 + Qdrant | Corroborated, unresolved gaps queried against the other domain's future-direction vectors; threshold 0.8764 (pooled null p95) |
 | Explanation LLM | Llama 3.1 8B via Ollama | Generates natural-language hypothesis explanations; temperature 0.2 |
-| API | FastAPI + Uvicorn | 7 endpoints; Pydantic response models; lifespan model warming; CORS |
+| API | FastAPI + Uvicorn | 8 endpoints; Pydantic response models; lifespan model warming; CORS |
 | Frontend | Next.js 16 + TypeScript + Tailwind CSS v4 | 3 pages; dark theme; server + client components; Inter font |
 | Paper source | Semantic Scholar API | arXiv metadata, PDF URLs, open access links |
 | Tests | pytest, `node:test` | 542 unit tests (hermetic, enforced by a guard in `tests/conftest.py`) + 40 opt-in integration tests against real services; 8 frontend tests via `npm test` |
@@ -518,7 +518,7 @@ collections, and a `tmp_path` SQLite, so a run can never touch the real corpus.
 | `test_vectors.py` | Qdrant collection init, batch upsert, cosine search, payload filtering |
 | `test_gap_scorer.py` | Scoring formula, seed-anchored clustering (non-transitive, batch-embedded), threshold edge cases |
 | `test_cross_domain.py` | Domain ingestion, gap filtering, cross-domain match ranking, Ollama explanation |
-| `test_api.py` | All 7 endpoints, per-service health probes, 503-on-degraded, lifespan resilience, CORS, 422/404/500 paths |
+| `test_api.py` | All 8 endpoints, per-service health probes, 503-on-degraded, lifespan resilience, CORS, 422/404/500 paths |
 | `test_domains.py` | Required-domain validation, the keyword verifier, and that it never assigns a domain |
 | `test_extraction_filter.py` | Prompt-echo / hedging / length / duplicate gates, the echo-list guards, audit logging |
 | `test_corpus_rules.py` | arXiv feed parsing, the CV primary-category rule, the MI two-primary rule, the allowlist |
@@ -533,13 +533,18 @@ collections, and a `tmp_path` SQLite, so a run can never touch the real corpus.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Service status + paper/vector counts |
-| `GET` | `/gaps?domain&top_n` | Ranked research gaps with sub-scores |
+| `GET` | `/health` | Per-service readiness (`services`: SQLite, Neo4j, Qdrant) with paper, limitation and future-direction counts. Returns **503** with `status: degraded` and `null` counts when a store is unreachable |
+| `GET` | `/corpus?domain` | Corpus basis for a domain: `papers` (corpus size), `papers_reporting_limitations` (the frequency divisor), limitation and future-direction counts, `last_updated`, and `graph_available` / `vectors_available` |
+| `GET` | `/gaps?domain&top_n` | Ranked research gaps with frequency, recency and solution-deficit sub-scores; corroborated gaps (≥2 papers) rank first |
 | `GET` | `/search?q&top_k&domain` | Vector search over limitation statements |
 | `GET` | `/cross-domain?source&target&top_n` | Cross-domain report: `status` (`matches_found`, `none_above_threshold`, `no_corroborated_gaps`, `no_data`), `message`, evidence counts, and the matches |
-| `GET` | `/explain?source_gap&target_solution` | LLM explanation for a gap↔solution pair |
-| `POST` | `/ingest` | Ingest a single paper by arXiv ID |
-| `GET` | `/paper/{arxiv_id}` | Raw extracted fields for a paper |
+| `POST` | `/ingest` | Ingest one paper; body `{"arxiv_id", "domain"}`, both required. Returns **422** if the paper's arXiv primary category is not admitted to the domain, **503** if arXiv cannot be asked |
+| `GET` | `/explain?source_gap&target_solution&source&target` | LLM explanation for a gap↔solution pair, returned as a hypothesis with its similarity and threshold. Returns **422** unless both texts are in the corpus and the pair clears its measured noise floor (the cross-domain threshold, or the solution threshold for a same-domain pair) |
+| `GET` | `/paper/{arxiv_id}` | The full stored record for a paper; **422** for a malformed id, **404** if not found |
+
+A domain parameter outside `computer_vision` / `medical_imaging` is rejected with **422** on
+every endpoint that takes one. In demo mode (`DEMO_MODE=true`), `/ingest` and `/explain`
+return **403**.
 
 Interactive docs at `http://localhost:8000/docs` when the API is running.
 

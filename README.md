@@ -411,39 +411,45 @@ npm run dev
 ```
 research-gap-hunter/
 ├── api/
-│   └── main.py                  # FastAPI app — 7 endpoints, lifespan model warming
+│   ├── main.py                    # FastAPI app: health, corpus, gaps, search, cross-domain, explain, ingest, paper
+│   └── rate_limit.py              # In-process token-bucket rate limiting
 ├── pipeline/
-│   ├── extractor.py             # extract_paper(arxiv_id) → PaperExtract via Ollama
-│   ├── batch.py                 # bulk ingestion: fetch → extract → SQLite → graph → vectors
-│   ├── gap_scorer.py            # score_gaps() → ranked GapResult list; seed-anchored clustering
-│   └── cross_domain.py          # find_cross_domain_matches(); ingest_domain_papers(); explain_match()
+│   ├── extractor.py               # extract_paper(): paper text → Ollama → PaperExtract
+│   ├── extraction_filter.py       # Deterministic quality gates on extracted statements
+│   ├── arxiv_source.py            # arXiv API client: category listings and by-id lookups
+│   ├── corpus_rules.py            # Corpus admission rule (arXiv primary category)
+│   ├── domains.py                 # Domain validation and the keyword verifier
+│   ├── batch.py                   # Ingestion helpers and the SQLite store
+│   ├── gap_scorer.py              # Clustering and scoring → ranked GapResults
+│   ├── cross_domain.py            # Cross-domain matching, the /cross-domain report, /explain grounding
+│   ├── selfheal.py                # Startup Neo4j → SQLite reconciliation
+│   └── config.py                  # Demo-mode and CORS settings
 ├── graph/
-│   └── populate.py              # SQLite → Neo4j; Paper/Limitation/FutureDirection nodes
+│   └── populate.py                # SQLite → Neo4j nodes and relationships
 ├── vectors/
-│   ├── embed.py                 # embed_limitations(), embed_future_directions() → Qdrant upsert
-│   └── search.py                # find_similar_limitations(query) → vector search
-├── frontend/
-│   ├── app/
-│   │   ├── page.tsx             # Gap Explorer — ranked cards, sub-score bars, domain/topN controls
-│   │   ├── search/page.tsx      # Semantic Search — debounced input, similarity-ranked results
-│   │   └── cross-domain/page.tsx# Cross-Domain Discovery — connection cards, on-demand LLM explain
+│   ├── embed.py                   # Specter2 embeddings → Qdrant collections
+│   └── search.py                  # Vector search over limitation statements
+├── frontend/                      # Next.js app, deployed to Vercel
+│   ├── app/                       # Landing, Gaps, Search and Cross-domain pages
 │   ├── components/
-│   │   └── Nav.tsx              # Sticky nav, active-state highlighting
-│   └── lib/
-│       └── api.ts               # Typed fetch client for all API endpoints
-├── tests/
-│   ├── test_extractor.py        # LLM extraction + 3-tier confidence weighting
-│   ├── test_batch.py            # Batch ingestion, retry logic, failure logging
-│   ├── test_graph.py            # Neo4j node/relationship population
-│   ├── test_vectors.py          # Qdrant upsert, search, collection creation
-│   ├── test_gap_scorer.py       # Scoring formula, seed-anchored clustering, thresholds
-│   ├── test_cross_domain.py     # Domain ingestion, gap retrieval, cross-domain matching
-│   └── test_api.py              # All 7 endpoints; lifespan; CORS; error states
-├── data/
-│   ├── papers.db                # SQLite — gitignored, created at runtime
-│   └── failed_extractions.log   # Extraction failures — gitignored, created at runtime
-├── pyproject.toml               # Dependencies + pytest config
-└── CLAUDE.md                    # Architecture contract for AI-assisted development
+│   ├── lib/api.ts                 # Typed client for the API
+│   └── tests/                     # node:test suite (npm test)
+├── scripts/                       # Threshold derivation, tranche ingestion, measurement, reports
+├── eval/                          # Evaluation harness, label sheet, domain ground truth
+├── tests/                         # pytest unit tier (hermetic); tests/integration/ runs on live services
+├── docs/
+│   ├── PROJECT_HARDENING_PLAN.md  # Audit items, statuses and decision-log pointers
+│   ├── PLAN_AUDIT_FIX.md          # 2026-10 audit-fix phases and investigations
+│   ├── CLAUDE.md                  # Architecture contract and decision log
+│   ├── DEPLOYMENT.md              # Render, Vercel, AuraDB and Qdrant Cloud deployment
+│   ├── RUN_REPORT.md              # Generated report of the long hardening run
+│   ├── PLAN.md                    # Remediation plan for the 7 audited defects
+│   ├── A9_OPTIONS.md              # Options considered for the solution-deficit metric
+│   └── A9_F_MEASURED.md           # Measurements behind the adopted Option F
+├── data/                          # mi_allowlist.txt; runtime stores such as papers.db are gitignored
+├── Dockerfile, render.yaml        # API container and Render deployment
+├── pyproject.toml                 # Python dependencies and pytest config
+└── LICENSE                        # MIT
 ```
 
 ---
@@ -454,13 +460,13 @@ research-gap-hunter/
 
 **Neo4j over a relational database** — The core query patterns are graph traversals: "find all limitations reported by papers that use the same method" or "find all future directions from papers sharing a dataset." These are `MATCH` paths in Cypher; they are multi-join `GROUP BY` nightmares in SQL. Neo4j also lets the discovery layer evolve — adding citation graphs, co-author networks, or dataset lineage would require new relationship types rather than schema migrations.
 
-> Note: citation traversal is **not implemented**. The schema defines a `CITES` relationship but the graph currently contains zero of them, so the citation-graph argument above is a statement of intent, not of current capability. Whether Neo4j earns its place at this corpus size is an open question — see `PROJECT_HARDENING_PLAN.md`.
+> Note: citation traversal is **not implemented**. The schema defines a `CITES` relationship but the graph currently contains zero of them, so the citation-graph argument above is a statement of intent, not of current capability. Whether Neo4j earns its place at this corpus size is an open question — see [`docs/PROJECT_HARDENING_PLAN.md`](docs/PROJECT_HARDENING_PLAN.md).
 
 **Seed-anchored clustering over HDBSCAN** — HDBSCAN produced one giant cluster with 64 limitations because transitive similarity (A≈B, B≈C → A,B,C merged even when A and C score 0.72). Seed-anchored grouping fixes this by anchoring every membership decision to the seed's similarity, not a transitive chain. It also batches all Specter2 embeddings in a single `model.encode()` call and uses Qdrant's `query_batch_points` for one-round-trip neighbour fetches — 27 clean clusters from 64 limitations at threshold 0.86.
 
 **Separate thresholds for within-domain and cross-domain matching** — Specter2-base similarity scores on this corpus have a median of ~0.82 and a range of 0.68–0.93. Within-domain clustering needs a threshold of 0.86 to sit well above the median and avoid over-merging. Cross-domain matching uses 0.82 because different field vocabularies (CV vs. medical imaging) compress Specter2 scores further — the best CV↔MI pairs peak around 0.84.
 
-> **Disputed — do not cite this number.** A null-distribution analysis (2026-08-22) found 0.82 sits *below the median of random cross-domain pairs*: 61.6% of 1,490 randomly paired CV/MI items clear it, and the 95th percentile of pure noise is 0.8792. The "10 meaningful matches" claim above has not survived that test. It was replaced on 2026-08-23 by the measured null p95 (item A2 in `PROJECT_HARDENING_PLAN.md`); the current value is 0.8764.
+> **Disputed — do not cite this number.** A null-distribution analysis (2026-08-22) found 0.82 sits *below the median of random cross-domain pairs*: 61.6% of 1,490 randomly paired CV/MI items clear it, and the 95th percentile of pure noise is 0.8792. The "10 meaningful matches" claim above has not survived that test. It was replaced on 2026-08-23 by the measured null p95 (item A2 in [`docs/PROJECT_HARDENING_PLAN.md`](docs/PROJECT_HARDENING_PLAN.md)); the current value is 0.8764.
 
 **Local LLM (Ollama) over API calls** — Zero cost, zero latency variance, no rate limits, and the extracted data stays local. On an M-series Mac, Llama 3.1 8B processes a full paper (8–12K tokens) in ~15 seconds. The 3-tier extraction strategy (explicit→conclusion→inferred, confidence weights 1.0/0.75/0.5) compensates for the weaker instruction-following of a 8B model relative to GPT-4.
 
@@ -543,7 +549,7 @@ Interactive docs at `http://localhost:8000/docs` when the API is running.
 
 > **Everything in this section is planned, not built.** None of it is live today.
 > Phase numbering was retired — it implied a linear plan that no longer matches
-> reality. Current priorities and blockers live in `PROJECT_HARDENING_PLAN.md`;
+> reality. Current priorities and blockers live in [`docs/PROJECT_HARDENING_PLAN.md`](docs/PROJECT_HARDENING_PLAN.md);
 > the items below are directional, not scheduled, and carry no delivery date.
 
 ### Shipped (for contrast)

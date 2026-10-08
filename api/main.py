@@ -428,7 +428,7 @@ def health(response: Response) -> HealthResponse:
     **Behaviour change (PLAN.md #6):** this used to return 200 with
     `status="ok"` unconditionally. It now returns **503** when a required store
     cannot be reached, so a platform health check can actually restart a broken
-    container. See DEPLOYMENT.md.
+    container. See docs/DEPLOYMENT.md.
     """
     sqlite_state, papers = _probe_sqlite()
     neo4j_state = _probe_neo4j()

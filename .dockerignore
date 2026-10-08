@@ -23,6 +23,5 @@ qdrant_storage/
 
 # Docs are not needed at runtime.
 DEPLOYMENT.md
-PROJECT_HARDENING_PLAN.md
 CLAUDE.md
 docs/

@@ -6,7 +6,7 @@ run.
 
 Usage:
     python scripts/collect_run_facts.py > /tmp/run_facts.json
-    python scripts/write_run_report.py /tmp/run_facts.json > RUN_REPORT.md
+    python scripts/write_run_report.py /tmp/run_facts.json > docs/RUN_REPORT.md
 """
 
 import json
